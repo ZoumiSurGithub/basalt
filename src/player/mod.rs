@@ -37,6 +37,8 @@ pub struct Player {
     pub game_type: Option<i32>,
     /// Dossier du monde où le joueur se trouvait
     pub level: String,
+    /// Direction du regard : (orientation, inclinaison), en degrés
+    pub rotation: (f32, f32),
 }
 extends!(Player, human, Human);
 
@@ -69,6 +71,7 @@ impl Player {
             permissions: Vec::new(),
             game_type: None,
             level: String::new(),
+            rotation: (0.0, 0.0),
         }
     }
 
@@ -127,6 +130,12 @@ impl Player {
         p.last_played = date("lastPlayed", "LastPlayed");
         p.game_type = int(&["playerGameType"]).filter(|g| (0..=1).contains(g)).map(|g| g as i32);
         p.level = doc.str_of("Level").map(|s| clean_text(s, 64)).unwrap_or_default();
+        if let Some(r) = doc.get("Rotation").and_then(|t| t.as_list()) {
+            let v: Vec<f32> = r.iter().filter_map(|t| t.as_f32()).filter(|f| f.is_finite()).collect();
+            if v.len() == 2 {
+                p.rotation = (v[0].rem_euclid(360.0), v[1].clamp(-90.0, 90.0));
+            }
+        }
         if let Some(pos) = doc.get("Pos").and_then(|t| t.as_list()) {
             let v: Vec<f64> = pos
                 .iter()
@@ -247,7 +256,7 @@ impl Player {
         let mut entries = vec![
             ("NameTag", Tag::string(&self.name_tag)),
             ("Motion", doubles([0.0, 0.0, 0.0])),
-            ("Rotation", Tag::List(5, vec![Tag::Float(0.0), Tag::Float(0.0)])),
+            ("Rotation", Tag::List(5, vec![Tag::Float(self.rotation.0), Tag::Float(self.rotation.1)])),
             ("FallDistance", Tag::Float(0.0)),
             ("Fire", Tag::Short(0)),
             ("OnGround", Tag::Byte(1)),
@@ -323,6 +332,7 @@ mod tests {
         p.display_name = "§6Enzo le Grand".into();
         p.name_tag = "[Admin] Enzo".into();
         p.pos = (12.5, -58.0, -3.25);
+        p.rotation = (271.5, -32.25);
         p.has_pos = true;
         p.last_played = 2000;
         p.items.push(("main".into(), 3, "minecraft:oak_planks".into(), 64));

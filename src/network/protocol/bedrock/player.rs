@@ -51,7 +51,7 @@ pub fn move_player(id: i64, pos: (f32, f32, f32), pitch: f32, yaw: f32, head_yaw
 
 /// Fait apparaître un autre joueur chez un client.
 /// `held` : objet tenu en main (identifiant, quantité, bloc associé) ; quantité 0 : main vide.
-pub fn add_player(uuid: &[u8; 16], name: &str, id: i64, pos: (f32, f32, f32), pitch: f32, yaw: f32, gamemode: i32, flags: i64, held: (i16, u8, u32)) -> Vec<u8> {
+pub fn add_player(uuid: &[u8; 16], name: &str, id: i64, pos: (f32, f32, f32), pitch: f32, yaw: f32, head_yaw: f32, gamemode: i32, flags: i64, held: (i16, u8, u32)) -> Vec<u8> {
     let mut w = W::default();
     w.0.extend_from_slice(uuid);
     w.string(name);
@@ -65,7 +65,7 @@ pub fn add_player(uuid: &[u8; 16], name: &str, id: i64, pos: (f32, f32, f32), pi
     }
     w.f32(pitch);
     w.f32(yaw);
-    w.f32(yaw); // rotation de la tête
+    w.f32(head_yaw);
     // Objet tenu : aucun. Même écriture qu'une case vide d'inventaire (relevée avec le jeu
     // 1.26.65 : huit octets nuls), et non un simple zéro comme autrefois.
     super::item_stack(&mut w, held.0, held.1, 0, held.2);
@@ -299,7 +299,7 @@ mod add_player_tests {
     fn add_player_is_laid_out_like_the_official_one() {
         let mut uuid = [0u8; 16];
         uuid.copy_from_slice(&OFFICIAL_HEAD[..16]);
-        let ours = add_player(&uuid, "TemoinTest1", 1, (0.5, 71.0, 0.5), 0.0, 0.0, 5, super::super::REMOTE_PLAYER_FLAGS, (0, 0, 0));
+        let ours = add_player(&uuid, "TemoinTest1", 1, (0.5, 71.0, 0.5), 0.0, 0.0, 0.0, 5, super::super::REMOTE_PLAYER_FLAGS, (0, 0, 0));
         // Tout le début est identique, à l'octet près ; seul le nombre de données diffère
         // (le serveur officiel en envoie 80, deux suffisent)
         assert_eq!(&ours[..75], &OFFICIAL_HEAD[..75]);

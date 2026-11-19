@@ -280,6 +280,8 @@ struct Client {
     head_yaw: f32,
     /// Tick du dernier déplacement, et tick de la dernière diffusion reçue des autres
     moved_tick: u64,
+    /// Dernière orientation (regard, corps, tête) diffusée aux autres joueurs
+    shown_look: (f32, f32, f32),
     /// Mise au point : paquets de mouvement reçus, sonde en cours et tick de la dernière sonde
     inputs: u64,
     /// Bloc donné par la commande « give », posé par les clics droits (inventaire provisoire)
@@ -829,6 +831,7 @@ impl Server {
         let mut d = c.data.clone()?;
         if c.joined {
             d.pos = c.pos;
+            d.rotation = (c.yaw.rem_euclid(360.0), c.pitch.clamp(-90.0, 90.0));
             d.has_pos = true;
         }
         d.last_played = Self::now_unix();
@@ -940,6 +943,12 @@ impl Server {
         let mut publish = None;
         match self.clients.get_mut(addr) {
             Some(c) => {
+                // Tourner la tête sans avancer se voit aussi chez les autres joueurs
+                let turn = |a: f32, b: f32| ((a - b + 180.0).rem_euclid(360.0) - 180.0).abs() >= 1.0;
+                if turn(input.pitch, c.shown_look.0) || turn(input.yaw, c.shown_look.1) || turn(input.head_yaw, c.shown_look.2) {
+                    c.shown_look = (input.pitch, input.yaw, input.head_yaw);
+                    c.moved_tick = tick;
+                }
                 c.pitch = input.pitch;
                 c.yaw = input.yaw;
                 c.head_yaw = input.head_yaw;
@@ -1111,7 +1120,7 @@ impl Server {
                                     }
                                     packets.push((
                                         bedrock::ID_ADD_PLAYER,
-                                        bedrock::add_player(&id16, &o.name, o.id, (o.pos.0, o.pos.1 - 1.62, o.pos.2), o.pitch, o.yaw, gamemode, Self::remote_flags(o.sneaking, o.sprinting), (0, 0, 0)),
+                                        bedrock::add_player(&id16, &o.name, o.id, (o.pos.0, o.pos.1 - 1.62, o.pos.2), o.pitch, o.yaw, o.head_yaw, gamemode, Self::remote_flags(o.sneaking, o.sprinting), (0, 0, 0)),
                                     ));
                                     // L'objet qu'il tient suit dans un paquet à part : s'il était
                                     // refusé par le jeu, l'apparition du joueur ne le serait pas
@@ -2660,10 +2669,9 @@ impl Server {
         let (near, item, looks, yaw) = match self.clients.get(addr) {
             Some(c) if c.stage == Stage::InGame => {
                 let (dx, dy, dz) = (c.pos.0 - x as f32 - 0.5, c.pos.1 - y as f32 - 0.5, c.pos.2 - z as f32 - 0.5);
-                // Sens du regard : de l'œil du joueur vers le point cliqué (plus sûr que l'angle
-                // annoncé par le jeu) ; à défaut, l'angle
-                let (bx, _, bz) = bedrock::unplace_target(target, face);
-                let looks = placement::facing_of(bx as f32 + click.0 - c.pos.0, bz as f32 + click.2 - c.pos.2).unwrap_or_else(|| placement::facing(c.yaw));
+                // Sens du regard : l'angle annoncé par le jeu, comme en vanilla. C'est ce qui permet
+                // de poser un escalier de biais par rapport au bloc visé, pour former un coin.
+                let looks = placement::facing(c.head_yaw);
                 (dx * dx + dy * dy + dz * dz <= 8.0 * 8.0, c.inv.held(), looks, c.yaw)
             }
             _ => return,
@@ -3164,7 +3172,9 @@ impl Server {
                         }
                         return;
                     }
-                    info!("{} : client Bedrock {} (protocole {})", addr, crate::versions::name(proto), proto);
+                    if self.cfg.debug {
+                        info!("{} : client Bedrock {} (protocole {})", addr, crate::versions::name(proto), proto);
+                    }
                     self.send(
                         &addr,
                         bedrock::ID_NETWORK_SETTINGS,
@@ -3227,15 +3237,22 @@ impl Server {
                         .get(&addr)
                         .and_then(|c| c.data.as_ref())
                         .filter(|d| d.has_pos && d.pos.0.abs() < 3.0e7 && d.pos.2.abs() < 3.0e7)
-                        .map(|d| (d.pos.0, d.pos.1.clamp(bedrock::GROUND_Y as f32 + 1.62, 400.0), d.pos.2))
+                        // Hauteur exacte, même dans un trou creusé sous le niveau du sol
+                        .map(|d| (d.pos.0, d.pos.1.clamp(-64.0 + 1.62, 400.0), d.pos.2))
                         .unwrap_or((0.5, bedrock::GROUND_Y as f32 + 1.62, 0.5));
+                    // Il regarde aussi dans la direction où il regardait en partant
+                    let (yaw, pitch) = self.clients.get(&addr).and_then(|c| c.data.as_ref()).map(|d| d.rotation).unwrap_or((0.0, 0.0));
                     if let Some(c) = self.clients.get_mut(&addr) {
                         c.pos = spawn;
+                        c.yaw = yaw;
+                        c.head_yaw = yaw;
+                        c.pitch = pitch;
                     }
                     let start = bedrock::start_game(&bedrock::StartGame {
                         entity_id: id,
                         gamemode: creative as i32,
                         position: spawn,
+                        rotation: (pitch, yaw),
                         world_name: &self.cfg.world_name.clone(),
                         game_version: &self.cfg.game_version.clone(),
                         features,
@@ -3247,7 +3264,9 @@ impl Server {
                         self.send(&addr, bedrock::ID_VOXEL_SHAPES, &bedrock::voxel_shapes());
                     }
                     self.send(&addr, bedrock::ID_START_GAME, &start);
-                    info!("{} : envoi du monde, variante de chunks {} ({})", addr, self.chunk_variant, bedrock::chunk_variant_name(self.chunk_variant));
+                    if self.cfg.debug {
+                        info!("{} : envoi du monde, variante de chunks {} ({})", addr, self.chunk_variant, bedrock::chunk_variant_name(self.chunk_variant));
+                    }
                     let exp = if features.chunk_biome_update_flag { self.experiment } else { 0 };
                     if features.chunk_biome_update_flag {
                         if exp != 0 {
@@ -3350,15 +3369,16 @@ impl Server {
                             self.send(&viewer, bedrock::ID_SET_ACTOR_DATA, &packet);
                         }
                     }
+                    let debug = self.cfg.debug;
                     if let Some(c) = self.clients.get_mut(&addr) {
                         c.inputs += 1;
                         c.last_input = Instant::now();
-                        if c.inputs % 100 == 0 {
+                        if debug && c.inputs % 100 == 0 {
                             if let Some(i) = &parsed {
                                 info!("{} : position envoyée par le jeu : {:.2} {:.2} {:.2} ({} mouvements)", addr, i.pos.0, i.pos.1, i.pos.2, c.inputs);
                             }
                         }
-                        if c.inputs == 1 {
+                        if debug && c.inputs == 1 {
                             let hex: String = body.iter().take(64).map(|b| format!("{:02x}", b)).collect();
                             info!(
                                 "{} : premier paquet de mouvement reçu (après la sonde {}, lisible : {}, {} octets) {}",
@@ -3538,7 +3558,9 @@ impl Server {
     fn on_event(&mut self, ev: RakEvent) {
         match ev {
             RakEvent::Connected(addr) => {
-                info!("{} : connexion réseau établie", addr);
+                if self.cfg.debug {
+                    info!("{} : connexion réseau établie", addr);
+                }
                 self.clients
                     .insert(addr, Client {
                         stage: Stage::Handshake,
@@ -3562,6 +3584,7 @@ impl Server {
                         yaw: 0.0,
                         head_yaw: 0.0,
                         moved_tick: 0,
+                        shown_look: (0.0, 0.0, 0.0),
                         inputs: 0,
                         inv: PlayerWindows::new(),
                         inv_touched: false,
@@ -3626,7 +3649,9 @@ impl Server {
                         self.experiment = (self.experiment + 1) % EXPERIMENTS;
                         warn!("Prochaine connexion : expérience {} ({}).", self.experiment, experiment_name(self.experiment));
                     }
-                    if !c.joined && fault.is_none() {
+                    // Sur un serveur public, des inconnus sondent le port sans arrêt : seuls les
+                    // joueurs identifiés sont signalés hors mise au point
+                    if !c.joined && fault.is_none() && (self.cfg.debug || c.name.is_some()) {
                         let step = match c.stage {
                             Stage::Handshake => "avant l'annonce de sa version",
                             Stage::Login => "après les réglages réseau, avant le login",
@@ -4051,6 +4076,7 @@ impl Server {
             Ok(a) => a.port(),
             Err(_) => return,
         };
+        let debug = self.cfg.debug;
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(400));
             let run = || -> std::io::Result<bool> {
@@ -4066,6 +4092,7 @@ impl Server {
                 Ok(n > 0 && buf[0] == 0x1c)
             };
             match run() {
+                Ok(true) if !debug => {}
                 Ok(true) => info!("Auto-test réseau réussi : le serveur répond sur 127.0.0.1:{}", port),
                 Ok(false) => warn!("Auto-test réseau : réponse inattendue sur 127.0.0.1:{}", port),
                 Err(e) => warn!(
@@ -4162,7 +4189,8 @@ impl Server {
         }
         let dir = std::path::PathBuf::from(&self.cfg.world_dir);
         match self.world.save(&dir) {
-            Ok(()) => info!("Monde enregistré ({} blocs modifiés)", self.world.edit_count()),
+            Ok(()) if self.cfg.debug || !self.running => info!("Monde enregistré ({} blocs modifiés)", self.world.edit_count()),
+            Ok(()) => {}
             Err(e) => warn!("Enregistrement du monde impossible dans {} : {}", dir.display(), e),
         }
     }

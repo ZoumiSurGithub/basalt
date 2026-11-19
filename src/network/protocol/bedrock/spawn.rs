@@ -36,6 +36,8 @@ pub struct StartGame<'a> {
     pub entity_id: i64,
     pub gamemode: i32,
     pub position: (f32, f32, f32),
+    /// Regard : (inclinaison, orientation)
+    pub rotation: (f32, f32),
     pub world_name: &'a str,
     pub game_version: &'a str,
     pub features: crate::versions::Features,
@@ -52,8 +54,8 @@ pub fn start_game(s: &StartGame) -> Vec<u8> {
     w.f32(s.position.0);
     w.f32(s.position.1);
     w.f32(s.position.2);
-    w.f32(0.0); // inclinaison
-    w.f32(0.0); // orientation
+    w.f32(s.rotation.0); // inclinaison
+    w.f32(s.rotation.1); // orientation
 
     // --- LevelSettings ---
     w.u64(0); // graine
