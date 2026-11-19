@@ -285,6 +285,8 @@ struct Client {
     creative: bool,
     /// Tick du dernier bloc actionné (porte, levier), pour ignorer les clics répétés
     last_toggle: u64,
+    /// Tick de la dernière interaction avec un bloc (porte, coffre…)
+    last_interact: u64,
     /// Accroupi / en course, d'après les mouvements envoyés par le jeu
     sneaking: bool,
     sprinting: bool,
@@ -3379,8 +3381,37 @@ impl Server {
                                     let current = self.world.get(x, y, z);
                                     self.send(&addr, bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, current));
                                 }
-                            } else if !self.on_interact(&addr, u.pos) {
-                                if let Some(target) = target {
+                            } else if self.on_interact(&addr, u.pos) {
+                                let now = self.tick;
+                                let (first, holds_block) = match self.clients.get_mut(&addr) {
+                                    Some(c) => {
+                                        let first = now.saturating_sub(c.last_interact) >= 6;
+                                        c.last_interact = now;
+                                        (first, !c.inv.held().is_empty())
+                                    }
+                                    None => (false, false),
+                                };
+                                // Si le jeu a quand même dessiné un bloc contre celui-ci, on le
+                                // lui retire : le serveur n'a rien posé
+                                if let (Some(target), true) = (target, holds_block) {
+                                    let current = self.world.get(target.0, target.1, target.2);
+                                    self.send(&addr, bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(target.0, target.1, target.2, current));
+                                    if first {
+                                        self.send_inventory(&addr);
+                                    }
+                                }
+                            } else if let Some(target) = target {
+                                // Le jeu répète le clic à chaque tick tant que le bouton est tenu.
+                                // Juste après avoir ouvert une porte, le clic suivant traverse
+                                // l'ouverture et viserait un autre bloc : comme dans le jeu, on
+                                // ne pose rien pendant un court instant après une interaction.
+                                let just_interacted = self.clients.get(&addr).map(|c| self.tick.saturating_sub(c.last_interact) < 6).unwrap_or(false);
+                                if just_interacted {
+                                    // Le jeu a déjà dessiné le bloc de son côté : on le lui retire
+                                    self.send_inventory(&addr);
+                                    let current = self.world.get(target.0, target.1, target.2);
+                                    self.send(&addr, bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(target.0, target.1, target.2, current));
+                                } else {
                                     self.on_place(&addr, target, u.face, u.click);
                                 }
                             }
@@ -3450,6 +3481,7 @@ impl Server {
                         inv_touched: false,
                         creative: self.cfg.gamemode.eq_ignore_ascii_case("creative"),
                         last_toggle: 0,
+                        last_interact: 0,
                         sneaking: false,
                         sprinting: false,
                         last_swing: 0,
