@@ -319,6 +319,8 @@ pub struct Server {
     time_base: i64,
     /// Le jeu a refusé le paquet qui fait apparaître un autre joueur : il n'est plus envoyé
     add_player_refused: bool,
+    /// Le jeu a refusé le paquet de déplacement des autres joueurs : il n'est plus envoyé
+    move_actor_refused: bool,
     /// Boutons enfoncés à relâcher : (tick, position, état au repos)
     releases: Vec<(u64, (i32, i32, i32), u32)>,
     started: Instant,
@@ -461,6 +463,7 @@ impl Server {
             teleport_warned: false,
             time_base: 6000,
             add_player_refused: false,
+            move_actor_refused: false,
             releases: Vec::new(),
             started: Instant::now(),
             world: crate::world::World::new(),
@@ -942,6 +945,7 @@ impl Server {
         let cap = self.cfg.max_visible;
         let gamemode = self.cfg.gamemode.eq_ignore_ascii_case("creative") as i32;
         let hidden = self.add_player_refused;
+        let still = self.move_actor_refused;
         let mut out: Vec<(SocketAddr, Vec<u8>)> = Vec::new();
         for (addr, c) in self.clients.iter_mut() {
             if !(c.joined && c.stage == Stage::InGame) {
@@ -982,7 +986,7 @@ impl Server {
                                     id16.copy_from_slice(&uuid[..16]);
                                     packets.push((
                                         bedrock::ID_ADD_PLAYER,
-                                        bedrock::add_player(&id16, &o.name, o.id, o.pos, o.pitch, o.yaw, gamemode),
+                                        bedrock::add_player(&id16, &o.name, o.id, (o.pos.0, o.pos.1 - 1.62, o.pos.2), o.pitch, o.yaw, gamemode),
                                     ));
                                 }
                             }
@@ -1001,11 +1005,20 @@ impl Server {
                 for id in c.visible.iter() {
                     if let Some(&i) = by_id.get(id) {
                         let o = &players[i];
-                        if o.moved_tick > c.synced_tick && move_player_known(c.protocol) {
-                            packets.push((
-                                bedrock::ID_MOVE_PLAYER,
-                                bedrock::move_player(o.id, o.pos, o.pitch, o.yaw, o.head_yaw, false),
-                            ));
+                        if o.moved_tick > c.synced_tick {
+                            if move_player_known(c.protocol) {
+                                packets.push((
+                                    bedrock::ID_MOVE_PLAYER,
+                                    bedrock::move_player(o.id, o.pos, o.pitch, o.yaw, o.head_yaw, false),
+                                ));
+                            } else if !still {
+                                // Jeux récents : le paquet de déplacement des joueurs a changé de
+                                // format ; celui des entités, plus simple, déplace aussi les joueurs
+                                packets.push((
+                                    bedrock::ID_MOVE_ACTOR_ABSOLUTE,
+                                    bedrock::move_actor_absolute(o.id, o.pos, o.pitch, o.yaw, o.head_yaw, true),
+                                ));
+                            }
                         }
                     }
                 }
@@ -2785,6 +2798,10 @@ impl Server {
                 warn!("{} : détail brut : {}", addr, hex);
                 if let Some(c) = self.clients.get_mut(&addr) {
                     c.reported_error = true;
+                }
+                if packet == bedrock::ID_MOVE_ACTOR_ABSOLUTE as i32 && !self.move_actor_refused {
+                    self.move_actor_refused = true;
+                    warn!("Le déplacement des autres joueurs est refusé par le jeu : il est désactivé. Les joueurs peuvent se reconnecter ; ils se verront, immobiles.");
                 }
                 if packet == bedrock::ID_ADD_PLAYER as i32 && !self.add_player_refused {
                     // Sans ce repli, chaque arrivée d'un second joueur déconnecterait tout le monde

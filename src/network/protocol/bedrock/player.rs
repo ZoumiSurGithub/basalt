@@ -107,6 +107,25 @@ pub fn add_player(uuid: &[u8; 16], name: &str, id: i64, pos: (f32, f32, f32), pi
     w.0
 }
 
+pub const ID_MOVE_ACTOR_ABSOLUTE: u32 = 18;
+
+/// Déplace une entité (ici un autre joueur) chez un client : position absolue et angles
+/// arrondis sur un octet. `pos` est la position des yeux pour un joueur.
+pub fn move_actor_absolute(id: i64, pos: (f32, f32, f32), pitch: f32, yaw: f32, head_yaw: f32, on_ground: bool) -> Vec<u8> {
+    // Un tour complet tient sur 256 valeurs
+    let angle = |a: f32| ((a.rem_euclid(360.0) / 360.0 * 256.0) as u32 & 0xff) as u8;
+    let mut w = W::default();
+    w.varu64(id as u64);
+    w.u8(on_ground as u8); // drapeaux : au sol
+    w.f32(pos.0);
+    w.f32(pos.1);
+    w.f32(pos.2);
+    w.u8(angle(pitch));
+    w.u8(angle(yaw));
+    w.u8(angle(head_yaw));
+    w.0
+}
+
 pub fn remove_actor(id: i64) -> Vec<u8> {
     let mut w = W::default();
     w.vari64(id);
@@ -116,6 +135,18 @@ pub fn remove_actor(id: i64) -> Vec<u8> {
 #[cfg(test)]
 mod add_player_tests {
     use super::*;
+
+    #[test]
+    fn another_player_moves_with_a_compact_packet() {
+        let p = move_actor_absolute(7, (1.0, 64.0, -2.0), -45.0, 90.0, 180.0, true);
+        let mut expected = vec![7u8, 1];
+        for v in [1.0f32, 64.0, -2.0] {
+            expected.extend_from_slice(&v.to_le_bytes());
+        }
+        // -45° = 315° -> 224 ; 90° -> 64 ; 180° -> 128
+        expected.extend_from_slice(&[224, 64, 128]);
+        assert_eq!(p, expected);
+    }
 
     /// Paquet du serveur officiel 1.26.65, relevé par l'outil de capture (618 octets) : son
     /// début, jusqu'au nombre de données d'entité, et sa fin, après ces données. Le pseudo et
