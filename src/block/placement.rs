@@ -62,6 +62,11 @@ pub fn left_of(face: u8) -> u8 {
     }
 }
 
+/// Face à droite d'un joueur qui regarde vers `face` (un quart de tour dans le sens horaire).
+pub fn right_of(face: u8) -> u8 {
+    opposite(left_of(face))
+}
+
 /// Décalage (x, z) d'un pas vers une face horizontale.
 pub fn step(face: u8) -> (i32, i32) {
     match face {
@@ -97,9 +102,17 @@ pub fn placed_state(data: &GameData, default: u32, p: Placement) -> u32 {
     let mut changes: Vec<(&str, Prop)> = Vec::new();
     for key in data.prop_keys(default) {
         match key.as_str() {
-            // Porte, portillon : dans le sens du regard. Four, coffre… : tournés vers le joueur.
+            // Portillon : dans le sens du regard. Four, coffre… : tournés vers le joueur.
+            // Porte : le jeu note sa direction avec un quart de tour d'écart (héritage de
+            // l'ancien format) — regard vers le sud, direction « ouest ».
             "minecraft:cardinal_direction" => {
-                let dir = if short.ends_with("door") || short.ends_with("fence_gate") { looks } else { opposite(looks) };
+                let dir = if short.ends_with("door") && !short.ends_with("trapdoor") {
+                    right_of(looks)
+                } else if short.ends_with("fence_gate") {
+                    looks
+                } else {
+                    opposite(looks)
+                };
                 changes.push(("minecraft:cardinal_direction", Prop::Str(word(dir).to_string())));
             }
             // Escalier : monte dans le sens du regard (0 est, 1 ouest, 2 sud, 3 nord)
@@ -223,6 +236,8 @@ mod tests {
         assert_eq!(facing_of(-0.2, -2.0), Some(NORTH));
         assert_eq!(facing_of(0.0, 0.01), None);
         assert_eq!(left_of(SOUTH), EAST);
+        assert_eq!(right_of(SOUTH), WEST);
+        assert_eq!(right_of(WEST), NORTH);
         assert_eq!(left_of(left_of(left_of(left_of(NORTH)))), NORTH);
     }
 }

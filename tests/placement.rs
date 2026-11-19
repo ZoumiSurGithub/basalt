@@ -49,6 +49,14 @@ fn doors_levers_and_buttons_react_to_a_click() {
     let d = data();
     let door = place(&d, "minecraft:wooden_door", placement::UP, 1.0, 0.0);
     assert!(placement::is_door(&d, door));
+    // Regard vers le sud (yaw 0) : la porte est notée « ouest », un quart de tour plus loin ;
+    // et elle tourne avec le joueur
+    assert_eq!(d.prop(door, "minecraft:cardinal_direction"), Some(Prop::Str("west".to_string())));
+    let turned = place(&d, "minecraft:wooden_door", placement::UP, 1.0, 90.0);
+    assert_eq!(d.prop(turned, "minecraft:cardinal_direction"), Some(Prop::Str("north".to_string())));
+    // Le portillon, lui, suit simplement le regard
+    let gate = place(&d, "minecraft:fence_gate", placement::UP, 1.0, 0.0);
+    assert_eq!(d.prop(gate, "minecraft:cardinal_direction"), Some(Prop::Str("south".to_string())));
     let upper = d.with_props(door, &[("upper_block_bit", Prop::Int(1))]).unwrap();
     assert_ne!(upper, door);
     let (open, kind) = placement::toggled(&d, door).unwrap();
