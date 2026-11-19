@@ -14,3 +14,7 @@ Cargo.lock.bak
 PUBLIER.md
 timings/
 players/
+data/*/packets/player_list.bin
+data/*/packets/add_player.bin
+data/*/packets/start_game.bin
+data/*/packets/available_commands.bin

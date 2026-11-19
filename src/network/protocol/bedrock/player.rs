@@ -111,6 +111,67 @@ pub fn add_player(uuid: &[u8; 16], name: &str, id: i64, pos: (f32, f32, f32), pi
 pub const ID_MOVE_ACTOR_ABSOLUTE: u32 = 18;
 pub const ID_ANIMATE: u32 = 44;
 
+/// Un joueur dans la liste : (identifiant universel, identifiant d'entité, pseudo, skin, couleur).
+pub type ListedPlayer<'a> = (&'a [u8; 16], i64, &'a str, &'a crate::player::Skin, u32);
+
+/// Liste des joueurs avec leur apparence. C'est ce paquet qui donne son skin à un joueur
+/// (reconnu par son identifiant universel dans le paquet d'apparition) et son nom dans le menu.
+/// Disposition relevée auprès du serveur officiel 1.26.65 ; les pièces de personnage et les
+/// animations du visage, facultatives, ne sont pas transmises.
+pub fn player_list_add(players: &[ListedPlayer]) -> Vec<u8> {
+    let mut w = W::default();
+    w.varu32(players.len() as u32);
+    for (uuid, id, name, skin, colour) in players {
+        w.u8(1); // deux octets relevés tels quels en tête de chaque joueur
+        w.u8(0);
+        w.0.extend_from_slice(*uuid);
+        w.vari64(*id);
+        w.string(name);
+        w.string(""); // identifiant Xbox : non divulgué aux autres joueurs
+        w.string(""); // identifiant de chat de la plateforme
+        w.u8(0);
+        w.i32(8); // plateforme, comme dans le paquet d'apparition
+        // --- skin ---
+        w.string(&skin.id);
+        bytes(&mut w, &skin.patch);
+        w.u32(skin.width);
+        w.u32(skin.height);
+        bytes(&mut w, &skin.data);
+        w.varu32(0); // animations du visage : aucune
+        w.u32(skin.cape_width);
+        w.u32(skin.cape_height);
+        bytes(&mut w, &skin.cape);
+        bytes(&mut w, &skin.geometry);
+        bytes(&mut w, &skin.engine_version);
+        bytes(&mut w, &skin.animation_data);
+        w.string(&skin.cape_id);
+        w.string(&skin.id); // identifiant complet : le même, comme dans le relevé
+        w.u8(skin.wide_arms as u8);
+        w.u32(skin.colour);
+        w.varu32(0); // pièces du personnage
+        w.varu32(0); // teintes
+        w.bool(skin.premium);
+        w.bool(skin.persona);
+        w.bool(skin.cape_on_classic);
+        w.bool(false); // utilisateur principal
+        w.bool(false); // apparence imposée
+        w.string("true"); // texte relevé tel quel
+        w.string(&skin.profile_hash);
+        // --- fin du skin ---
+        w.bool(false); // enseignant
+        w.bool(false); // hôte
+        w.bool(false); // second joueur du même appareil
+        w.u32(*colour); // couleur du joueur dans la liste
+    }
+    w.0
+}
+
+/// Écrit une suite d'octets précédée de sa longueur.
+fn bytes(w: &mut W, data: &[u8]) {
+    w.varu32(data.len() as u32);
+    w.0.extend_from_slice(data);
+}
+
 /// Objet qu'un autre joueur tient en main, montré à un client.
 pub fn mob_equipment(id: i64, held: (i16, u8, u32), slot: u8) -> Vec<u8> {
     let mut w = W::default();
@@ -165,6 +226,44 @@ pub fn remove_actor(id: i64) -> Vec<u8> {
 #[cfg(test)]
 mod add_player_tests {
     use super::*;
+
+    /// La liste des joueurs suit la disposition relevée : en-tête de joueur, skin, puis fin.
+    #[test]
+    fn the_player_list_follows_the_recorded_layout() {
+        let skin = crate::player::Skin {
+            id: "S".into(),
+            patch: b"{}".to_vec(),
+            width: 1,
+            height: 1,
+            data: vec![1, 2, 3, 4],
+            cape_width: 0,
+            cape_height: 0,
+            cape: Vec::new(),
+            cape_id: String::new(),
+            geometry: b"g".to_vec(),
+            engine_version: b"1.14.0".to_vec(),
+            animation_data: Vec::new(),
+            wide_arms: true,
+            colour: 0xff7e5337,
+            premium: false,
+            persona: true,
+            cape_on_classic: false,
+            profile_hash: "h".into(),
+        };
+        let uuid = [7u8; 16];
+        let p = player_list_add(&[(&uuid, -68_719_476_735, "Ab", &skin, 0xffededed)]);
+        let mut e: Vec<u8> = vec![1, 1, 0];
+        e.extend_from_slice(&uuid);
+        e.extend_from_slice(&[0xfd, 0xff, 0xff, 0xff, 0xff, 0x03]); // identifiant, comme dans le relevé
+        e.extend_from_slice(b"\x02Ab\x00\x00\x00\x08\x00\x00\x00");
+        e.extend_from_slice(b"\x01S\x02{}\x01\x00\x00\x00\x01\x00\x00\x00\x04\x01\x02\x03\x04");
+        e.extend_from_slice(b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"); // animations, cape
+        e.extend_from_slice(b"\x01g\x061.14.0\x00\x00\x01S");
+        e.extend_from_slice(b"\x01\x37\x53\x7e\xff"); // bras larges, couleur de peau (octets du relevé)
+        e.extend_from_slice(b"\x00\x00\x00\x01\x00\x00\x00\x04true\x01h");
+        e.extend_from_slice(b"\x00\x00\x00\xed\xed\xed\xff");
+        assert_eq!(p, e);
+    }
 
     #[test]
     fn an_arm_swing_is_relayed_under_the_real_identity() {

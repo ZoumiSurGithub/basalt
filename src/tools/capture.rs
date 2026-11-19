@@ -19,11 +19,14 @@ use crate::bedrock;
 use crate::json::base64_encode;
 
 /// Paquets à conserver : (identifiant, nom du fichier).
-pub const WANTED: [(u32, &str); 9] = [
+pub const WANTED: [(u32, &str); 10] = [
     (11, "start_game"),
     // Apparition d'un autre joueur : relevée pour connaître son format (jamais renvoyée telle
     // quelle). Elle n'arrive que si un second joueur est présent : voir le « témoin ».
     (12, "add_player"),
+    // Liste des joueurs avec leur skin : relevée pour connaître son format. Elle contient le
+    // skin du modèle de données : ce fichier reste sur la machine, il n'est jamais publié.
+    (63, "player_list"),
     // Liste des commandes : relevée pour connaître son format (elle n'est pas renvoyée telle quelle)
     (76, "available_commands"),
     (52, "crafting_data"),
@@ -489,11 +492,17 @@ impl Capture {
         out
     }
 
+    /// Le paquet à garder pour un identifiant : le plus gros reçu (la liste des joueurs
+    /// arrive en plusieurs fois, la plus complète est la plus instructive).
+    fn pick(&self, id: u32) -> Option<&Vec<u8>> {
+        self.records.iter().filter(|(i, _)| *i == id).map(|(_, b)| b).max_by_key(|b| b.len())
+    }
+
     /// Paquets utiles trouvés : (nom, taille).
     pub fn found(&self) -> Vec<(&'static str, usize)> {
         WANTED
             .iter()
-            .filter_map(|(id, name)| self.records.iter().rev().find(|(i, _)| i == id).map(|(_, b)| (*name, b.len())))
+            .filter_map(|(id, name)| self.pick(*id).map(|b| (*name, b.len())))
             .collect()
     }
 
@@ -502,7 +511,7 @@ impl Capture {
         let dir = data_dir.join(self.protocol.to_string()).join("packets");
         std::fs::create_dir_all(&dir)?;
         for (id, name) in WANTED.iter() {
-            if let Some((_, body)) = self.records.iter().rev().find(|(i, _)| i == id) {
+            if let Some(body) = self.pick(*id) {
                 std::fs::write(dir.join(format!("{}.bin", name)), body)?;
             }
         }

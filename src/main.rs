@@ -77,7 +77,7 @@ fn capture(args: &[String]) {
     let host = args.first().map(|s| s.as_str()).unwrap_or("127.0.0.1");
     let port: u16 = args.get(1).and_then(|p| p.parse().ok()).unwrap_or(19132);
     basalt::log::init_capture_file();
-    info!("Capture des données du jeu auprès du serveur officiel {}:{} (outil version 10, RakNet, avec témoin)", host, port);
+    info!("Capture des données du jeu auprès du serveur officiel {}:{} (outil version 11, RakNet, avec témoin)", host, port);
     // Un second faux joueur, le « témoin », entre d'abord et reste en jeu : le serveur officiel
     // enverra alors au joueur de la capture le paquet qui fait apparaître un autre joueur.
     let witness_host = host.to_string();

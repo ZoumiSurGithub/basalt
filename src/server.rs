@@ -33,6 +33,12 @@ const TICK: Duration = Duration::from_millis(50);
 /// Le paquet de déplacement (MovePlayer) n'est connu que pour les protocoles d'avant la
 /// 1.26.60 : un vrai jeu 1.26.63 l'a refusé (« lecture incomplète ») et s'est déconnecté.
 /// Tant que son nouveau format n'est pas relevé, il n'est plus envoyé à ces versions.
+/// Couleur d'un joueur dans la liste (AARRGGBB), choisie d'après son identifiant.
+fn list_colour(id: i64) -> u32 {
+    const COLOURS: [u32; 8] = [0xffed_eded, 0xff54_ffff, 0xfff7_0c0c, 0xff00_c800, 0xfff9_a602, 0xffb1_54ff, 0xff40_a0ff, 0xffff_82c8];
+    COLOURS[(id.unsigned_abs() % COLOURS.len() as u64) as usize]
+}
+
 /// Nom courant d'un paquet du jeu, pour les rapports de mesures.
 fn packet_label(id: u32) -> &'static str {
     match id {
@@ -290,6 +296,8 @@ struct Client {
     /// Accroupi / en course, d'après les mouvements envoyés par le jeu
     sneaking: bool,
     sprinting: bool,
+    /// Apparence annoncée par le jeu à la connexion (None : apparence par défaut)
+    skin: Option<Arc<crate::player::Skin>>,
     /// Tick du dernier geste du bras relayé aux autres joueurs
     last_swing: u64,
     /// Objet en main tel que les autres joueurs le voient (identifiant, présent ou non)
@@ -362,6 +370,8 @@ pub struct Server {
     /// Idem pour l'objet tenu en main et pour le geste du bras des autres joueurs
     equip_refused: bool,
     animate_refused: bool,
+    /// Idem pour la liste des joueurs (noms et skins)
+    player_list_refused: bool,
     /// Boutons enfoncés à relâcher : (tick, position, état au repos)
     releases: Vec<(u64, (i32, i32, i32), u32)>,
     started: Instant,
@@ -507,6 +517,7 @@ impl Server {
             move_actor_refused: false,
             equip_refused: false,
             animate_refused: false,
+            player_list_refused: false,
             releases: Vec::new(),
             started: Instant::now(),
             world: crate::world::World::new(),
@@ -709,6 +720,17 @@ impl Server {
                 // Ses commandes changent : le jeu reçoit la nouvelle liste
                 if let Some(addr) = self.addr_of(name) {
                     self.send_commands(&addr);
+                    // Le joueur figure dans sa propre liste des joueurs
+                    let own = match self.clients.get(&addr) {
+                        Some(c) if !self.player_list_refused && c.protocol == 2225 => c.skin.clone().map(|s| (c.id, c.name.clone().unwrap_or_default(), s)),
+                        _ => None,
+                    };
+                    if let Some((id, name, skin)) = own {
+                        let uuid = crate::crypto::sha256(name.to_lowercase().as_bytes());
+                        let mut id16 = [0u8; 16];
+                        id16.copy_from_slice(&uuid[..16]);
+                        self.send(&addr, bedrock::ID_PLAYER_LIST, &bedrock::player_list_add(&[(&id16, id, &name, &skin, list_colour(id))]));
+                    }
                 }
             }
             // Rien n'a changé : on le dit, sinon la commande semble sans effet
@@ -997,6 +1019,7 @@ impl Server {
             sneaking: bool,
             sprinting: bool,
             held: (i16, u8, u32),
+            skin: Option<Arc<crate::player::Skin>>,
         }
         let refresh = self.tick % VISIBILITY_EVERY == 0;
         let mut players: Vec<Seen> = Vec::new();
@@ -1013,6 +1036,7 @@ impl Server {
                     name: if refresh { c.name.clone().unwrap_or_default() } else { String::new() },
                     sneaking: c.sneaking,
                     sprinting: c.sprinting,
+                    skin: if refresh { c.skin.clone() } else { None },
                     held: {
                         let h = c.inv.held();
                         (h.id, h.count.min(1), if h.is_empty() { 0 } else { self.block_for(h.id).unwrap_or(0) })
@@ -1037,6 +1061,7 @@ impl Server {
         let hidden = self.add_player_refused;
         let still = self.move_actor_refused;
         let no_equipment = self.equip_refused;
+        let no_list = self.player_list_refused;
         let mut out: Vec<(SocketAddr, Vec<u8>)> = Vec::new();
         for (addr, c) in self.clients.iter_mut() {
             if !(c.joined && c.stage == Stage::InGame) {
@@ -1063,18 +1088,27 @@ impl Server {
                     packets.push((bedrock::ID_REMOVE_ACTOR, bedrock::remove_actor(id)));
                 }
                 // Ajoute les joueurs proches, dans la limite du plafond
+                let mut appeared = 0;
                 'scan: for dx in -range..=range {
                     for dz in -range..=range {
                         if let Some(cell) = grid.get(&(me.0 + dx, me.1 + dz)) {
                             for &i in cell {
-                                if c.visible.len() >= cap {
+                                // Un skin pèse jusqu'à plusieurs centaines de Ko : dans une foule, les
+                                // nouveaux joueurs apparaissent par petits groupes, pas tous d'un coup
+                                if c.visible.len() >= cap || appeared >= 3 {
                                     break 'scan;
                                 }
                                 let o = &players[i];
                                 if o.id != c.id && !hidden && c.visible.insert(o.id) {
+                                    appeared += 1;
                                     let uuid = crate::crypto::sha256(o.name.to_lowercase().as_bytes());
                                     let mut id16 = [0u8; 16];
                                     id16.copy_from_slice(&uuid[..16]);
+                                    // Son apparence d'abord : le jeu l'associe au joueur qui
+                                    // apparaît ensuite sous le même identifiant
+                                    if let (Some(skin), false) = (&o.skin, no_list || c.protocol != 2225) {
+                                        packets.push((bedrock::ID_PLAYER_LIST, bedrock::player_list_add(&[(&id16, o.id, &o.name, skin, list_colour(o.id))])));
+                                    }
                                     packets.push((
                                         bedrock::ID_ADD_PLAYER,
                                         bedrock::add_player(&id16, &o.name, o.id, (o.pos.0, o.pos.1 - 1.62, o.pos.2), o.pitch, o.yaw, gamemode, Self::remote_flags(o.sneaking, o.sprinting), (0, 0, 0)),
@@ -2868,6 +2902,11 @@ impl Server {
                 let _ = std::fs::write("logs/client-data.b64", payload);
             }
         }
+        // Apparence du joueur, gardée pour la montrer aux autres (ignorée si elle est incohérente)
+        let skin = crate::player::Skin::from_client_jwt(&login.client_jwt).map(Arc::new);
+        if let Some(c) = self.clients.get_mut(&addr) {
+            c.skin = skin;
+        }
         let proto = self.clients.get(&addr).map(|c| c.protocol).unwrap_or(0);
         info!(
             "{} se connecte depuis {} (Bedrock {}, protocole {}, {})",
@@ -3047,6 +3086,10 @@ impl Server {
                 warn!("{} : détail brut : {}", addr, hex);
                 if let Some(c) = self.clients.get_mut(&addr) {
                     c.reported_error = true;
+                }
+                if packet == bedrock::ID_PLAYER_LIST as i32 && !self.player_list_refused {
+                    self.player_list_refused = true;
+                    warn!("La liste des joueurs (noms et skins) est refusée par le jeu : elle n'est plus envoyée. Les joueurs peuvent se reconnecter ; ils garderont l'apparence par défaut.");
                 }
                 if packet == bedrock::ID_MOB_EQUIPMENT as i32 && !self.equip_refused {
                     self.equip_refused = true;
@@ -3527,6 +3570,7 @@ impl Server {
                         last_interact: 0,
                         sneaking: false,
                         sprinting: false,
+                        skin: None,
                         last_swing: 0,
                         shown_held: None,
                         chat_window: Instant::now(),
@@ -4090,7 +4134,7 @@ impl Server {
             };
             let mut found = HashMap::new();
             for (id, name) in crate::tools::capture::WANTED.iter() {
-                if *id == bedrock::ID_START_GAME || *id == bedrock::ID_AVAILABLE_COMMANDS || *id == bedrock::ID_ADD_PLAYER {
+                if *id == bedrock::ID_START_GAME || *id == bedrock::ID_AVAILABLE_COMMANDS || *id == bedrock::ID_ADD_PLAYER || *id == 63 {
                     continue; // propre au monde du serveur officiel
                 }
                 if let Ok(body) = std::fs::read(entry.path().join("packets").join(format!("{}.bin", name))) {
