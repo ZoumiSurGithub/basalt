@@ -27,7 +27,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y liblua5.4-0
       - run: cargo test --locked
-      - run: cargo build --release --locked
+      - name: Compilation
+        run: |
+          # Inscrit dans l'executable : branche ou etiquette, commit, date
+          export BASALT_BUILD="${GITHUB_REF_NAME} ${GITHUB_SHA::7} $(date -u +%Y-%m-%dT%H:%MZ)"
+          cargo build --release --locked
       - name: Archive
         run: |
           mkdir basalt
@@ -89,7 +93,11 @@ jobs:
         run: |
           set PATH=%CD%;%PATH%
           cargo test --locked
-      - run: cargo build --release --locked
+      - name: Compilation
+        shell: pwsh
+        run: |
+          $env:BASALT_BUILD = "$env:GITHUB_REF_NAME $($env:GITHUB_SHA.Substring(0,7)) $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mmZ'))"
+          cargo build --release --locked
       - name: Archive
         shell: pwsh
         run: |

@@ -28,7 +28,7 @@ fn install_signals() {}
 
 fn main() {
     if std::env::args().any(|a| a == "--version" || a == "-V") {
-        println!("basalt {}", basalt::VERSION);
+        println!("basalt {} {}", basalt::VERSION, option_env!("BASALT_BUILD").unwrap_or(""));
         return;
     }
     let args: Vec<String> = std::env::args().collect();
@@ -38,7 +38,12 @@ fn main() {
     }
     basalt::console::init();
     basalt::log::init_file();
-    info!("Basalt {} — serveur Minecraft Bedrock", basalt::VERSION);
+    // La compilation GitHub inscrit ici le commit et la date : on sait toujours quelle
+    // version tourne en lisant la première ligne du journal
+    match option_env!("BASALT_BUILD") {
+        Some(build) if !build.is_empty() => info!("Basalt {} ({}) — serveur Minecraft Bedrock", basalt::VERSION, build),
+        _ => info!("Basalt {} — serveur Minecraft Bedrock", basalt::VERSION),
+    }
     let cfg = Config::load(Path::new("server.properties"));
     info!(
         "Versions acceptées : Bedrock {} à {} (protocoles {} à {})",
