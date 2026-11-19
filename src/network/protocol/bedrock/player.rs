@@ -50,7 +50,8 @@ pub fn move_player(id: i64, pos: (f32, f32, f32), pitch: f32, yaw: f32, head_yaw
 }
 
 /// Fait apparaître un autre joueur chez un client.
-pub fn add_player(uuid: &[u8; 16], name: &str, id: i64, pos: (f32, f32, f32), pitch: f32, yaw: f32, gamemode: i32, flags: i64) -> Vec<u8> {
+/// `held` : objet tenu en main (identifiant, quantité, bloc associé) ; quantité 0 : main vide.
+pub fn add_player(uuid: &[u8; 16], name: &str, id: i64, pos: (f32, f32, f32), pitch: f32, yaw: f32, gamemode: i32, flags: i64, held: (i16, u8, u32)) -> Vec<u8> {
     let mut w = W::default();
     w.0.extend_from_slice(uuid);
     w.string(name);
@@ -67,7 +68,7 @@ pub fn add_player(uuid: &[u8; 16], name: &str, id: i64, pos: (f32, f32, f32), pi
     w.f32(yaw); // rotation de la tête
     // Objet tenu : aucun. Même écriture qu'une case vide d'inventaire (relevée avec le jeu
     // 1.26.65 : huit octets nuls), et non un simple zéro comme autrefois.
-    super::item_stack(&mut w, 0, 0, 0, 0);
+    super::item_stack(&mut w, held.0, held.1, 0, held.2);
     w.vari32(gamemode);
     // Données de l'entité : drapeaux (nom visible, collisions, gravité) et nom affiché
     // Chaque donnée s'écrit : numéro, variante, type (un octet), valeur — comme dans le
@@ -108,6 +109,35 @@ pub fn add_player(uuid: &[u8; 16], name: &str, id: i64, pos: (f32, f32, f32), pi
 }
 
 pub const ID_MOVE_ACTOR_ABSOLUTE: u32 = 18;
+pub const ID_ANIMATE: u32 = 44;
+
+/// Objet qu'un autre joueur tient en main, montré à un client.
+pub fn mob_equipment(id: i64, held: (i16, u8, u32), slot: u8) -> Vec<u8> {
+    let mut w = W::default();
+    w.varu64(id as u64);
+    super::item_stack(&mut w, held.0, held.1, 0, held.2);
+    w.u8(slot); // case de l'inventaire
+    w.u8(slot); // case de la barre
+    w.u8(0); // inventaire principal
+    w.0
+}
+
+/// Reprend le geste du bras envoyé par un joueur pour le montrer aux autres : même paquet,
+/// où le serveur inscrit lui-même l'identifiant du joueur (celui annoncé par le jeu n'est
+/// pas cru). None si ce n'est pas un geste du bras ou si le paquet est anormal.
+pub fn relay_arm_swing(body: &[u8], id: i64) -> Option<Vec<u8>> {
+    // Relevé du jeu 1.26.65 : [1 = geste du bras][identifiant][suite d'au plus quelques octets]
+    if body.first() != Some(&1) || body.len() > 48 {
+        return None;
+    }
+    let mut pos = 1;
+    read_varu64(body, &mut pos)?;
+    let mut w = W::default();
+    w.u8(1);
+    w.varu64(id as u64);
+    w.0.extend_from_slice(&body[pos..]);
+    Some(w.0)
+}
 
 /// Déplace une entité (ici un autre joueur) chez un client : position absolue et angles
 /// arrondis sur un octet. `pos` est la position des yeux pour un joueur.
@@ -137,6 +167,18 @@ mod add_player_tests {
     use super::*;
 
     #[test]
+    fn an_arm_swing_is_relayed_under_the_real_identity() {
+        // Paquet du jeu 1.26.65 : geste « attack » annoncé pour le joueur 1
+        let from_game = [0x01, 0x01, 0, 0, 0, 0, 0x01, 0x06, b'a', b't', b't', b'a', b'c', b'k', 0x00];
+        let relayed = relay_arm_swing(&from_game, 300).unwrap();
+        assert_eq!(&relayed[..3], &[0x01, 0xac, 0x02], "geste, puis l'identifiant 300 écrit par le serveur");
+        assert_eq!(&relayed[3..], &from_game[2..]);
+        assert!(relay_arm_swing(&[0x04, 0x01, 0, 0], 300).is_none(), "autre chose qu'un geste du bras");
+        assert!(relay_arm_swing(&[1u8; 200], 300).is_none(), "paquet trop long");
+        assert!(relay_arm_swing(&[], 300).is_none());
+    }
+
+    #[test]
     fn another_player_moves_with_a_compact_packet() {
         let p = move_actor_absolute(7, (1.0, 64.0, -2.0), -45.0, 90.0, 180.0, true);
         let mut expected = vec![7u8, 1];
@@ -158,7 +200,7 @@ mod add_player_tests {
     fn add_player_is_laid_out_like_the_official_one() {
         let mut uuid = [0u8; 16];
         uuid.copy_from_slice(&OFFICIAL_HEAD[..16]);
-        let ours = add_player(&uuid, "TemoinTest1", 1, (0.5, 71.0, 0.5), 0.0, 0.0, 5, super::super::REMOTE_PLAYER_FLAGS);
+        let ours = add_player(&uuid, "TemoinTest1", 1, (0.5, 71.0, 0.5), 0.0, 0.0, 5, super::super::REMOTE_PLAYER_FLAGS, (0, 0, 0));
         // Tout le début est identique, à l'octet près ; seul le nombre de données diffère
         // (le serveur officiel en envoie 80, deux suffisent)
         assert_eq!(&ours[..75], &OFFICIAL_HEAD[..75]);

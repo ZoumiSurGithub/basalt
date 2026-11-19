@@ -267,6 +267,10 @@ struct Client {
     /// Accroupi / en course, d'après les mouvements envoyés par le jeu
     sneaking: bool,
     sprinting: bool,
+    /// Tick du dernier geste du bras relayé aux autres joueurs
+    last_swing: u64,
+    /// Objet en main tel que les autres joueurs le voient (identifiant, présent ou non)
+    shown_held: Option<(i16, u8)>,
     /// Anti-abus du chat : début de la fenêtre et messages envoyés dedans
     chat_window: Instant,
     chat_count: u32,
@@ -332,6 +336,9 @@ pub struct Server {
     add_player_refused: bool,
     /// Le jeu a refusé le paquet de déplacement des autres joueurs : il n'est plus envoyé
     move_actor_refused: bool,
+    /// Idem pour l'objet tenu en main et pour le geste du bras des autres joueurs
+    equip_refused: bool,
+    animate_refused: bool,
     /// Boutons enfoncés à relâcher : (tick, position, état au repos)
     releases: Vec<(u64, (i32, i32, i32), u32)>,
     started: Instant,
@@ -475,6 +482,8 @@ impl Server {
             time_base: 6000,
             add_player_refused: false,
             move_actor_refused: false,
+            equip_refused: false,
+            animate_refused: false,
             releases: Vec::new(),
             started: Instant::now(),
             world: crate::world::World::new(),
@@ -926,6 +935,7 @@ impl Server {
             name: String,
             sneaking: bool,
             sprinting: bool,
+            held: (i16, u8, u32),
         }
         let refresh = self.tick % VISIBILITY_EVERY == 0;
         let mut players: Vec<Seen> = Vec::new();
@@ -942,6 +952,10 @@ impl Server {
                     name: if refresh { c.name.clone().unwrap_or_default() } else { String::new() },
                     sneaking: c.sneaking,
                     sprinting: c.sprinting,
+                    held: {
+                        let h = c.inv.held();
+                        (h.id, h.count.min(1), if h.is_empty() { 0 } else { self.block_for(h.id).unwrap_or(0) })
+                    },
                 });
             }
         }
@@ -961,6 +975,7 @@ impl Server {
         let gamemode = self.cfg.gamemode.eq_ignore_ascii_case("creative") as i32;
         let hidden = self.add_player_refused;
         let still = self.move_actor_refused;
+        let no_equipment = self.equip_refused;
         let mut out: Vec<(SocketAddr, Vec<u8>)> = Vec::new();
         for (addr, c) in self.clients.iter_mut() {
             if !(c.joined && c.stage == Stage::InGame) {
@@ -1001,8 +1016,13 @@ impl Server {
                                     id16.copy_from_slice(&uuid[..16]);
                                     packets.push((
                                         bedrock::ID_ADD_PLAYER,
-                                        bedrock::add_player(&id16, &o.name, o.id, (o.pos.0, o.pos.1 - 1.62, o.pos.2), o.pitch, o.yaw, gamemode, Self::remote_flags(o.sneaking, o.sprinting)),
+                                        bedrock::add_player(&id16, &o.name, o.id, (o.pos.0, o.pos.1 - 1.62, o.pos.2), o.pitch, o.yaw, gamemode, Self::remote_flags(o.sneaking, o.sprinting), (0, 0, 0)),
                                     ));
+                                    // L'objet qu'il tient suit dans un paquet à part : s'il était
+                                    // refusé par le jeu, l'apparition du joueur ne le serait pas
+                                    if o.held.1 > 0 && !no_equipment {
+                                        packets.push((bedrock::ID_MOB_EQUIPMENT, bedrock::mob_equipment(o.id, o.held, 0)));
+                                    }
                                 }
                             }
                         }
@@ -2200,6 +2220,8 @@ impl Server {
             };
             if outcome.is_some() {
                 self.store_block_view(addr);
+                // L'objet en main a pu changer (pile déplacée dans la barre)
+                self.show_held(addr);
             }
             let response = match &outcome {
                 Some(changed) => bedrock::item_stack_response(request.id, Some(changed)),
@@ -2535,6 +2557,8 @@ impl Server {
         if let Some(c) = self.clients.get_mut(addr) {
             c.inv.consume_held();
         }
+        // Dernier bloc de la pile posé : les autres joueurs voient la main vide
+        self.show_held(addr);
         // Coffre, four, panneau… : le bloc reçoit ses données
         if let Some(kind) = self.block_at_state(block).and_then(|b| b.tile()) {
             if let Some(new) = tile::create(kind) {
@@ -2552,6 +2576,32 @@ impl Server {
             if self.world.set(x, y + 1, z, upper) {
                 self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y + 1, z, upper), None);
             }
+        }
+    }
+
+    /// Montre aux joueurs qui le voient l'objet qu'un joueur tient en main, s'il a changé.
+    fn show_held(&mut self, addr: &SocketAddr) {
+        if self.equip_refused {
+            return;
+        }
+        let (id, held, slot) = match self.clients.get(addr) {
+            Some(c) if c.stage == Stage::InGame => {
+                let h = c.inv.held();
+                let block = if h.is_empty() { 0 } else { self.block_for(h.id).unwrap_or(0) };
+                (c.id, (h.id, h.count.min(1), block), c.inv.selected)
+            }
+            _ => return,
+        };
+        match self.clients.get_mut(addr) {
+            // Même objet qu'au dernier envoi : rien à redire
+            Some(c) if c.shown_held == Some((held.0, held.1)) => return,
+            Some(c) => c.shown_held = Some((held.0, held.1)),
+            None => return,
+        }
+        let packet = bedrock::mob_equipment(id, held, slot);
+        let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(a, c)| *a != addr && c.visible.contains(&id)).map(|(a, _)| *a).collect();
+        for viewer in viewers {
+            self.send(&viewer, bedrock::ID_MOB_EQUIPMENT, &packet);
         }
     }
 
@@ -2875,6 +2925,14 @@ impl Server {
                 if let Some(c) = self.clients.get_mut(&addr) {
                     c.reported_error = true;
                 }
+                if packet == bedrock::ID_MOB_EQUIPMENT as i32 && !self.equip_refused {
+                    self.equip_refused = true;
+                    warn!("L'objet tenu par les autres joueurs est refusé par le jeu : il n'est plus envoyé. Reconnectez-vous.");
+                }
+                if packet == bedrock::ID_ANIMATE as i32 && !self.animate_refused {
+                    self.animate_refused = true;
+                    warn!("Le geste du bras des autres joueurs est refusé par le jeu : il n'est plus envoyé. Reconnectez-vous.");
+                }
                 if packet == bedrock::ID_MOVE_ACTOR_ABSOLUTE as i32 && !self.move_actor_refused {
                     self.move_actor_refused = true;
                     warn!("Le déplacement des autres joueurs est refusé par le jeu : il est désactivé. Les joueurs peuvent se reconnecter ; ils se verront, immobiles.");
@@ -3192,6 +3250,25 @@ impl Server {
                     if let (Some(slot), Some(c)) = (bedrock::read_selected_slot(&body), self.clients.get_mut(&addr)) {
                         c.inv.selected = slot;
                     }
+                    self.show_held(&addr);
+                }
+                (Stage::InGame, bedrock::ID_ANIMATE) => {
+                    // Geste du bras (frapper, miner, poser) : montré aux joueurs qui le voient,
+                    // au plus quatre fois par seconde
+                    let now = self.tick;
+                    let relayed = match self.clients.get_mut(&addr) {
+                        Some(c) if !self.animate_refused && now.saturating_sub(c.last_swing) >= 5 => {
+                            c.last_swing = now;
+                            bedrock::relay_arm_swing(&body, c.id).map(|p| (c.id, p))
+                        }
+                        _ => None,
+                    };
+                    if let Some((id, packet)) = relayed {
+                        let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(a, c)| **a != addr && c.visible.contains(&id)).map(|(a, _)| *a).collect();
+                        for viewer in viewers {
+                            self.send(&viewer, bedrock::ID_ANIMATE, &packet);
+                        }
+                    }
                 }
                 (Stage::InGame, bedrock::ID_INTERACT) => {
                     if bedrock::read_open_inventory(&body) {
@@ -3297,6 +3374,8 @@ impl Server {
                         last_toggle: 0,
                         sneaking: false,
                         sprinting: false,
+                        last_swing: 0,
+                        shown_held: None,
                         chat_window: Instant::now(),
                         chat_count: 0,
                         interactions_logged: 0,
