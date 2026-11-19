@@ -722,17 +722,6 @@ impl Server {
                 // Ses commandes changent : le jeu reçoit la nouvelle liste
                 if let Some(addr) = self.addr_of(name) {
                     self.send_commands(&addr);
-                    // Le joueur figure dans sa propre liste des joueurs
-                    let own = match self.clients.get(&addr) {
-                        Some(c) if !self.player_list_refused && c.protocol == 2225 => c.skin.clone().map(|s| (c.id, c.name.clone().unwrap_or_default(), s)),
-                        _ => None,
-                    };
-                    if let Some((id, name, skin)) = own {
-                        let uuid = crate::crypto::sha256(name.to_lowercase().as_bytes());
-                        let mut id16 = [0u8; 16];
-                        id16.copy_from_slice(&uuid[..16]);
-                        self.send(&addr, bedrock::ID_PLAYER_LIST, &bedrock::player_list_add(&[(&id16, id, &name, &skin, list_colour(id))]));
-                    }
                 }
             }
             // Rien n'a changé : on le dit, sinon la commande semble sans effet
@@ -3577,6 +3566,17 @@ impl Server {
                     info!("{} a rejoint la partie", name);
                     self.broadcast(bedrock::ID_TEXT, &bedrock::text_raw(&format!("§e{} a rejoint la partie", shown)), None);
                     self.send_commands(&addr);
+                    // Le joueur figure dans sa propre liste des joueurs
+                    let own = match self.clients.get(&addr) {
+                        Some(c) if !self.player_list_refused && c.protocol == 2225 => c.skin.clone().map(|s| (c.id, c.name.clone().unwrap_or_default(), s)),
+                        _ => None,
+                    };
+                    if let Some((id, name, skin)) = own {
+                        let uuid = crate::crypto::sha256(name.to_lowercase().as_bytes());
+                        let mut id16 = [0u8; 16];
+                        id16.copy_from_slice(&uuid[..16]);
+                        self.send(&addr, bedrock::ID_PLAYER_LIST, &bedrock::player_list_add(&[(&id16, id, &name, &skin, list_colour(id))]));
+                    }
                     self.emit("join", &[LVal::Player(name)]);
                 }
                 _ => {}
