@@ -280,6 +280,8 @@ struct Client {
     data: Option<PlayerData>,
     /// Vrai si le joueur vient pour la première fois (aucune sauvegarde trouvée)
     first_visit: bool,
+    /// Le jeu a signalé un paquet illisible : son départ ne dit rien sur la liste d'objets
+    reported_error: bool,
 }
 
 pub struct Server {
@@ -315,6 +317,8 @@ pub struct Server {
     teleport_warned: bool,
     /// Heure du monde au démarrage (en ticks de jeu), décalée par /time
     time_base: i64,
+    /// Le jeu a refusé le paquet qui fait apparaître un autre joueur : il n'est plus envoyé
+    add_player_refused: bool,
     /// Boutons enfoncés à relâcher : (tick, position, état au repos)
     releases: Vec<(u64, (i32, i32, i32), u32)>,
     started: Instant,
@@ -456,6 +460,7 @@ impl Server {
             edits: HashMap::new(),
             teleport_warned: false,
             time_base: 6000,
+            add_player_refused: false,
             releases: Vec::new(),
             started: Instant::now(),
             world: crate::world::World::new(),
@@ -936,6 +941,7 @@ impl Server {
         let range = self.cfg.player_view;
         let cap = self.cfg.max_visible;
         let gamemode = self.cfg.gamemode.eq_ignore_ascii_case("creative") as i32;
+        let hidden = self.add_player_refused;
         let mut out: Vec<(SocketAddr, Vec<u8>)> = Vec::new();
         for (addr, c) in self.clients.iter_mut() {
             if !(c.joined && c.stage == Stage::InGame) {
@@ -970,7 +976,7 @@ impl Server {
                                     break 'scan;
                                 }
                                 let o = &players[i];
-                                if o.id != c.id && c.visible.insert(o.id) {
+                                if o.id != c.id && !hidden && c.visible.insert(o.id) {
                                     let uuid = crate::crypto::sha256(o.name.to_lowercase().as_bytes());
                                     let mut id16 = [0u8; 16];
                                     id16.copy_from_slice(&uuid[..16]);
@@ -2777,6 +2783,14 @@ impl Server {
                     crate::log::clean(&String::from_utf8_lossy(context), 300)
                 );
                 warn!("{} : détail brut : {}", addr, hex);
+                if let Some(c) = self.clients.get_mut(&addr) {
+                    c.reported_error = true;
+                }
+                if packet == bedrock::ID_ADD_PLAYER as i32 && !self.add_player_refused {
+                    // Sans ce repli, chaque arrivée d'un second joueur déconnecterait tout le monde
+                    self.add_player_refused = true;
+                    warn!("L'apparition des autres joueurs est refusée par le jeu : elle est désactivée. Les joueurs peuvent se reconnecter et jouer, mais ne se verront pas.");
+                }
                 let from_give = packet == 49 && self.clients.get(&addr).map(|c| c.inv_touched).unwrap_or(false);
                 let relayed = packet >= 0 && self.captured(&addr, packet as u32).is_some();
                 if relayed {
@@ -3184,6 +3198,7 @@ impl Server {
                         visible: HashSet::new(),
                         data: None,
                         first_visit: false,
+                        reported_error: false,
                     });
                 self.next_id += 1;
                 self.emit("connect", &[LVal::Str(addr.ip().to_string())]);
@@ -3197,6 +3212,7 @@ impl Server {
                         && fault.is_none()
                         && c.protocol >= 2225
                         && !c.inv_touched
+                        && !c.reported_error
                         && c.inputs < 200
                         && (c.stage == Stage::Spawning || (c.stage == Stage::InGame && c.inputs > 0))
                     {

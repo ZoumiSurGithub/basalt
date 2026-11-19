@@ -65,7 +65,9 @@ pub fn add_player(uuid: &[u8; 16], name: &str, id: i64, pos: (f32, f32, f32), pi
     w.f32(pitch);
     w.f32(yaw);
     w.f32(yaw); // rotation de la tête
-    w.vari32(0); // objet tenu : aucun
+    // Objet tenu : aucun. Même écriture qu'une case vide d'inventaire (relevée avec le jeu
+    // 1.26.65 : huit octets nuls), et non un simple zéro comme autrefois.
+    super::item_stack(&mut w, 0, 0, 0, 0);
     w.vari32(gamemode);
     // Données de l'entité : drapeaux (nom visible, collisions, gravité) et nom affiché
     w.varu32(2);
