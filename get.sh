@@ -3,7 +3,7 @@
 # publiée sur GitHub. Rien à compiler.
 #
 #   mkdir basalt && cd basalt
-#   curl -sSfL https://raw.githubusercontent.com/@REPO@/main/get.sh | sh
+#   curl -sSfL https://raw.githubusercontent.com/ZoumiSurGithub/basalt/main/get.sh | sh
 #
 # Relancer la même commande (ou ./update.sh) met le serveur à jour. Ne sont jamais touchés :
 # server.properties, le monde, les listes (ops, liste blanche), les clés et vos plugins.
@@ -12,7 +12,7 @@
 #                                 -v v0.2.0  installe cette version précise
 set -eu
 
-REPO="${BASALT_REPO:-@REPO@}"
+REPO="${BASALT_REPO:-ZoumiSurGithub/basalt}"
 FORCE=0
 WANTED=""
 while [ $# -gt 0 ]; do

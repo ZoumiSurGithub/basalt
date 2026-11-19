@@ -268,7 +268,7 @@ Rien à compiler : la dernière version publiée est téléchargée dans le doss
 
 ```sh
 mkdir basalt && cd basalt
-curl -sSfL https://raw.githubusercontent.com/@REPO@/main/get.sh | sh
+curl -sSfL https://raw.githubusercontent.com/ZoumiSurGithub/basalt/main/get.sh | sh
 ./start.sh
 ```
 
@@ -276,8 +276,7 @@ Pour mettre à jour : `./update.sh`, puis redémarrez le serveur. La configurati
 les listes et vos plugins ne sont jamais touchés ; l'archive est vérifiée par son empreinte
 SHA-256 avant toute modification. Les plugins demandent `sudo apt install liblua5.4-0`.
 
-**Publier une version** (une fois le projet sur GitHub) : remplacez `@REPO@` par
-`proprietaire/depot` dans `get.sh` et ce fichier, puis créez une étiquette :
+**Publier une version** : créez une étiquette et envoyez-la.
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0
