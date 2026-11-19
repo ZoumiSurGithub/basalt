@@ -2212,6 +2212,7 @@ impl Server {
             info!("{} : bloc cassé en {} {} {}", addr, x, y, z);
         }
         self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, air), Some(*addr));
+        self.refresh_stairs_around((x, y, z));
         // Une porte part en entier : l'autre moitié disparaît avec elle
         let other_half = self.data.as_ref().and_then(|d| {
             let p = match d.prop(old, "upper_block_bit")? {
@@ -2735,7 +2736,8 @@ impl Server {
             info!("{} : bloc posé en {} {} {} — {}, face cliquée {}, regard vers {} (angle annoncé {:.0})", addr, x, y, z, name, face, side, yaw);
         }
         // Le poseur reçoit aussi l'état retenu : son jeu a pu prévoir une autre orientation
-        self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, block), if block == default { Some(*addr) } else { None });
+        self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, block), None);
+        self.refresh_stairs_around((x, y, z));
         if let Some(upper) = upper {
             if self.world.set(x, y + 1, z, upper) {
                 self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y + 1, z, upper), None);
@@ -2775,6 +2777,24 @@ impl Server {
     }
 
     /// Change un bloc et l'annonce à tout le monde.
+    /// Renvoie l'état des escaliers voisins d'un bloc qui vient de changer : le jeu redessine
+    /// alors leurs coins tout de suite, au lieu d'attendre le prochain chargement du terrain.
+    fn refresh_stairs_around(&mut self, pos: (i32, i32, i32)) {
+        let mut again: Vec<(i32, i32, i32, u32)> = Vec::new();
+        if let Some(d) = &self.data {
+            for (dx, dz) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let (x, y, z) = (pos.0 + dx, pos.1, pos.2 + dz);
+                let state = self.world.get(x, y, z);
+                if d.block_name(state).map(|n| n.ends_with("stairs")).unwrap_or(false) {
+                    again.push((x, y, z, state));
+                }
+            }
+        }
+        for (x, y, z, state) in again {
+            self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, state), None);
+        }
+    }
+
     fn change_block(&mut self, pos: (i32, i32, i32), state: u32) {
         if self.world.set(pos.0, pos.1, pos.2, state) {
             self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(pos.0, pos.1, pos.2, state), None);
