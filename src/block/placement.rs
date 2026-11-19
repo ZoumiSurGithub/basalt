@@ -92,6 +92,80 @@ fn word(face: u8) -> &'static str {
     }
 }
 
+/// Escalier lu dans un état de bloc : (face vers laquelle il monte, à l'envers, coin).
+/// None si ce n'est pas un escalier, ou si cette version du jeu ne note pas les coins.
+pub fn stair_of(data: &GameData, state: u32) -> Option<(u8, bool, String)> {
+    if !data.block_name(state)?.ends_with("stairs") {
+        return None;
+    }
+    let corner = match data.prop(state, "minecraft:corner")? {
+        Prop::Str(s) => s,
+        _ => return None,
+    };
+    let facing = match data.prop(state, "weirdo_direction")? {
+        Prop::Int(0) => EAST,
+        Prop::Int(1) => WEST,
+        Prop::Int(2) => SOUTH,
+        _ => NORTH,
+    };
+    let top = matches!(data.prop(state, "upside_down_bit"), Some(Prop::Int(1)));
+    Some((facing, top, corner))
+}
+
+/// Forme d'un escalier d'après ses voisins : (face, coin). `at(dx, dz)` donne l'escalier
+/// voisin (face, à l'envers) s'il y en a un.
+///
+/// Règle du jeu : un escalier perpendiculaire devant donne un coin extérieur, un escalier
+/// perpendiculaire derrière un coin intérieur. Le jeu ne note que les coins « droits » : un
+/// coin gauche s'écrit comme le coin droit de l'escalier tourné d'un quart de tour à gauche.
+pub fn stair_shape(facing: u8, top: bool, at: &dyn Fn(i32, i32) -> Option<(u8, bool)>) -> (u8, &'static str) {
+    let near = |face: u8| {
+        let (dx, dz) = step(face);
+        at(dx, dz)
+    };
+    let perpendicular = |g: u8| g != facing && g != opposite(facing);
+    // Le coin ne se forme pas si un escalier identique prolonge déjà la rangée de ce côté
+    let free = |face: u8| !matches!(near(face), Some((g, t)) if g == facing && t == top);
+    if let Some((g, t)) = near(facing) {
+        if t == top && perpendicular(g) && free(opposite(g)) {
+            return if g == left_of(facing) { (left_of(facing), "outer_right") } else { (facing, "outer_right") };
+        }
+    }
+    if let Some((g, t)) = near(opposite(facing)) {
+        if t == top && perpendicular(g) && free(g) {
+            return if g == left_of(facing) { (left_of(facing), "inner_right") } else { (facing, "inner_right") };
+        }
+    }
+    (facing, "none")
+}
+
+/// État qu'un escalier doit prendre compte tenu de ses voisins (None : inchangé ou pas un escalier).
+pub fn settled_stair(data: &GameData, state: u32, at: &dyn Fn(i32, i32) -> Option<(u8, bool)>) -> Option<u32> {
+    let (facing, top, corner) = stair_of(data, state)?;
+    // Un coin déjà formé a pu être noté tourné d'un quart de tour : les deux lectures sont essayées
+    let candidates = if corner == "none" { vec![facing] } else { vec![facing, right_of(facing)] };
+    let mut best = (facing, "none");
+    for f in candidates {
+        let shape = stair_shape(f, top, at);
+        if shape.1 != "none" {
+            best = shape;
+            break;
+        }
+    }
+    let direction = match best.0 {
+        EAST => 0,
+        WEST => 1,
+        SOUTH => 2,
+        _ => 3,
+    };
+    let new = data.with_props(state, &[("weirdo_direction", Prop::Int(direction)), ("minecraft:corner", Prop::Str(best.1.to_string()))])?;
+    if new == state {
+        None
+    } else {
+        Some(new)
+    }
+}
+
 /// État d'un bloc posé dans ces circonstances, à partir de son état par défaut.
 pub fn placed_state(data: &GameData, default: u32, p: Placement) -> u32 {
     let name = data.block_name(default).unwrap_or("").to_string();
@@ -222,6 +296,35 @@ pub fn is_door(data: &GameData, state: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stairs_form_corners_with_their_neighbours() {
+        // Seul : droit
+        assert_eq!(stair_shape(NORTH, false, &|_, _| None), (NORTH, "none"));
+        // Escalier perpendiculaire devant (au nord), montant vers l'est : coin extérieur droit
+        let front_east = |dx: i32, dz: i32| if (dx, dz) == (0, -1) { Some((EAST, false)) } else { None };
+        assert_eq!(stair_shape(NORTH, false, &front_east), (NORTH, "outer_right"));
+        // Le même montant vers l'ouest : coin extérieur gauche, noté tourné d'un quart de tour
+        let front_west = |dx: i32, dz: i32| if (dx, dz) == (0, -1) { Some((WEST, false)) } else { None };
+        assert_eq!(stair_shape(NORTH, false, &front_west), (WEST, "outer_right"));
+        // Escalier perpendiculaire derrière (au sud) : coin intérieur
+        let back_east = |dx: i32, dz: i32| if (dx, dz) == (0, 1) { Some((EAST, false)) } else { None };
+        assert_eq!(stair_shape(NORTH, false, &back_east), (NORTH, "inner_right"));
+        let back_west = |dx: i32, dz: i32| if (dx, dz) == (0, 1) { Some((WEST, false)) } else { None };
+        assert_eq!(stair_shape(NORTH, false, &back_west), (WEST, "inner_right"));
+        // Pas de coin avec un escalier à l'envers, ni avec un escalier dans le même axe
+        let upside_down = |dx: i32, dz: i32| if (dx, dz) == (0, -1) { Some((EAST, true)) } else { None };
+        assert_eq!(stair_shape(NORTH, false, &upside_down), (NORTH, "none"));
+        let same_axis = |dx: i32, dz: i32| if (dx, dz) == (0, -1) { Some((SOUTH, false)) } else { None };
+        assert_eq!(stair_shape(NORTH, false, &same_axis), (NORTH, "none"));
+        // Pas de coin si la rangée continue déjà de ce côté
+        let row = |dx: i32, dz: i32| match (dx, dz) {
+            (0, -1) => Some((EAST, false)),
+            (-1, 0) => Some((NORTH, false)),
+            _ => None,
+        };
+        assert_eq!(stair_shape(NORTH, false, &row), (NORTH, "none"));
+    }
 
     #[test]
     fn the_player_looks_where_the_yaw_says() {

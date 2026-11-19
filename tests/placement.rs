@@ -77,3 +77,21 @@ fn doors_levers_and_buttons_react_to_a_click() {
     assert!(placement::toggled(&d, d.default_state("minecraft:iron_door").unwrap()).is_none());
     assert!(placement::toggled(&d, d.default_state("minecraft:stone").unwrap()).is_none());
 }
+
+#[test]
+fn stairs_take_a_corner_state_from_their_neighbours() {
+    let d = data();
+    // Escalier montant vers le nord, avec devant lui un escalier montant vers l'est
+    let north = place(&d, "minecraft:oak_stairs", placement::UP, 1.0, 180.0);
+    assert_eq!(placement::stair_of(&d, north), Some((placement::NORTH, false, "none".to_string())));
+    let front = |dx: i32, dz: i32| if (dx, dz) == (0, -1) { Some((placement::EAST, false)) } else { None };
+    let corner = placement::settled_stair(&d, north, &front).expect("un coin se forme");
+    assert_eq!(d.prop(corner, "minecraft:corner"), Some(Prop::Str("outer_right".to_string())));
+    assert_eq!(d.block_name(corner), Some("minecraft:oak_stairs"));
+    // Le voisin retiré, l'escalier redevient droit ; seul, il ne change pas
+    let straight = placement::settled_stair(&d, corner, &|_, _| None).expect("le coin disparaît");
+    assert_eq!(straight, north);
+    assert_eq!(placement::settled_stair(&d, north, &|_, _| None), None);
+    // Une planche n'est pas un escalier
+    assert_eq!(placement::settled_stair(&d, d.default_state("minecraft:oak_planks").unwrap(), &front), None);
+}
