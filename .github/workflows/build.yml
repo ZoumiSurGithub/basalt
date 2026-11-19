@@ -24,6 +24,9 @@ jobs:
         run: |
           mkdir basalt
           cp -r target/release/basalt plugins data docs README.md LICENSE basalt.service start.sh update.sh basalt/
+          # Lua 5.4 est livré avec le serveur : rien à installer sur la machine d'arrivée
+          cp -L /usr/lib/x86_64-linux-gnu/liblua5.4.so.0 basalt/liblua5.4.so.0
+          cp /usr/share/doc/liblua5.4-0/copyright basalt/LICENCE-Lua.txt
           # Le dépôt d'où viendront les mises à jour est inscrit dans update.sh
           sed -i "s|@REPO@|${GITHUB_REPOSITORY}|g" basalt/update.sh
           chmod 755 basalt/basalt basalt/start.sh basalt/update.sh
@@ -79,6 +82,9 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
+          # Une étiquette avec un tiret (v0.3.0-dev.1) est une préversion : elle n'est pas
+          # proposée par défaut par get.sh
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             basalt-linux-x64.tar.gz
             basalt-linux-x64.tar.gz.sha256

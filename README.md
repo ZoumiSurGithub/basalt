@@ -274,7 +274,8 @@ curl -sSfL https://raw.githubusercontent.com/ZoumiSurGithub/basalt/main/get.sh |
 
 Pour mettre à jour : `./update.sh`, puis redémarrez le serveur. La configuration, le monde,
 les listes et vos plugins ne sont jamais touchés ; l'archive est vérifiée par son empreinte
-SHA-256 avant toute modification. Les plugins demandent `sudo apt install liblua5.4-0`.
+SHA-256 avant toute modification. Lua 5.4, nécessaire aux plugins, est livré dans l'archive :
+rien à installer sur la machine.
 
 **Publier une version** : créez une étiquette et envoyez-la.
 

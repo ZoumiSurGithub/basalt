@@ -128,7 +128,7 @@ if [ -d "$SRC/plugins" ]; then
         cp -r "$d". "plugins/$(basename "$d")/"
     done
 fi
-for f in start.sh update.sh README.md LICENSE basalt.service; do
+for f in start.sh update.sh README.md LICENSE LICENCE-Lua.txt liblua5.4.so.0 basalt.service; do
     [ -f "$SRC/$f" ] && cp "$SRC/$f" "./$f"
 done
 [ -f start.sh ] && chmod 755 start.sh
@@ -136,9 +136,9 @@ done
 [ -d "$SRC/docs" ] && { rm -rf ./docs; cp -r "$SRC/docs" ./docs; }
 printf '%s\n' "$VERSION" > .version
 
-# Les plugins ont besoin de la bibliothèque Lua 5.4 du système
+# Lua 5.4 (pour les plugins) est livré avec le serveur ; à défaut, celui du système sert
 HAS_LUA=0
-for lib in /usr/lib/*/liblua5.4.so* /usr/lib/liblua5.4.so* /usr/lib64/liblua*5.4* /usr/local/lib/liblua*5.4*; do
+for lib in ./liblua5.4.so.0 /usr/lib/*/liblua5.4.so* /usr/lib/liblua5.4.so* /usr/lib64/liblua*5.4* /usr/local/lib/liblua*5.4*; do
     [ -e "$lib" ] && HAS_LUA=1
 done
 if [ "$HAS_LUA" = 0 ]; then

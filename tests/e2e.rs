@@ -46,6 +46,8 @@ struct Client {
     inbox: std::collections::VecDeque<Vec<u8>>,
     parts: std::collections::HashMap<u16, Vec<Option<Vec<u8>>>>,
     games: std::collections::VecDeque<(u32, Vec<u8>)>,
+    /// Datagrammes reçus pas encore acquittés (acquittés par lots, comme un vrai client)
+    to_ack: Vec<[u8; 3]>,
 }
 
 impl Client {
@@ -53,7 +55,7 @@ impl Client {
         let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
         sock.connect(server).unwrap();
         sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-        Client { sock, seq: 0, ridx: 0, oidx: 0, inbox: Default::default(), parts: Default::default(), games: Default::default() }
+        Client { sock, seq: 0, ridx: 0, oidx: 0, inbox: Default::default(), parts: Default::default(), games: Default::default(), to_ack: Vec::new() }
     }
 
     fn recv_raw(&self) -> Vec<u8> {
@@ -153,9 +155,35 @@ impl Client {
             if let Some(p) = self.inbox.pop_front() {
                 return p;
             }
-            let r = self.recv_raw();
+            // S'il reste des datagrammes déjà arrivés, on les lit d'abord ; sinon tout ce qui
+            // a été reçu est acquitté avant d'attendre la suite
+            let mut buf = [0u8; 2048];
+            self.sock.set_nonblocking(true).unwrap();
+            let ready = self.sock.recv(&mut buf).ok();
+            self.sock.set_nonblocking(false).unwrap();
+            let r = match ready {
+                Some(n) => buf[..n].to_vec(),
+                None => {
+                    self.flush_acks();
+                    self.recv_raw()
+                }
+            };
             self.feed(&r);
         }
+    }
+
+    /// Envoie en un seul datagramme les accusés de réception en attente.
+    fn flush_acks(&mut self) {
+        if self.to_ack.is_empty() {
+            return;
+        }
+        let mut ack = vec![0xc0];
+        ack.extend_from_slice(&(self.to_ack.len() as u16).to_be_bytes());
+        for seq in self.to_ack.drain(..) {
+            ack.push(1); // un seul numéro
+            ack.extend_from_slice(&seq);
+        }
+        self.sock.send(&ack).unwrap();
     }
 
     /// Traite un datagramme reçu : acquitte et range les paquets complets.
@@ -164,9 +192,12 @@ impl Client {
             if r[0] & 0x40 != 0 || r[0] & 0x20 != 0 {
                 return;
             }
-            let mut ack = vec![0xc0, 0, 1, 1];
-            ack.extend_from_slice(&r[1..4]);
-            self.sock.send(&ack).unwrap();
+            // Un accusé par datagramme ferait dépasser la limite de débit du serveur pendant
+            // l'envoi des grosses listes (recettes, objets) : on les regroupe
+            self.to_ack.push([r[1], r[2], r[3]]);
+            if self.to_ack.len() >= 32 {
+                self.flush_acks();
+            }
             let mut pos = 4;
             while pos < r.len() {
                 let flags = r[pos];
@@ -266,6 +297,7 @@ impl Client {
             let d = buf[..n].to_vec();
             self.feed(&d);
         }
+        self.flush_acks();
         self.sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         while let Some(p) = self.inbox.pop_front() {
             self.unpack(&p, true);
@@ -393,9 +425,6 @@ fn start_opts(dir: &PathBuf, max_per_ip: usize, xbox_auth: bool) -> (SocketAddr,
         cfg.nethernet_udp_port = 0;
         cfg.gamemode = "Creative".into();
         cfg.debug = std::env::var("BASALT_TEST_DEBUG").is_ok();
-        // La liste des commandes (plus de 150 datagrammes) ferait dépasser au client de test,
-        // qui acquitte chaque datagramme séparément, la limite de débit par connexion
-        cfg.commands_in_game = false;
         cfg.auth_keys_file = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/auth/keys.json").into();
         let mut server = Server::new(cfg).unwrap();
         tx.send(server.local_addr().unwrap()).unwrap();

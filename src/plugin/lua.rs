@@ -203,11 +203,27 @@ impl Api {
     fn load() -> Result<&'static Api, String> {
         unsafe {
             let mut h = std::ptr::null_mut();
+            // D'abord la bibliothèque livrée à côté du serveur (rien à installer sur la
+            // machine), puis celle du système
+            if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+                for name in dl::NAMES {
+                    let path = dir.join(name.trim_end_matches('\0'));
+                    if !path.is_file() {
+                        continue;
+                    }
+                    if let Some(text) = path.to_str() {
+                        h = dl::open(&format!("{}\0", text));
+                        if !h.is_null() {
+                            break;
+                        }
+                    }
+                }
+            }
             for name in dl::NAMES {
-                h = dl::open(name);
                 if !h.is_null() {
                     break;
                 }
+                h = dl::open(name);
             }
             if h.is_null() {
                 return Err("bibliothèque Lua 5.4 introuvable".into());
