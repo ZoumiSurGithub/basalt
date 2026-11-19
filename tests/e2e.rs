@@ -1052,9 +1052,19 @@ fn a_chest_opens_and_keeps_what_is_put_in_it() {
     command(&mut steve, "/timings report");
     expect_text(&mut steve, "Mesures sur");
     expect_text(&mut steve, "Rapport complet");
-    let reports: Vec<_> = std::fs::read_dir(dir.join("timings")).unwrap().flatten().collect();
-    assert_eq!(reports.len(), 1);
-    let text = std::fs::read_to_string(reports[0].path()).unwrap();
+    // Le rapport est écrit en arrière-plan : on lui laisse quelques secondes
+    let mut text = String::new();
+    for _ in 0..100 {
+        let reports: Vec<_> = std::fs::read_dir(dir.join("timings")).map(|d| d.flatten().collect()).unwrap_or_default();
+        if let Some(r) = reports.first() {
+            assert_eq!(reports.len(), 1);
+            text = std::fs::read_to_string(r.path()).unwrap_or_default();
+            if text.contains("Tick complet") {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert!(text.contains("Tick complet") && text.contains("Réseau — lecture RakNet") && text.contains("Tick — joueurs vus par les autres"), "{}", text);
     command(&mut steve, "/timings off");
     expect_text(&mut steve, "Mesures éteintes");
