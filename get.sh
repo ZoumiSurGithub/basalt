@@ -10,6 +10,7 @@
 #
 # Options (après « sh -s -- ») :  -f  réinstalle même si la version est déjà la bonne
 #                                 -v v0.2.0  installe cette version précise
+#                                 -v dev (ou -d)  installe le dernier envoi sur la branche dev
 set -eu
 
 REPO="${BASALT_REPO:-ZoumiSurGithub/basalt}"
@@ -19,6 +20,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -f) FORCE=1 ;;
         -v) shift; WANTED="${1:-}" ;;
+        -d) WANTED="dev" ;;
         *) echo "Option inconnue : $1" >&2; exit 2 ;;
     esac
     shift
@@ -61,6 +63,11 @@ else
     case "$WANTED" in
         *[!A-Za-z0-9._-]*) die "Nom de version invalide : $WANTED" ;;
     esac
+    # « dev » : la préversion que chaque envoi sur la branche dev remplace
+    if [ "$WANTED" = "dev" ]; then
+        WANTED="dev-latest"
+        FORCE=1
+    fi
     VERSION="$WANTED"
     BASE="https://github.com/$REPO/releases/download/$VERSION"
 fi
@@ -75,13 +82,19 @@ fi
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/basalt-get.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
-if [ -n "$CURRENT" ]; then
+if [ "$VERSION" = "dev-latest" ]; then
+    say "Installation du dernier envoi sur la branche dev"
+elif [ -n "$CURRENT" ]; then
     say "Mise à jour : $CURRENT -> $VERSION"
 else
     say "Installation de Basalt $VERSION dans $(pwd)"
 fi
 say "Téléchargement de $ASSET…"
-curl -sSfL --proto '=https,file' -o "$TMP/$ASSET" "$BASE/$ASSET" || die "Téléchargement impossible : $BASE/$ASSET"
+if ! curl -sSfL --proto '=https,file' -o "$TMP/$ASSET" "$BASE/$ASSET"; then
+    warn "La version $VERSION n'est pas (encore) publiée. Après l'envoi d'une étiquette, GitHub met"
+    warn "une dizaine de minutes à la compiler : https://github.com/$REPO/actions"
+    die "Téléchargement impossible : $BASE/$ASSET"
+fi
 curl -sSfL --proto '=https,file' -o "$TMP/$ASSET.sha256" "$BASE/$ASSET.sha256" || die "Somme de contrôle introuvable : $BASE/$ASSET.sha256"
 
 # Vérification : l'archive doit correspondre à l'empreinte publiée avec elle

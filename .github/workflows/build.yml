@@ -1,6 +1,6 @@
-# Teste le projet a chaque envoi. Sur une etiquette "v*" (ex. v0.2.0),
-# publie une version GitHub avec des archives pretes a l'emploi :
-# c'est ce que telecharge l'outil de mise a jour Windows (-Repo proprietaire/depot).
+# Teste le projet a chaque envoi. Sur une etiquette "v*" (ex. v0.2.0), publie une version
+# GitHub avec des archives pretes a l'emploi : c'est ce que telechargent get.sh et update.sh.
+# Une etiquette avec un tiret (v0.3.0-dev.1) donne une preversion.
 name: build
 on:
   push:
@@ -11,23 +11,31 @@ on:
 permissions:
   contents: write
 
+# Un nouvel envoi sur la meme branche annule la compilation precedente, devenue inutile
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux:
-    # Ubuntu 22.04 : l'exécutable fonctionne aussi sous Debian 12 et les Ubuntu plus récents
+    # Ubuntu 22.04 : l'executable fonctionne aussi sous Debian 12 et les Ubuntu plus recents
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      # Les bibliotheques deja compilees sont gardees d'une fois sur l'autre : seul Basalt
+      # est recompile, ce qui ramene la duree de plusieurs minutes a une ou deux
+      - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y liblua5.4-0
-      - run: cargo test --release --locked
+      - run: cargo test --locked
       - run: cargo build --release --locked
       - name: Archive
         run: |
           mkdir basalt
           cp -r target/release/basalt plugins data docs README.md LICENSE basalt.service start.sh update.sh basalt/
-          # Lua 5.4 est livré avec le serveur : rien à installer sur la machine d'arrivée
+          # Lua 5.4 est livre avec le serveur : rien a installer sur la machine d'arrivee
           cp -L /usr/lib/x86_64-linux-gnu/liblua5.4.so.0 basalt/liblua5.4.so.0
           cp /usr/share/doc/liblua5.4-0/copyright basalt/LICENCE-Lua.txt
-          # Le dépôt d'où viendront les mises à jour est inscrit dans update.sh
+          # Le depot d'ou viendront les mises a jour est inscrit dans update.sh
           sed -i "s|@REPO@|${GITHUB_REPOSITORY}|g" basalt/update.sh
           chmod 755 basalt/basalt basalt/start.sh basalt/update.sh
           tar czf basalt-linux-x64.tar.gz basalt
@@ -38,11 +46,34 @@ jobs:
           path: |
             basalt-linux-x64.tar.gz
             basalt-linux-x64.tar.gz.sha256
+      # Publiee des que Linux est pret, sans attendre Windows
+      - name: Publication
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            basalt-linux-x64.tar.gz
+            basalt-linux-x64.tar.gz.sha256
+      # Branche « dev » : chaque envoi remplace la preversion « dev-latest », sans etiquette
+      # a poser. Installation : ./update.sh -v dev
+      - name: Publication de la branche dev
+        if: github.ref == 'refs/heads/dev'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev-latest
+          name: Version de développement (branche dev)
+          body: "Dernier envoi sur la branche dev (${{ github.sha }}). Remplacée à chaque envoi."
+          prerelease: true
+          files: |
+            basalt-linux-x64.tar.gz
+            basalt-linux-x64.tar.gz.sha256
 
   windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
       - uses: ilammy/msvc-dev-cmd@v1
       - name: Lua 5.4 (lua54.dll)
         shell: cmd
@@ -57,7 +88,7 @@ jobs:
         shell: cmd
         run: |
           set PATH=%CD%;%PATH%
-          cargo test --release --locked
+          cargo test --locked
       - run: cargo build --release --locked
       - name: Archive
         shell: pwsh
@@ -71,21 +102,17 @@ jobs:
         with:
           name: basalt-windows-x64
           path: basalt-windows-x64.zip
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, windows]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
+      - name: Publication
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
         with:
-          merge-multiple: true
-      - uses: softprops/action-gh-release@v2
-        with:
-          # Une étiquette avec un tiret (v0.3.0-dev.1) est une préversion : elle n'est pas
-          # proposée par défaut par get.sh
           prerelease: ${{ contains(github.ref_name, '-') }}
-          files: |
-            basalt-linux-x64.tar.gz
-            basalt-linux-x64.tar.gz.sha256
-            basalt-windows-x64.zip
+          files: basalt-windows-x64.zip
+      - name: Publication de la branche dev
+        if: github.ref == 'refs/heads/dev'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev-latest
+          name: Version de développement (branche dev)
+          prerelease: true
+          files: basalt-windows-x64.zip

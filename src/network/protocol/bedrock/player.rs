@@ -84,7 +84,8 @@ pub fn add_player(uuid: &[u8; 16], name: &str, id: i64, pos: (f32, f32, f32), pi
     w.u8(0); // permissions de commande
     w.u8(0); // aucune couche de capacités
     w.varu32(0); // liens
-    w.bool(false); // pas de bloc porteur
+    // (Pas d'autre champ ici : un octet de trop décalait la plateforme, que le jeu 1.26.65
+    // refusait alors comme « invalid enum value ».)
     w.string(""); // identifiant d'appareil
     w.i32(-1); // plateforme inconnue
     w.0
