@@ -306,6 +306,7 @@ impl NetherNet {
             return Err((503, "retry"));
         }
         let now = Instant::now();
+        let _t = crate::timings::scope("NetherNet — nouvelle connexion (préparation)");
         let mut rtc = Rtc::builder().build(now);
         // Candidats : l'adresse par laquelle le joueur a joint le serveur, plus celle que le
         // système utiliserait pour joindre chacune des adresses annoncées par le joueur
@@ -396,6 +397,7 @@ impl NetherNet {
                 continue;
             }
             if now >= peer.timeout {
+                let _t = crate::timings::scope("NetherNet — minuteries des liaisons");
                 if peer.rtc.handle_input(Input::Timeout(now)).is_err() {
                     peer.dead = Some(Some("erreur de la liaison WebRTC"));
                     continue;
@@ -498,10 +500,14 @@ impl NetherNet {
             }
         };
         let input = Input::Receive(now, Receive { proto: Protocol::Udp, source, destination, contents });
-        if peer.rtc.handle_input(input).is_err() {
-            peer.dead = Some(Some("datagramme WebRTC invalide"));
-            return;
+        {
+            let _t = crate::timings::scope("NetherNet — datagramme reçu (déchiffrement, négociation)");
+            if peer.rtc.handle_input(input).is_err() {
+                peer.dead = Some(Some("datagramme WebRTC invalide"));
+                return;
+            }
         }
+        let _t = crate::timings::scope("NetherNet — réponses et messages du jeu");
         peer.drain(&self.socket, events);
     }
 
@@ -527,6 +533,7 @@ impl NetherNet {
         if gone.is_empty() {
             return;
         }
+        let _t = crate::timings::scope("NetherNet — fin de session");
         for key in &gone {
             if let Some(mut peer) = self.peers.remove(key) {
                 peer.rtc.disconnect();

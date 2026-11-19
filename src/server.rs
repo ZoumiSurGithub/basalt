@@ -1784,7 +1784,8 @@ impl Server {
                     if timings::enable() {
                         self.reply(sender, "§aMesures allumées. Laissez tourner le serveur, puis lancez §f/timings report§a.");
                     } else {
-                        self.reply(sender, "§eLes mesures sont déjà allumées (§f/timings reset§e pour repartir de zéro).");
+                        // Déjà en marche : rien à faire, ce n'est pas une erreur
+                        self.reply(sender, "§aLes mesures tournent déjà. §f/timings report§a pour le rapport, §f/timings reset§a pour repartir de zéro.");
                     }
                 }
                 "off" => {
@@ -1796,7 +1797,11 @@ impl Server {
                 }
                 "reset" => {
                     timings::reset();
-                    self.reply(sender, "§aMesures remises à zéro.");
+                    if timings::is_enabled() {
+                        self.reply(sender, "§aCompteurs remis à zéro. Les mesures continuent : inutile de refaire §f/timings on§a.");
+                    } else {
+                        self.reply(sender, "§aCompteurs remis à zéro. Les mesures sont éteintes : §f/timings on§a pour les relancer.");
+                    }
                 }
                 "report" | "paste" => {
                     let header = vec![
@@ -3509,6 +3514,7 @@ impl Server {
             }
             RakEvent::Packet(addr, data) => self.on_packet(addr, data),
             RakEvent::Disconnected(addr, fault) => {
+                let _t = timings::scope("Départ d'un joueur (sauvegarde, annonce)");
                 if let Some(c) = self.clients.remove(&addr) {
                     // Mise au point : le jeu est parti de lui-même juste après l'apparition
                     // (écran d'erreur « Block ») : on passe à l'expérience suivante.
@@ -4118,9 +4124,12 @@ impl Server {
         let mut next_tick = Instant::now() + TICK;
         while self.running && !stop.load(Ordering::Relaxed) {
             let read = {
-                let _t = timings::scope("Réseau — lecture");
-                let mut read = self.rak.poll(&mut events);
+                let mut read = {
+                    let _t = timings::scope("Réseau — lecture RakNet");
+                    self.rak.poll(&mut events)
+                };
                 if let Some(n) = self.nether.as_mut() {
+                    let _t = timings::scope("Réseau — lecture NetherNet");
                     read += n.poll(&mut events);
                 }
                 read

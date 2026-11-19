@@ -1010,7 +1010,7 @@ fn a_chest_opens_and_keeps_what_is_put_in_it() {
     let reports: Vec<_> = std::fs::read_dir(dir.join("timings")).unwrap().flatten().collect();
     assert_eq!(reports.len(), 1);
     let text = std::fs::read_to_string(reports[0].path()).unwrap();
-    assert!(text.contains("Tick complet") && text.contains("Réseau — lecture") && text.contains("Tick — joueurs vus par les autres"), "{}", text);
+    assert!(text.contains("Tick complet") && text.contains("Réseau — lecture RakNet") && text.contains("Tick — joueurs vus par les autres"), "{}", text);
     command(&mut steve, "/timings off");
     expect_text(&mut steve, "Mesures éteintes");
 
