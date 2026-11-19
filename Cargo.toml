@@ -1,0 +1,35 @@
+[package]
+name = "basalt"
+version = "0.1.0"
+edition = "2021"
+description = "Serveur Minecraft Bedrock léger, écrit en Rust, avec plugins Lua"
+license = "MIT"
+
+# Le cœur du serveur ne dépend que de la bibliothèque standard. Seul le transport
+# NetherNet (liaison WebRTC exigée par les jeux 1.26.60 et plus) s'appuie sur des
+# bibliothèques externes, toutes en Rust pur : aucun compilateur C ni OpenSSL requis.
+#   cargo build --release                         avec NetherNet (par défaut)
+#   cargo build --release --no-default-features --features nethernet   sans l'outil de capture
+#   cargo build --release --no-default-features   sans NetherNet, sans dépendance
+[features]
+default = ["nethernet", "capture"]
+nethernet = ["dep:str0m", "dep:p384"]
+# Outil « basalt capture » : enregistre les données du jeu auprès du serveur officiel
+capture = ["nethernet"]
+
+[dependencies]
+str0m = { version = "0.25", default-features = false, features = ["rust-crypto"], optional = true }
+p384 = { version = "0.13", optional = true }
+
+[profile.release]
+opt-level = 3
+# « thin » : presque aussi rapide à l'exécution que l'optimisation complète, mais
+# plusieurs fois plus rapide à compiler. Pour un binaire de production poussé au
+# maximum : cargo build --profile production
+lto = "thin"
+strip = true
+
+[profile.production]
+inherits = "release"
+lto = true
+codegen-units = 1

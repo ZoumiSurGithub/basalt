@@ -1,0 +1,13 @@
+target/
+dist/
+server.properties
+auth-keys.json
+logs/
+server-identity.key
+build-errors.txt
+world/
+ops.txt
+white-list.txt
+*.key
+Cargo.lock.bak
+.version

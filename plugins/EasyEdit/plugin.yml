@@ -1,0 +1,95 @@
+# EasyEdit pour Basalt : édition du monde en volume, sur le modèle du plugin EasyEdit de
+# PocketMine. Les commandes sont celles du jeu (/set stone).
+name: EasyEdit
+version: 1.0.0
+main: main.lua
+api: 1
+description: Édition du monde en volume (sélection, remplissage, copier-coller, annulation)
+author: Basalt
+
+commands:
+  wand:
+    description: Donne la baguette de sélection (hache en bois)
+    usage: "/wand"
+    permission: easyedit.use
+  pos1:
+    description: Premier coin de la sélection, là où vous êtes
+    usage: "/pos1"
+    permission: easyedit.use
+  pos2:
+    description: Second coin de la sélection, là où vous êtes
+    usage: "/pos2"
+    permission: easyedit.use
+  size:
+    description: Affiche la sélection en cours
+    usage: "/size"
+    permission: easyedit.use
+  set:
+    description: Remplit la sélection
+    usage: "/set <bloc:block> | /set <motif:text>   (plusieurs blocs : stone,dirt)"
+    permission: easyedit.use
+  replace:
+    description: Remplace un bloc par un autre dans la sélection
+    usage: "/replace <ancien:block> <nouveau:block>"
+    permission: easyedit.use
+  walls:
+    description: Construit les quatre murs de la sélection
+    usage: "/walls <bloc:block>"
+    permission: easyedit.use
+  sphere:
+    description: Sphère pleine autour de vous
+    usage: "/sphere <bloc:block> <rayon:int>"
+    permission: easyedit.use
+  hsphere:
+    description: Sphère creuse autour de vous
+    usage: "/hsphere <bloc:block> <rayon:int>"
+    permission: easyedit.use
+  cyl:
+    description: Cylindre plein sous vos pieds
+    usage: "/cyl <bloc:block> <rayon:int> [hauteur:int]"
+    permission: easyedit.use
+  hcyl:
+    description: Cylindre creux sous vos pieds
+    usage: "/hcyl <bloc:block> <rayon:int> [hauteur:int]"
+    permission: easyedit.use
+  copy:
+    description: Copie la sélection, par rapport à votre position
+    usage: "/copy"
+    permission: easyedit.use
+  cut:
+    description: Copie la sélection puis la vide
+    usage: "/cut"
+    permission: easyedit.use
+  paste:
+    description: Colle ce qui a été copié, par rapport à votre position
+    usage: "/paste [option:a|-a]   (a : sans les vides)"
+    permission: easyedit.use
+  stack:
+    description: Répète la sélection dans une direction
+    usage: "/stack [fois:int] [direction:north|south|east|west|up|down] | /stack <direction:north|south|east|west|up|down>"
+    permission: easyedit.use
+  move:
+    description: Déplace la sélection dans une direction
+    usage: "/move [blocs:int] [direction:north|south|east|west|up|down] | /move <direction:north|south|east|west|up|down>"
+    permission: easyedit.use
+  count:
+    description: Compte les blocs de la sélection
+    usage: "/count [bloc:block]"
+    permission: easyedit.use
+  undo:
+    description: Annule votre dernière opération
+    usage: "/undo"
+    permission: easyedit.use
+  redo:
+    description: Refait l'opération annulée
+    usage: "/redo"
+    permission: easyedit.use
+  easyedit:
+    description: Liste les commandes d'EasyEdit
+    usage: "/easyedit"
+    permission: easyedit.use
+
+permissions:
+  easyedit.use:
+    description: Autorise l'édition du monde en volume
+    default: op

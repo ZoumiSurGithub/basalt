@@ -1,0 +1,13 @@
+{
+ "issuer": "https://authorization.franchise.minecraft-services.net",
+ "keys": [
+  {
+   "kty": "RSA",
+   "kid": "test-key-1",
+   "use": "sig",
+   "alg": "RS256",
+   "n": "xZPRrBkrnacY_RK7EJwiZYvF1svpnqLYaXGRBVj7X6ysHXYPLynN0XAR-2uEOSEMONXXRv7c32ZJAujMVKlfEwJa4iqdTLfZLXij_5xyeQUtooEoIevHs9c9zD0GweJbwxhmCge7xCVvQKYU2HxVm_IudBMNTX0Rn53es40RO6XyC8VITFsz2c31ZXjM-f0OPAU04fDQt0N89_aCQpyI-WJjHZd0luzSyS9gjI2cqpKpXO8RRSM-3OUQGh-rlra0CNRFP_MNKvbboGPcYxqBjPZGWcJ7EQLS_2sNw-jTTr6Pw7bpZNMBJEZ7BJvdb4CXlHNoIi2E7EEpZmEHThbzbQ",
+   "e": "AQAB"
+  }
+ ]
+}

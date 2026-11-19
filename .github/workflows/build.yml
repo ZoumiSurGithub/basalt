@@ -1,0 +1,85 @@
+# Teste le projet a chaque envoi. Sur une etiquette "v*" (ex. v0.2.0),
+# publie une version GitHub avec des archives pretes a l'emploi :
+# c'est ce que telecharge l'outil de mise a jour Windows (-Repo proprietaire/depot).
+name: build
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    # Ubuntu 22.04 : l'exécutable fonctionne aussi sous Debian 12 et les Ubuntu plus récents
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y liblua5.4-0
+      - run: cargo test --release --locked
+      - run: cargo build --release --locked
+      - name: Archive
+        run: |
+          mkdir basalt
+          cp -r target/release/basalt plugins data docs README.md LICENSE basalt.service start.sh update.sh basalt/
+          # Le dépôt d'où viendront les mises à jour est inscrit dans update.sh
+          sed -i "s|@REPO@|${GITHUB_REPOSITORY}|g" basalt/update.sh
+          chmod 755 basalt/basalt basalt/start.sh basalt/update.sh
+          tar czf basalt-linux-x64.tar.gz basalt
+          sha256sum basalt-linux-x64.tar.gz > basalt-linux-x64.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: basalt-linux-x64
+          path: |
+            basalt-linux-x64.tar.gz
+            basalt-linux-x64.tar.gz.sha256
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Lua 5.4 (lua54.dll)
+        shell: cmd
+        run: |
+          curl -L -o lua.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz
+          tar xzf lua.tar.gz
+          cd lua-5.4.7\src
+          del lua.c luac.c
+          cl /nologo /O2 /MD /LD /DLUA_BUILD_AS_DLL /Felua54.dll *.c
+          copy lua54.dll ..\..\lua54.dll
+      - name: Tests
+        shell: cmd
+        run: |
+          set PATH=%CD%;%PATH%
+          cargo test --release --locked
+      - run: cargo build --release --locked
+      - name: Archive
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory basalt | Out-Null
+          Copy-Item target\release\basalt.exe, lua54.dll, README.md, LICENSE basalt\
+          Copy-Item plugins basalt\plugins -Recurse
+          Copy-Item data basalt\data -Recurse
+          Compress-Archive -Path basalt\* -DestinationPath basalt-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: basalt-windows-x64
+          path: basalt-windows-x64.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            basalt-linux-x64.tar.gz
+            basalt-linux-x64.tar.gz.sha256
+            basalt-windows-x64.zip

@@ -1,0 +1,22 @@
+# Exemple de plugin Basalt avec sa fiche. Pour l'essayer, copiez le dossier
+# « Gardien » dans le dossier « plugins » du serveur.
+name: Gardien
+version: 1.0.0
+main: main.lua
+api: 1
+description: Liste noire, message d'accueil et expulsion
+author: Basalt
+
+commands:
+  expulser:
+    description: Expulse un joueur
+    usage: "/expulser <joueur> [raison]"
+    permission: gardien.expulser
+
+permissions:
+  gardien.expulser:
+    description: Autorise la commande expulser
+    default: op
+  gardien.accueil:
+    description: Reçoit le message d'accueil
+    default: true

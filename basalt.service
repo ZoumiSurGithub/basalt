@@ -1,0 +1,20 @@
+[Unit]
+Description=Basalt - serveur Minecraft Bedrock
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=basalt
+Group=basalt
+WorkingDirectory=/opt/basalt
+ExecStart=/opt/basalt/basalt
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/basalt
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
