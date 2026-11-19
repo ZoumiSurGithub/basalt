@@ -85,6 +85,29 @@ pub fn update_abilities(unique_id: i64, creative: bool) -> Vec<u8> {
     w.0
 }
 
+/// Indicateurs d'un autre joueur tel que le serveur officiel 1.26.65 les envoie (relevé) :
+/// respire, a des collisions, subit la gravité — plus le nom toujours visible.
+pub const REMOTE_PLAYER_FLAGS: i64 = 0x0006_0000_0010_0000 | (1 << 14) | (1 << 15);
+/// Accroupi.
+pub const FLAG_SNEAKING: i64 = 1 << 1;
+/// En train de courir.
+pub const FLAG_SPRINTING: i64 = 1 << 3;
+
+/// Met à jour les indicateurs d'une entité chez un client (accroupi, en course…).
+pub fn set_actor_flags(runtime_id: u64, flags: i64) -> Vec<u8> {
+    let mut w = W::default();
+    w.varu64(runtime_id);
+    w.varu32(1); // une donnée
+    w.varu32(0); // n° 0 : indicateurs
+    w.varu32(7);
+    w.u8(7); // entier 64 bits
+    w.vari64(flags);
+    w.varu32(0); // propriétés entières
+    w.varu32(0); // propriétés décimales
+    w.varu64(0); // tick
+    w.0
+}
+
 pub fn set_actor_data_player(runtime_id: u64) -> Vec<u8> {
     let mut w = W::default();
     w.varu64(runtime_id);

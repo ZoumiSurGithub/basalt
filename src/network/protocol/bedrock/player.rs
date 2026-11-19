@@ -50,7 +50,7 @@ pub fn move_player(id: i64, pos: (f32, f32, f32), pitch: f32, yaw: f32, head_yaw
 }
 
 /// Fait apparaître un autre joueur chez un client.
-pub fn add_player(uuid: &[u8; 16], name: &str, id: i64, pos: (f32, f32, f32), pitch: f32, yaw: f32, gamemode: i32) -> Vec<u8> {
+pub fn add_player(uuid: &[u8; 16], name: &str, id: i64, pos: (f32, f32, f32), pitch: f32, yaw: f32, gamemode: i32, flags: i64) -> Vec<u8> {
     let mut w = W::default();
     w.0.extend_from_slice(uuid);
     w.string(name);
@@ -77,7 +77,7 @@ pub fn add_player(uuid: &[u8; 16], name: &str, id: i64, pos: (f32, f32, f32), pi
     w.varu32(0); // n° 0 : indicateurs
     w.varu32(7);
     w.u8(7); // entier 64 bits
-    w.vari64((1 << 14) | (1 << 15) | (1 << 48) | (1 << 49));
+    w.vari64(flags);
     w.varu32(4); // n° 4 : nom affiché
     w.varu32(4);
     w.u8(4); // texte
@@ -158,7 +158,7 @@ mod add_player_tests {
     fn add_player_is_laid_out_like_the_official_one() {
         let mut uuid = [0u8; 16];
         uuid.copy_from_slice(&OFFICIAL_HEAD[..16]);
-        let ours = add_player(&uuid, "TemoinTest1", 1, (0.5, 71.0, 0.5), 0.0, 0.0, 5);
+        let ours = add_player(&uuid, "TemoinTest1", 1, (0.5, 71.0, 0.5), 0.0, 0.0, 5, super::super::REMOTE_PLAYER_FLAGS);
         // Tout le début est identique, à l'octet près ; seul le nombre de données diffère
         // (le serveur officiel en envoie 80, deux suffisent)
         assert_eq!(&ours[..75], &OFFICIAL_HEAD[..75]);

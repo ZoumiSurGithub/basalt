@@ -986,6 +986,21 @@ fn a_chest_opens_and_keeps_what_is_put_in_it() {
     };
     assert!(filled.len() > empty.len(), "le coffre doit contenir les diamants");
 
+    // Commandes propres au serveur, réservées aux opérateurs
+    let expect_text = |c: &mut Client, needle: &str| {
+        for _ in 0..20 {
+            if String::from_utf8_lossy(&c.wait_for(9)).contains(needle) {
+                return;
+            }
+        }
+        panic!("message « {} » jamais reçu", needle);
+    };
+    command(&mut steve, "/status");
+    expect_text(&mut steve, "ticks/s");
+    expect_text(&mut steve, "Joueurs : §f1/");
+    command(&mut steve, "/version");
+    expect_text(&mut steve, "Basalt 0.1.0");
+
     // Reprendre plus que ce qu'il contient est refusé
     let mut request = vec![1, 0x07, 1, 1, 0, 9];
     request.extend_from_slice(&[7, 0, 5, 0, 0, 0, 0]);
@@ -1031,6 +1046,8 @@ fn vanilla_commands_work_like_in_the_game() {
     expect_text(&mut guest, "permission");
     command(&mut guest, "/list");
     expect_text(&mut guest, "joueurs en ligne");
+    command(&mut guest, "/status");
+    expect_text(&mut guest, "permission");
 
     let mut steve = Client::join(addr, "Steve");
     command(&mut steve, "/setblock ~ ~3 ~ glass");

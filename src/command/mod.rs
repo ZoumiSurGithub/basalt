@@ -23,7 +23,7 @@ pub struct VanillaCommands;
 
 impl VanillaCommands {
     pub fn all() -> &'static [CommandDef] {
-        static ALL: [CommandDef; 22] = [
+        static ALL: [CommandDef; 24] = [
             def("help", "commands.help.description", "/help", false),
             def("list", "commands.list.description", "/list", false),
             def("me", "commands.me.description", "/me <message:text>", false),
@@ -46,6 +46,9 @@ impl VanillaCommands {
             def("allowlist", "commands.allowlist.description", "/allowlist <action:on|off|list|reload> | /allowlist <action:add|remove> <name>", true),
             def("whitelist", "commands.allowlist.description", "/whitelist <action:on|off|list|reload> | /whitelist <action:add|remove> <name>", true),
             def("stop", "commands.stop.description", "/stop", true),
+            // Commandes propres au serveur, comme sur PocketMine
+            def("status", "Affiche la charge et l'état du serveur", "/status", true),
+            def("version", "Affiche la version du serveur", "/version", true),
         ];
         &ALL
     }

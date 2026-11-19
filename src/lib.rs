@@ -54,3 +54,5 @@ pub use security::identity;
 pub use utils::{config, console, inflate, json, log, yaml};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Compilation : branche ou étiquette, commit et date, inscrits par la publication GitHub.
+pub const BUILD: Option<&str> = option_env!("BASALT_BUILD");

@@ -32,6 +32,14 @@ const TICK: Duration = Duration::from_millis(50);
 /// Le paquet de déplacement (MovePlayer) n'est connu que pour les protocoles d'avant la
 /// 1.26.60 : un vrai jeu 1.26.63 l'a refusé (« lecture incomplète ») et s'est déconnecté.
 /// Tant que son nouveau format n'est pas relevé, il n'est plus envoyé à ces versions.
+/// Mémoire occupée par le serveur, en Mo (Linux uniquement : lue dans /proc).
+fn memory_mb() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
+    let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb / 1024)
+}
+
 fn move_player_known(protocol: i32) -> bool {
     protocol < 2225
 }
@@ -256,6 +264,9 @@ struct Client {
     creative: bool,
     /// Tick du dernier bloc actionné (porte, levier), pour ignorer les clics répétés
     last_toggle: u64,
+    /// Accroupi / en course, d'après les mouvements envoyés par le jeu
+    sneaking: bool,
+    sprinting: bool,
     /// Anti-abus du chat : début de la fenêtre et messages envoyés dedans
     chat_window: Instant,
     chat_count: u32,
@@ -913,6 +924,8 @@ impl Server {
             head_yaw: f32,
             moved_tick: u64,
             name: String,
+            sneaking: bool,
+            sprinting: bool,
         }
         let refresh = self.tick % VISIBILITY_EVERY == 0;
         let mut players: Vec<Seen> = Vec::new();
@@ -927,6 +940,8 @@ impl Server {
                     head_yaw: c.head_yaw,
                     moved_tick: c.moved_tick,
                     name: if refresh { c.name.clone().unwrap_or_default() } else { String::new() },
+                    sneaking: c.sneaking,
+                    sprinting: c.sprinting,
                 });
             }
         }
@@ -986,7 +1001,7 @@ impl Server {
                                     id16.copy_from_slice(&uuid[..16]);
                                     packets.push((
                                         bedrock::ID_ADD_PLAYER,
-                                        bedrock::add_player(&id16, &o.name, o.id, (o.pos.0, o.pos.1 - 1.62, o.pos.2), o.pitch, o.yaw, gamemode),
+                                        bedrock::add_player(&id16, &o.name, o.id, (o.pos.0, o.pos.1 - 1.62, o.pos.2), o.pitch, o.yaw, gamemode, Self::remote_flags(o.sneaking, o.sprinting)),
                                     ));
                                 }
                             }
@@ -1662,6 +1677,62 @@ impl Server {
                 self.whitelist_command(&words);
                 if sender.is_some() {
                     self.reply(sender, "Liste blanche mise à jour (détail dans la console du serveur)");
+                }
+            }
+            "status" => {
+                let (tps, worst) = (self.perf.last.0, self.perf.last.1.as_millis());
+                // Tant qu'aucune mesure n'a été faite (première seconde), le serveur est à l'heure
+                let tps = if tps <= 0.0 { 20.0 } else { tps.min(20.0) };
+                let color = if tps >= 19.0 {
+                    "§a"
+                } else if tps >= 15.0 {
+                    "§e"
+                } else {
+                    "§c"
+                };
+                let up = self.started.elapsed().as_secs();
+                let uptime = match (up / 86_400, up / 3600 % 24, up / 60 % 60, up % 60) {
+                    (0, 0, m, s) => format!("{} min {} s", m, s),
+                    (0, h, m, _) => format!("{} h {} min", h, m),
+                    (d, h, m, _) => format!("{} j {} h {} min", d, h, m),
+                };
+                let rates = self.perf.rates;
+                let sessions = (self.rak.sessions.len(), self.nether.as_ref().map(|n| n.len()).unwrap_or(0));
+                let lines = vec![
+                    "§2---- §fÉtat du serveur §2----".to_string(),
+                    format!("§6En marche depuis : §f{}", uptime),
+                    format!("§6Charge : {}{:.1} ticks/s §7(objectif 20, pire retard {} ms)", color, tps, worst),
+                    format!("§6Joueurs : §f{}/{} §7({} sessions RakNet, {} NetherNet)", self.players().len(), self.cfg.max_players, sessions.0, sessions.1),
+                    format!("§6Réseau : §f{} Ko/s reçus, {} Ko/s envoyés §7({} et {} datagrammes/s)", rates.2 / 1024, rates.3 / 1024, rates.0, rates.1),
+                    match memory_mb() {
+                        Some(mb) => format!("§6Mémoire : §f{} Mo", mb),
+                        None => "§6Mémoire : §7non mesurée sur ce système".to_string(),
+                    },
+                    format!("§6Monde : §f{} blocs modifiés, {} blocs à données (coffres, fours…)", self.world.edit_count(), self.world.tiles.len()),
+                    format!("§6Plugins : §f{} §7— vérification des logins : {} fil(s), {} en attente", self.plugins.catalog().plugins.len(), self.logins.threads, self.logins.pending),
+                ];
+                for line in lines {
+                    self.reply(sender, &line);
+                }
+            }
+            "version" => {
+                let build = match crate::BUILD {
+                    Some(b) if !b.is_empty() => format!(" §7({})", b),
+                    _ => String::new(),
+                };
+                let lines = vec![
+                    format!("§fCe serveur utilise §aBasalt {}{}", crate::VERSION, build),
+                    format!(
+                        "§fVersions du jeu acceptées : §aBedrock {} à {} §7(protocoles {} à {})",
+                        crate::versions::name(self.cfg.min_protocol),
+                        crate::versions::name(self.cfg.max_protocol),
+                        self.cfg.min_protocol,
+                        self.cfg.max_protocol
+                    ),
+                    format!("§fSystème : §a{} {}", std::env::consts::OS, std::env::consts::ARCH),
+                ];
+                for line in lines {
+                    self.reply(sender, &line);
                 }
             }
             "stop" => {
@@ -2484,6 +2555,11 @@ impl Server {
         }
     }
 
+    /// Indicateurs d'un joueur vu par les autres, selon sa posture.
+    fn remote_flags(sneaking: bool, sprinting: bool) -> i64 {
+        bedrock::REMOTE_PLAYER_FLAGS | if sneaking { bedrock::FLAG_SNEAKING } else { 0 } | if sprinting { bedrock::FLAG_SPRINTING } else { 0 }
+    }
+
     /// Change un bloc et l'annonce à tout le monde.
     fn change_block(&mut self, pos: (i32, i32, i32), state: u32) {
         if self.world.set(pos.0, pos.1, pos.2, state) {
@@ -3030,6 +3106,26 @@ impl Server {
                 }
                 (Stage::Spawning, bedrock::ID_PLAYER_AUTH_INPUT) | (Stage::InGame, bedrock::ID_PLAYER_AUTH_INPUT) => {
                     let parsed = bedrock::read_input(&body);
+                    // Accroupi (8) et en course (20) : état annoncé par le jeu à chaque mouvement
+                    let moves = bedrock::input_flags(&body);
+                    let posture = (moves.contains(&8), moves.contains(&20));
+                    let mut changed_posture = None;
+                    if let Some(c) = self.clients.get_mut(&addr) {
+                        if (c.sneaking, c.sprinting) != posture && c.stage == Stage::InGame {
+                            c.sneaking = posture.0;
+                            c.sprinting = posture.1;
+                            changed_posture = Some(c.id);
+                        }
+                    }
+                    if let Some(id) = changed_posture {
+                        // Les joueurs qui le voient reçoivent sa nouvelle posture
+                        let flags = Self::remote_flags(posture.0, posture.1);
+                        let packet = bedrock::set_actor_flags(id as u64, flags);
+                        let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(a, c)| **a != addr && c.visible.contains(&id)).map(|(a, _)| *a).collect();
+                        for viewer in viewers {
+                            self.send(&viewer, bedrock::ID_SET_ACTOR_DATA, &packet);
+                        }
+                    }
                     if let Some(c) = self.clients.get_mut(&addr) {
                         c.inputs += 1;
                         c.last_input = Instant::now();
@@ -3199,6 +3295,8 @@ impl Server {
                         inv_touched: false,
                         creative: self.cfg.gamemode.eq_ignore_ascii_case("creative"),
                         last_toggle: 0,
+                        sneaking: false,
+                        sprinting: false,
                         chat_window: Instant::now(),
                         chat_count: 0,
                         interactions_logged: 0,
@@ -3355,32 +3453,7 @@ impl Server {
                 let p = self.players();
                 info!("{}/{} joueur(s) : {}", p.len(), self.cfg.max_players, p.join(", "));
             }
-            "status" | "tps" => {
-                let p = &self.perf;
-                info!(
-                    "Charge : {:.1} ticks/s (objectif 20), pire retard {} ms",
-                    p.last.0,
-                    p.last.1.as_millis()
-                );
-                info!(
-                    "Vérification des logins : {} fil(s) de travail, {} en attente",
-                    self.logins.threads, self.logins.pending
-                );
-                info!(
-                    "Joueurs : {}/{} — sessions réseau : {} RakNet, {} NetherNet",
-                    self.players().len(),
-                    self.cfg.max_players,
-                    self.rak.sessions.len(),
-                    self.nether.as_ref().map(|n| n.len()).unwrap_or(0)
-                );
-                info!(
-                    "Trafic : {} datagrammes/s reçus ({} Ko/s), {} envoyés ({} Ko/s)",
-                    p.rates.0,
-                    p.rates.2 / 1024,
-                    p.rates.1,
-                    p.rates.3 / 1024
-                );
-            }
+            "status" | "tps" => self.run_vanilla(None, "status", &[]),
             "plugins" => {
                 if !self.plugins.available() {
                     info!("Plugins désactivés (Lua 5.4 introuvable)");
@@ -3417,9 +3490,10 @@ impl Server {
                 }
                 info!("Nom du serveur : {}", self.motd);
             }
-            "version" => {
-                info!("Basalt {} — version annoncée : Bedrock {}", crate::VERSION, self.cfg.game_version);
-                info!("Protocoles acceptés : {} à {}", self.cfg.min_protocol, self.cfg.max_protocol);
+            "version" | "ver" | "about" => {
+                // Même contenu que /version en jeu, puis le détail des protocoles
+                self.run_vanilla(None, "version", &[]);
+                info!("Version annoncée aux jeux : Bedrock {}", self.cfg.game_version);
                 for (p, n) in crate::versions::KNOWN {
                     if *p >= self.cfg.min_protocol && *p <= self.cfg.max_protocol {
                         info!("  {} = Bedrock {}", p, n);
