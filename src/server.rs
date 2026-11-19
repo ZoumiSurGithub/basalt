@@ -735,10 +735,40 @@ impl Server {
             },
             _ => return false,
         };
-        let dir = std::path::PathBuf::from(&self.cfg.world_dir);
+        // Les données d'un joueur appartiennent au serveur, pas à un monde : elles sont rangées
+        // dans `players/`, à côté de server.properties (comme ops.txt et la liste blanche).
+        let dir = self.cfg.root.clone();
+        let old_dir = std::path::PathBuf::from(&self.cfg.world_dir);
         let now = Self::now_unix();
-        let (mut data, fresh) = match PlayerData::load(&dir, &name) {
-            Ok(Some(d)) => (d, false),
+        let mut moved = false;
+        let found = match PlayerData::load(&dir, &name) {
+            // Rien ici : peut-être un fichier d'avant, rangé dans le dossier du monde
+            Ok(None) if old_dir != dir => {
+                let old = PlayerData::load(&old_dir, &name);
+                moved = matches!(old, Ok(Some(_)));
+                old
+            }
+            other => other,
+        };
+        let (mut data, fresh) = match found {
+            Ok(Some(d)) => {
+                if moved {
+                    // Repris de l'ancien emplacement : réenregistré au nouveau, l'ancien est retiré
+                    match d.save(&dir) {
+                        Ok(()) => {
+                            let old = PlayerData::path(&old_dir, &name);
+                            let _ = std::fs::remove_file(&old);
+                            let _ = std::fs::remove_file(old.with_extension("nbt"));
+                            let _ = std::fs::remove_file(old.with_extension("txt"));
+                            // Le dossier disparaît s'il est vide (sans effet sinon)
+                            let _ = std::fs::remove_dir(old_dir.join("players"));
+                            info!("Données de {} déplacées du dossier du monde vers players/", name);
+                        }
+                        Err(e) => warn!("Données de {} : déplacement vers players/ impossible ({})", name, e),
+                    }
+                }
+                (d, false)
+            }
             Ok(None) => (PlayerData::new(&name, now), true),
             Err(e) => {
                 warn!("Données de {} illisibles ({}) : le joueur repart de zéro", name, e);
@@ -747,6 +777,8 @@ impl Server {
         };
         data.name = name.clone();
         data.last_played = now;
+        // Le joueur retrouve le mode de jeu qu'il avait en partant
+        let saved_mode = data.game_type;
         // Inventaire : les objets sont retrouvés par leur nom
         let items: Vec<(usize, i16, u8)> = data
             .items
@@ -760,6 +792,9 @@ impl Server {
             for (slot, id, count) in items {
                 c.inv.restore(slot, id, count);
                 c.inv_touched = true;
+            }
+            if let (Some(mode), false) = (saved_mode, fresh) {
+                c.creative = mode == 1;
             }
             c.data = Some(data);
             c.first_visit = fresh;
@@ -775,6 +810,9 @@ impl Server {
             d.has_pos = true;
         }
         d.last_played = Self::now_unix();
+        d.game_type = Some(c.creative as i32);
+        // Dossier du monde, comme PocketMine le note
+        d.level = std::path::Path::new(&self.cfg.world_dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         d.items.clear();
         let name_of = |id: i16| self.data.as_ref().and_then(|g| g.item_by_id(id)).map(|i| i.name.clone());
         let groups: [(&str, &[inventory::ItemStack]); 3] =
@@ -793,7 +831,7 @@ impl Server {
 
     fn store_player(&self, c: &Client) {
         if let Some(d) = self.snapshot_player(c) {
-            if let Err(e) = d.save(std::path::Path::new(&self.cfg.world_dir)) {
+            if let Err(e) = d.save(&self.cfg.root) {
                 warn!("Sauvegarde de {} impossible : {}", d.name, e);
             }
         }

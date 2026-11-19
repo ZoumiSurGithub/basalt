@@ -234,7 +234,8 @@ tirés au sort (`stone,dirt`). Une opération touche au plus 250 000 blocs.
 L'objet se comporte comme le pseudo dans un texte : `"Bienvenue " .. joueur` fonctionne.
 Pour s'en servir comme clé d'une table, utilisez `joueur:getName()`.
 
-Tout est enregistré dans `world/players/<pseudo>.nbt` (vie, expérience, noms, position,
+Tout est enregistré dans `players/<pseudo>.dat`, à côté de `server.properties`, au format
+des fichiers de joueurs de PocketMine (vie, expérience, noms, position,
 inventaire) : quand le joueur part, toutes les minutes, à l'arrêt du serveur, et sur
 `joueur:save()`. Tout est rechargé à son retour. Les valeurs sont bornées par le serveur :
 un plugin ne peut pas donner une vie négative ou un niveau absurde.

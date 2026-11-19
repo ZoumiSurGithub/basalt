@@ -920,6 +920,41 @@ fn whitelist_keeps_strangers_out() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Les données d'un joueur vivent au niveau du serveur (`players/`), pas dans un monde ; un
+/// fichier laissé dans le dossier du monde par une ancienne version est repris et déplacé.
+#[test]
+fn player_data_belongs_to_the_server_not_to_a_world() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-playerdata-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Ancienne disposition : world/players/steve.nbt
+    let world = dir.join("world");
+    let mut old = basalt::player::PlayerData::new("Steve", 1_700_000_000);
+    old.display_name = "Ancien".to_string();
+    old.save(&world).unwrap();
+    let old_file = basalt::player::PlayerData::path(&world, "Steve");
+    assert!(old_file.exists());
+
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let steve = Client::join(addr, "Steve");
+    let alex = Client::join(addr, "Alex");
+    std::thread::sleep(Duration::from_millis(300));
+    drop(steve);
+    drop(alex);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+
+    let new_file = basalt::player::PlayerData::path(&dir, "Steve");
+    assert!(new_file.exists(), "repris dans players/ à côté de server.properties");
+    assert!(!old_file.exists() && !world.join("players").exists(), "l'ancien fichier est retiré du monde");
+    let kept = basalt::player::PlayerData::load(&dir, "Steve").unwrap().unwrap();
+    assert_eq!(kept.display_name, "Ancien", "les données sont conservées");
+    // Un nouveau joueur est enregistré directement au bon endroit
+    assert!(basalt::player::PlayerData::path(&dir, "Alex").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Un coffre s'ouvre, reçoit un objet, et le garde pour la prochaine ouverture.
 #[test]
 fn a_chest_opens_and_keeps_what_is_put_in_it() {

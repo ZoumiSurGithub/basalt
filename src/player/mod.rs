@@ -30,8 +30,15 @@ pub struct Player {
     pub items: Vec<SavedItem>,
     /// Permissions fixées pour ce joueur : (nom, accordée)
     pub permissions: Vec<(String, bool)>,
+    /// Mode de jeu (0 survie, 1 créatif) ; None : celui du serveur
+    pub game_type: Option<i32>,
+    /// Dossier du monde où le joueur se trouvait
+    pub level: String,
 }
 extends!(Player, human, Human);
+
+/// Hauteur des yeux d'un joueur au-dessus de ses pieds.
+pub const EYE_HEIGHT: f32 = 1.62;
 
 /// Ancien nom de `Player`.
 pub type PlayerData = Player;
@@ -42,7 +49,7 @@ fn file_name(name: &str) -> String {
         .take(32)
         .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c.to_ascii_lowercase() } else { '_' })
         .collect();
-    format!("{}.nbt", if safe.is_empty() { "_".to_string() } else { safe })
+    format!("{}.dat", if safe.is_empty() { "_".to_string() } else { safe })
 }
 
 impl Player {
@@ -57,6 +64,8 @@ impl Player {
             last_played: now,
             items: Vec::new(),
             permissions: Vec::new(),
+            game_type: None,
+            level: String::new(),
         }
     }
 
@@ -76,45 +85,87 @@ impl Player {
         }
     }
 
-    /// Chargement depuis `players/<pseudo>.nbt`. `Ok(None)` : le joueur n'a pas encore de fichier.
+    /// Chargement depuis `players/<pseudo>.dat`, au format de PocketMine (NBT compressé, mêmes
+    /// noms de champs). À défaut, les anciens fichiers de Basalt (`.nbt`, puis `.txt`) sont
+    /// relus une dernière fois. `Ok(None)` : le joueur n'a pas encore de fichier.
     pub fn load(dir: &Path, name: &str) -> Result<Option<Player>, String> {
         let path = Self::path(dir, name);
-        let doc = match nbt::load_file(&path)? {
-            Some(d) => d,
-            None => return Self::load_legacy(&path.with_extension("txt"), name),
-        };
+        if let Some(doc) = nbt::load_file(&path)? {
+            return Ok(Some(Self::from_nbt(&doc, name, false)));
+        }
+        if let Some(doc) = nbt::load_file(&path.with_extension("nbt"))? {
+            return Ok(Some(Self::from_nbt(&doc, name, true)));
+        }
+        Self::load_legacy(&path.with_extension("txt"), name)
+    }
+
+    /// Lit un joueur. `old` : ancien format de Basalt (hauteur des yeux, dates en secondes).
+    /// Les deux jeux de noms sont compris ; ceux de PocketMine passent en premier.
+    fn from_nbt(doc: &Tag, name: &str, old: bool) -> Player {
         let mut p = Player::new(name, 0);
-        let text = |key: &str| doc.str_of(key).map(|s| s.to_string());
-        let num = |key: &str| doc.get(key).and_then(|t| t.as_f32());
-        let int = |key: &str| doc.get(key).and_then(|t| t.as_i64());
+        let own = doc.get("Basalt");
+        let text = |key: &str| own.and_then(|o| o.str_of(key)).or_else(|| doc.str_of(key)).map(|s| s.to_string());
+        let num = |keys: &[&str]| keys.iter().find_map(|k| doc.get(k).and_then(|t| t.as_f32()));
+        let int = |keys: &[&str]| keys.iter().find_map(|k| doc.get(k).and_then(|t| t.as_i64()));
         if let Some(v) = text("DisplayName") {
             p.display_name = v;
         }
-        if let Some(v) = text("NameTag") {
-            p.name_tag = v;
+        if let Some(v) = doc.str_of("NameTag") {
+            p.name_tag = v.to_string();
         }
-        p.max_health = num("MaxHealth").unwrap_or(p.max_health);
-        p.health = num("Health").unwrap_or(p.health);
-        p.food = num("Food").unwrap_or(p.food);
-        p.xp_level = int("XpLevel").unwrap_or(0).clamp(0, i32::MAX as i64) as i32;
-        p.xp_progress = num("XpProgress").unwrap_or(0.0);
-        p.first_played = int("FirstPlayed").unwrap_or(0).max(0) as u64;
-        p.last_played = int("LastPlayed").unwrap_or(0).max(0) as u64;
+        p.max_health = own.and_then(|o| o.get("MaxHealth")).or_else(|| doc.get("MaxHealth")).and_then(|t| t.as_f32()).unwrap_or(p.max_health);
+        p.health = num(&["Health"]).unwrap_or(p.health);
+        p.food = num(&["foodLevel", "Food"]).unwrap_or(p.food);
+        p.xp_level = int(&["XpLevel"]).unwrap_or(0).clamp(0, i32::MAX as i64) as i32;
+        p.xp_progress = num(&["XpP", "XpProgress"]).unwrap_or(0.0);
+        // PocketMine note les dates en millisecondes
+        let date = |ms: &str, secs: &str| int(&[ms]).map(|v| v / 1000).or_else(|| int(&[secs])).unwrap_or(0).max(0) as u64;
+        p.first_played = date("firstPlayed", "FirstPlayed");
+        p.last_played = date("lastPlayed", "LastPlayed");
+        p.game_type = int(&["playerGameType"]).filter(|g| (0..=1).contains(g)).map(|g| g as i32);
+        p.level = doc.str_of("Level").map(|s| clean_text(s, 64)).unwrap_or_default();
         if let Some(pos) = doc.get("Pos").and_then(|t| t.as_list()) {
-            let v: Vec<f32> = pos.iter().filter_map(|t| t.as_f32()).collect();
+            let v: Vec<f64> = pos
+                .iter()
+                .filter_map(|t| match t {
+                    Tag::Double(d) => Some(*d),
+                    other => other.as_f32().map(|f| f as f64),
+                })
+                .collect();
             if v.len() == 3 {
-                p.pos = (v[0], v[1], v[2]);
+                // Le fichier note la position des pieds ; le serveur travaille à hauteur des yeux
+                let y = if old { v[1] } else { v[1] + EYE_HEIGHT as f64 };
+                p.pos = (v[0] as f32, y as f32, v[2] as f32);
                 p.has_pos = true;
             }
         }
+        let item_of = |item: &Tag| -> Option<(String, u8)> {
+            let count = item.get("Count").and_then(|t| t.as_i64()).unwrap_or(0);
+            match (item.str_of("Name"), count) {
+                (Some(n), 1..=64) => Some((n.to_string(), count as u8)),
+                _ => None,
+            }
+        };
         for item in doc.get("Inventory").and_then(|t| t.as_list()).unwrap_or(&[]).iter().take(64) {
             let slot = item.get("Slot").and_then(|t| t.as_i64()).unwrap_or(-1);
-            let count = item.get("Count").and_then(|t| t.as_i64()).unwrap_or(0);
-            if let (Some(container), Some(name), 0..=255, 1..=64) = (item.str_of("Container"), item.str_of("Name"), slot, count) {
-                p.items.push((container.to_string(), slot as u8, name.to_string(), count as u8));
+            let (name, count) = match item_of(item) {
+                Some(v) => v,
+                None => continue,
+            };
+            match (item.str_of("Container"), slot) {
+                // ancien format de Basalt : le conteneur est écrit en toutes lettres
+                (Some(container), 0..=255) => p.items.push((container.to_string(), slot as u8, name, count)),
+                // PocketMine : sac de 9 à 44 (la barre d'abord), armure de 100 à 103
+                (None, 9..=44) => p.items.push(("main".to_string(), (slot - 9) as u8, name, count)),
+                (None, 100..=103) => p.items.push(("armor".to_string(), (slot - 100) as u8, name, count)),
+                _ => {}
             }
         }
-        for perm in doc.get("Permissions").and_then(|t| t.as_list()).unwrap_or(&[]).iter().take(256) {
+        if let Some((name, count)) = doc.get("OffHandItem").and_then(item_of) {
+            p.items.push(("offhand".to_string(), 0, name, count));
+        }
+        let perms = own.and_then(|o| o.get("Permissions")).or_else(|| doc.get("Permissions"));
+        for perm in perms.and_then(|t| t.as_list()).unwrap_or(&[]).iter().take(256) {
             if let Some(node) = perm.str_of("Name").map(|n| n.trim().to_lowercase()).filter(|n| !n.is_empty() && n.len() <= 64) {
                 let granted = perm.get("Granted").and_then(|t| t.as_i64()).unwrap_or(0) != 0;
                 p.permissions.retain(|(n, _)| *n != node);
@@ -122,7 +173,7 @@ impl Player {
             }
         }
         p.sanitize();
-        Ok(Some(p))
+        p
     }
 
     /// Ancien format texte (`players/<pseudo>.txt`) : relu une dernière fois, puis remplacé
@@ -177,40 +228,76 @@ impl Player {
         Ok(Some(p))
     }
 
-    /// Document NBT du joueur, tel qu'il est enregistré.
-    pub fn to_nbt(&self) -> Tag {
+    /// Le joueur au format des fichiers de PocketMine : mêmes noms, mêmes types. Ce que
+    /// PocketMine ne connaît pas (nom affiché, vie maximale, permissions) est rangé dans une
+    /// section « Basalt », qu'il ignore.
+    fn to_nbt(&self) -> Tag {
+        let doubles = |v: [f64; 3]| Tag::List(6, v.iter().map(|x| Tag::Double(*x)).collect());
+        let item = |slot: Option<i8>, name: &str, count: u8| {
+            let mut e = vec![("Count", Tag::Byte(count as i8)), ("Damage", Tag::Short(0)), ("Name", Tag::string(name))];
+            if let Some(s) = slot {
+                e.push(("Slot", Tag::Byte(s)));
+            }
+            Tag::compound(e)
+        };
+        let feet = [self.pos.0 as f64, self.pos.1 as f64 - EYE_HEIGHT as f64, self.pos.2 as f64];
         let mut entries = vec![
-            ("Name", Tag::string(&clean_text(&self.name, 32))),
-            ("DisplayName", Tag::string(&clean_text(&self.display_name, 32))),
-            ("NameTag", Tag::string(&clean_text(&self.name_tag, 64))),
+            ("NameTag", Tag::string(&self.name_tag)),
+            ("Motion", doubles([0.0, 0.0, 0.0])),
+            ("Rotation", Tag::List(5, vec![Tag::Float(0.0), Tag::Float(0.0)])),
+            ("FallDistance", Tag::Float(0.0)),
+            ("Fire", Tag::Short(0)),
+            ("OnGround", Tag::Byte(1)),
             ("Health", Tag::Float(self.health)),
-            ("MaxHealth", Tag::Float(self.max_health)),
-            ("Food", Tag::Float(self.food)),
+            ("Air", Tag::Short(300)),
+            ("foodLevel", Tag::Int(self.food.round() as i32)),
+            ("foodExhaustionLevel", Tag::Float(0.0)),
+            ("foodSaturationLevel", Tag::Float(5.0)),
+            ("foodTickTimer", Tag::Int(0)),
             ("XpLevel", Tag::Int(self.xp_level)),
-            ("XpProgress", Tag::Float(self.xp_progress)),
-            ("FirstPlayed", Tag::Long(self.first_played as i64)),
-            ("LastPlayed", Tag::Long(self.last_played as i64)),
+            ("XpP", Tag::Float(self.xp_progress)),
+            ("XpTotal", Tag::Int(0)),
+            ("XpSeed", Tag::Int(0)),
+            ("SelectedInventorySlot", Tag::Int(0)),
+            ("firstPlayed", Tag::Long(self.first_played as i64 * 1000)),
+            ("lastPlayed", Tag::Long(self.last_played as i64 * 1000)),
+            ("Level", Tag::string(&self.level)),
         ];
         if self.has_pos {
-            entries.push(("Pos", Tag::List(5, vec![Tag::Float(self.pos.0), Tag::Float(self.pos.1), Tag::Float(self.pos.2)])));
+            entries.push(("Pos", doubles(feet)));
         }
-        let items = self
-            .items
-            .iter()
-            .map(|(container, slot, item, count)| {
-                Tag::compound(vec![("Container", Tag::string(container)), ("Slot", Tag::Byte(*slot as i8)), ("Name", Tag::string(item)), ("Count", Tag::Byte(*count as i8))])
-            })
-            .collect();
-        entries.push(("Inventory", Tag::list_of(items)));
-        let perms = self.permissions.iter().map(|(node, granted)| Tag::compound(vec![("Name", Tag::string(node)), ("Granted", Tag::Byte(*granted as i8))])).collect();
-        entries.push(("Permissions", Tag::list_of(perms)));
+        if let Some(g) = self.game_type {
+            entries.push(("playerGameType", Tag::Int(g)));
+        }
+        let mut inventory = Vec::new();
+        for (container, slot, name, count) in &self.items {
+            match container.as_str() {
+                "main" if *slot < 36 => inventory.push(item(Some(*slot as i8 + 9), name, *count)),
+                "armor" if *slot < 4 => inventory.push(item(Some(100 + *slot as i8), name, *count)),
+                "offhand" => entries.push(("OffHandItem", item(None, name, *count))),
+                _ => {}
+            }
+        }
+        // Une liste vide doit quand même annoncer le type de ses éléments (sections)
+        entries.push(("Inventory", if inventory.is_empty() { Tag::List(10, Vec::new()) } else { Tag::list_of(inventory) }));
+        entries.push(("EnderChestInventory", Tag::List(10, Vec::new())));
+        let perms: Vec<Tag> = self.permissions.iter().map(|(node, granted)| Tag::compound(vec![("Name", Tag::string(node)), ("Granted", Tag::Byte(*granted as i8))])).collect();
+        entries.push((
+            "Basalt",
+            Tag::compound(vec![
+                ("DisplayName", Tag::string(&self.display_name)),
+                ("MaxHealth", Tag::Float(self.max_health)),
+                ("Permissions", if perms.is_empty() { Tag::List(10, Vec::new()) } else { Tag::list_of(perms) }),
+            ]),
+        ));
         Tag::compound(entries)
     }
 
-    /// Sauvegarde dans `players/<pseudo>.nbt`.
+    /// Sauvegarde dans `players/<pseudo>.dat` ; les anciens fichiers du joueur sont retirés.
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         let path = Self::path(dir, &self.name);
         nbt::save_file(&path, &self.to_nbt())?;
+        let _ = std::fs::remove_file(path.with_extension("nbt"));
         let _ = std::fs::remove_file(path.with_extension("txt"));
         Ok(())
     }
@@ -238,10 +325,46 @@ mod tests {
         p.items.push(("main".into(), 3, "minecraft:oak_planks".into(), 64));
         p.permissions.push(("gardien.expulser".into(), true));
         p.permissions.push(("monde.casser".into(), false));
+        p.game_type = Some(1);
+        p.level = "world".into();
+        p.items.push(("armor".into(), 1, "minecraft:iron_chestplate".into(), 1));
+        p.items.push(("offhand".into(), 0, "minecraft:shield".into(), 1));
         p.save(&dir).unwrap();
         assert_eq!(PlayerData::load(&dir, "Enzo").unwrap(), Some(p.clone()));
         // Le pseudo ne permet pas de sortir du dossier
-        assert_eq!(PlayerData::path(&dir, "../../x").file_name().unwrap(), "______x.nbt");
+        assert_eq!(PlayerData::path(&dir, "../../x").file_name().unwrap(), "______x.dat");
+        // Le fichier suit la disposition de PocketMine : mêmes noms, mêmes types
+        let doc = nbt::load_file(&PlayerData::path(&dir, "Enzo")).unwrap().unwrap();
+        assert_eq!(doc.get("Pos").and_then(|t| t.as_list()).map(|l| l.len()), Some(3));
+        assert!(matches!(doc.get("Pos").and_then(|t| t.as_list()).and_then(|l| l.first()), Some(Tag::Double(_))), "positions en nombres doubles");
+        let feet_y = match doc.get("Pos").and_then(|t| t.as_list()).map(|l| &l[1]) {
+            Some(Tag::Double(y)) => *y,
+            _ => f64::NAN,
+        };
+        assert!((feet_y - (-59.62)).abs() < 1e-5, "hauteur des pieds, pas des yeux : {}", feet_y);
+        assert_eq!(doc.get("foodLevel").and_then(|t| t.as_i64()), Some(20));
+        assert_eq!(doc.get("XpLevel").and_then(|t| t.as_i64()), Some(12));
+        assert_eq!(doc.get("lastPlayed").and_then(|t| t.as_i64()), Some(2_000_000), "dates en millisecondes");
+        assert_eq!(doc.get("playerGameType").and_then(|t| t.as_i64()), Some(1));
+        assert_eq!(doc.str_of("Level"), Some("world"));
+        let first = doc.get("Inventory").and_then(|t| t.as_list()).and_then(|l| l.first()).cloned().unwrap();
+        assert_eq!((first.get("Slot").and_then(|t| t.as_i64()), first.str_of("Name")), (Some(12), Some("minecraft:oak_planks")), "case 3 du sac = Slot 12");
+        assert_eq!(doc.get("Basalt").and_then(|b| b.str_of("DisplayName")), Some("§6Enzo le Grand"));
+        // Un ancien fichier de Basalt (.nbt, hauteur des yeux) est relu tel quel
+        let old_style = Tag::compound(vec![
+            ("DisplayName", Tag::string("Vieux")),
+            ("Food", Tag::Float(11.0)),
+            ("FirstPlayed", Tag::Long(77)),
+            ("Pos", Tag::List(5, vec![Tag::Float(1.0), Tag::Float(64.0), Tag::Float(2.0)])),
+            ("Inventory", Tag::list_of(vec![Tag::compound(vec![("Container", Tag::string("main")), ("Slot", Tag::Byte(2)), ("Name", Tag::string("minecraft:stick")), ("Count", Tag::Byte(7))])])),
+        ]);
+        nbt::save_file(&PlayerData::path(&dir, "Vieux").with_extension("nbt"), &old_style).unwrap();
+        let vieux = PlayerData::load(&dir, "Vieux").unwrap().unwrap();
+        assert_eq!((vieux.display_name.as_str(), vieux.food, vieux.first_played, vieux.pos), ("Vieux", 11.0, 77, (1.0, 64.0, 2.0)));
+        assert_eq!(vieux.items, vec![("main".to_string(), 2, "minecraft:stick".to_string(), 7)]);
+        vieux.save(&dir).unwrap();
+        assert!(!PlayerData::path(&dir, "Vieux").with_extension("nbt").exists() && PlayerData::path(&dir, "Vieux").exists());
+        assert_eq!(PlayerData::load(&dir, "Vieux").unwrap(), Some(vieux));
         // Un fichier abîmé est remis dans les bornes
         let broken = Tag::compound(vec![("Health", Tag::Float(f32::NAN)), ("MaxHealth", Tag::Float(-5.0)), ("XpLevel", Tag::Int(999_999)), ("DisplayName", Tag::string(""))]);
         nbt::save_file(&PlayerData::path(&dir, "Enzo"), &broken).unwrap();
