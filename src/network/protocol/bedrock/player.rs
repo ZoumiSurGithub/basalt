@@ -166,6 +166,20 @@ pub fn player_list_add(players: &[ListedPlayer]) -> Vec<u8> {
     w.0
 }
 
+/// Retire des joueurs de la liste, par leur identifiant universel. Disposition relevée auprès
+/// du serveur officiel 1.26.65 : nombre de joueurs, puis pour chacun « 00 01 » (l'ajout porte
+/// « 01 00 » au même endroit) et l'identifiant.
+pub fn player_list_remove(uuids: &[[u8; 16]]) -> Vec<u8> {
+    let mut w = W::default();
+    w.varu32(uuids.len() as u32);
+    for uuid in uuids {
+        w.u8(0);
+        w.u8(1);
+        w.0.extend_from_slice(uuid);
+    }
+    w.0
+}
+
 /// Écrit une suite d'octets précédée de sa longueur.
 fn bytes(w: &mut W, data: &[u8]) {
     w.varu32(data.len() as u32);
@@ -228,6 +242,16 @@ mod add_player_tests {
     use super::*;
 
     /// La liste des joueurs suit la disposition relevée : en-tête de joueur, skin, puis fin.
+    /// Le retrait reprend la disposition relevée (identifiant remplacé par une valeur neutre).
+    #[test]
+    fn the_player_list_removal_follows_the_recorded_layout() {
+        let uuid = [0x42u8; 16];
+        let mut expected = vec![0x01, 0x00, 0x01];
+        expected.extend_from_slice(&uuid);
+        assert_eq!(player_list_remove(&[uuid]), expected);
+        assert_eq!(player_list_remove(&[uuid, uuid]).len(), 1 + 2 * 18);
+    }
+
     #[test]
     fn the_player_list_follows_the_recorded_layout() {
         let skin = crate::player::Skin {

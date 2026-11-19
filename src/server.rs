@@ -324,6 +324,8 @@ struct Client {
     corrections: u32,
     /// Autres joueurs actuellement affichés chez ce client
     visible: HashSet<i64>,
+    /// Joueurs inscrits dans sa liste des joueurs : identifiant d'entité → identifiant universel
+    listed: HashMap<i64, [u8; 16]>,
     /// Données du joueur (vie, expérience, noms…), chargées à son entrée
     data: Option<PlayerData>,
     /// Vrai si le joueur vient pour la première fois (aucune sauvegarde trouvée)
@@ -1085,6 +1087,12 @@ impl Server {
                     c.visible.remove(&id);
                     packets.push((bedrock::ID_REMOVE_ACTOR, bedrock::remove_actor(id)));
                 }
+                // Ceux qui ont quitté le serveur sortent aussi de la liste des joueurs
+                let departed: Vec<i64> = c.listed.keys().copied().filter(|id| !by_id.contains_key(id)).collect();
+                if !departed.is_empty() {
+                    let uuids: Vec<[u8; 16]> = departed.iter().filter_map(|id| c.listed.remove(id)).collect();
+                    packets.push((bedrock::ID_PLAYER_LIST, bedrock::player_list_remove(&uuids)));
+                }
                 // Ajoute les joueurs proches, dans la limite du plafond
                 let mut appeared = 0;
                 'scan: for dx in -range..=range {
@@ -1105,7 +1113,9 @@ impl Server {
                                     // Son apparence d'abord : le jeu l'associe au joueur qui
                                     // apparaît ensuite sous le même identifiant
                                     if let (Some(skin), false) = (&o.skin, no_list || c.protocol != 2225) {
-                                        packets.push((bedrock::ID_PLAYER_LIST, bedrock::player_list_add(&[(&id16, o.id, &o.name, skin, list_colour(o.id))])));
+                                        if c.listed.insert(o.id, id16).is_none() {
+                                            packets.push((bedrock::ID_PLAYER_LIST, bedrock::player_list_add(&[(&id16, o.id, &o.name, skin, list_colour(o.id))])));
+                                        }
                                     }
                                     packets.push((
                                         bedrock::ID_ADD_PLAYER,
@@ -3566,17 +3576,8 @@ impl Server {
                     info!("{} a rejoint la partie", name);
                     self.broadcast(bedrock::ID_TEXT, &bedrock::text_raw(&format!("§e{} a rejoint la partie", shown)), None);
                     self.send_commands(&addr);
-                    // Le joueur figure dans sa propre liste des joueurs
-                    let own = match self.clients.get(&addr) {
-                        Some(c) if !self.player_list_refused && c.protocol == 2225 => c.skin.clone().map(|s| (c.id, c.name.clone().unwrap_or_default(), s)),
-                        _ => None,
-                    };
-                    if let Some((id, name, skin)) = own {
-                        let uuid = crate::crypto::sha256(name.to_lowercase().as_bytes());
-                        let mut id16 = [0u8; 16];
-                        id16.copy_from_slice(&uuid[..16]);
-                        self.send(&addr, bedrock::ID_PLAYER_LIST, &bedrock::player_list_add(&[(&id16, id, &name, &skin, list_colour(id))]));
-                    }
+                    // Le jeu s'inscrit lui-même dans sa liste des joueurs (« Vous ») : lui envoyer sa
+                    // propre entrée l'y ferait figurer deux fois
                     self.emit("join", &[LVal::Player(name)]);
                 }
                 _ => {}
@@ -3639,6 +3640,7 @@ impl Server {
                         move_budget_at: Instant::now(),
                         corrections: 0,
                         visible: HashSet::new(),
+                        listed: HashMap::new(),
                         data: None,
                         first_visit: false,
                         reported_error: false,

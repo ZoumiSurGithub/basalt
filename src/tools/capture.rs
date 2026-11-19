@@ -18,6 +18,9 @@ use std::path::{Path, PathBuf};
 use crate::bedrock;
 use crate::json::base64_encode;
 
+/// Nom du fichier où est rangé le retrait d'un joueur de la liste.
+pub const REMOVAL_FILE: &str = "player_list_remove";
+
 /// Paquets à conserver : (identifiant, nom du fichier).
 pub const WANTED: [(u32, &str); 10] = [
     (11, "start_game"),
@@ -498,12 +501,20 @@ impl Capture {
         self.records.iter().filter(|(i, _)| *i == id).map(|(_, b)| b).max_by_key(|b| b.len())
     }
 
+    /// Le retrait d'un joueur de la liste : le plus petit paquet « liste des joueurs » reçu,
+    /// s'il est bien plus court qu'un ajout (qui porte un skin entier). Il n'arrive que si un
+    /// autre joueur quitte pendant la capture : voir le « témoin ».
+    fn list_removal(&self) -> Option<&Vec<u8>> {
+        self.records.iter().filter(|(i, b)| *i == 63 && b.len() < 512).map(|(_, b)| b).min_by_key(|b| b.len())
+    }
+
     /// Paquets utiles trouvés : (nom, taille).
     pub fn found(&self) -> Vec<(&'static str, usize)> {
-        WANTED
-            .iter()
-            .filter_map(|(id, name)| self.pick(*id).map(|b| (*name, b.len())))
-            .collect()
+        let mut out: Vec<(&'static str, usize)> = WANTED.iter().filter_map(|(id, name)| self.pick(*id).map(|b| (*name, b.len()))).collect();
+        if let Some(b) = self.list_removal() {
+            out.push((REMOVAL_FILE, b.len()));
+        }
+        out
     }
 
     /// Range les paquets utiles dans `<dossier>/<protocole>/packets/`.
@@ -514,6 +525,9 @@ impl Capture {
             if let Some(body) = self.pick(*id) {
                 std::fs::write(dir.join(format!("{}.bin", name)), body)?;
             }
+        }
+        if let Some(body) = self.list_removal() {
+            std::fs::write(dir.join(format!("{}.bin", REMOVAL_FILE)), body)?;
         }
         Ok(dir)
     }

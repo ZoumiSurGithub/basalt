@@ -77,12 +77,14 @@ fn capture(args: &[String]) {
     let host = args.first().map(|s| s.as_str()).unwrap_or("127.0.0.1");
     let port: u16 = args.get(1).and_then(|p| p.parse().ok()).unwrap_or(19132);
     basalt::log::init_capture_file();
-    info!("Capture des données du jeu auprès du serveur officiel {}:{} (outil version 11, RakNet, avec témoin)", host, port);
+    info!("Capture des données du jeu auprès du serveur officiel {}:{} (outil version 12, RakNet, avec témoin qui repart avant la fin)", host, port);
+    // Le témoin repart avant le joueur de la capture (20 s contre 35 s en jeu) : celui-ci reçoit
+    // alors aussi le paquet qui retire un joueur de la liste.
     // Un second faux joueur, le « témoin », entre d'abord et reste en jeu : le serveur officiel
     // enverra alors au joueur de la capture le paquet qui fait apparaître un autre joueur.
     let witness_host = host.to_string();
     let witness = std::thread::spawn(move || {
-        basalt::tools::capture_rak::run_as(&witness_host, port, None, Path::new("logs/client-data.b64"), "BasaltTemoin", std::time::Duration::from_secs(30), ("", ""))
+        basalt::tools::capture_rak::run_as(&witness_host, port, None, Path::new("logs/client-data.b64"), "BasaltTemoin", std::time::Duration::from_secs(20), ("", ""))
     });
     std::thread::sleep(std::time::Duration::from_secs(8));
     // Le serveur officiel refuse un second joueur qu'il prend pour le même que le premier
@@ -96,7 +98,7 @@ fn capture(args: &[String]) {
     let mut result = Err("aucun essai".to_string());
     for (label, mid, xid) in attempts.iter() {
         info!("Joueur de capture : essai avec {}", label);
-        result = basalt::tools::capture_rak::run_as(host, port, Some(Path::new("data")), Path::new("logs/client-data.b64"), "BasaltCapture", std::time::Duration::from_secs(6), (mid, xid));
+        result = basalt::tools::capture_rak::run_as(host, port, Some(Path::new("data")), Path::new("logs/client-data.b64"), "BasaltCapture", std::time::Duration::from_secs(35), (mid, xid));
         match &result {
             // Tout refus au moment du login : on passe à l'identité suivante
             Err(e) if e.contains("Login") => warn!("Refusé ({}) : essai suivant", e),
@@ -107,6 +109,9 @@ fn capture(args: &[String]) {
     match result {
         Ok(summary) => {
             info!("{}", summary);
+            if !summary.contains(basalt::tools::capture::REMOVAL_FILE) {
+                warn!("Le retrait d'un joueur de la liste n'a pas été reçu : le témoin est sans doute parti trop tôt ou trop tard.");
+            }
             if !summary.contains("add_player") {
                 warn!("Le paquet d'apparition d'un autre joueur n'a pas été reçu : le témoin n'était sans doute pas en jeu.");
             }
