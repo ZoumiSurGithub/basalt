@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::auth::{self, AuthError, KeyFetcher, KeySet};
 use crate::bedrock;
+use crate::timings;
 use crate::command::VanillaCommands;
 use crate::block::{placement, Block, BlockRegistry, Interaction};
 use crate::data::Prop;
@@ -32,6 +33,26 @@ const TICK: Duration = Duration::from_millis(50);
 /// Le paquet de déplacement (MovePlayer) n'est connu que pour les protocoles d'avant la
 /// 1.26.60 : un vrai jeu 1.26.63 l'a refusé (« lecture incomplète ») et s'est déconnecté.
 /// Tant que son nouveau format n'est pas relevé, il n'est plus envoyé à ces versions.
+/// Nom courant d'un paquet du jeu, pour les rapports de mesures.
+fn packet_label(id: u32) -> &'static str {
+    match id {
+        1 => " (login)",
+        9 => " (chat)",
+        30 => " (clic sur un bloc)",
+        31 => " (objet en main)",
+        33 => " (interaction)",
+        44 => " (geste du bras)",
+        47 => " (fermeture d'écran)",
+        77 => " (commande)",
+        123 => " (son)",
+        144 => " (mouvement)",
+        147 => " (inventaire)",
+        156 => " (paquet refusé par le jeu)",
+        193 => " (réglages réseau)",
+        _ => "",
+    }
+}
+
 /// Mémoire occupée par le serveur, en Mo (Linux uniquement : lue dans /proc).
 fn memory_mb() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
@@ -1422,6 +1443,7 @@ impl Server {
     /// Exécute une commande du jeu pour un joueur (`sender`) ou pour la console (`None`).
     /// Les droits ont déjà été vérifiés.
     fn run_vanilla(&mut self, sender: Option<SocketAddr>, command: &str, args: &[String]) {
+        let _t = timings::scope_with(|| format!("Commande /{}", command));
         const NO_TARGET: &str = "§cAucune cible ne correspond au sélecteur";
         let who = match sender {
             Some(a) => self.name_at(&a),
@@ -1755,6 +1777,60 @@ impl Server {
                     self.reply(sender, &line);
                 }
             }
+            "timings" => match arg(0) {
+                "on" => {
+                    if timings::enable() {
+                        self.reply(sender, "§aMesures allumées. Laissez tourner le serveur, puis lancez §f/timings report§a.");
+                    } else {
+                        self.reply(sender, "§eLes mesures sont déjà allumées (§f/timings reset§e pour repartir de zéro).");
+                    }
+                }
+                "off" => {
+                    if timings::disable() {
+                        self.reply(sender, "§aMesures éteintes. Les chiffres relevés restent disponibles : §f/timings report§a.");
+                    } else {
+                        self.reply(sender, "§eLes mesures sont déjà éteintes.");
+                    }
+                }
+                "reset" => {
+                    timings::reset();
+                    self.reply(sender, "§aMesures remises à zéro.");
+                }
+                "report" | "paste" => {
+                    let header = vec![
+                        format!("Basalt {}{}", crate::VERSION, crate::BUILD.map(|b| format!(" ({})", b)).unwrap_or_default()),
+                        format!("Système : {} {} — mémoire : {}", std::env::consts::OS, std::env::consts::ARCH, memory_mb().map(|m| format!("{} Mo", m)).unwrap_or_else(|| "non mesurée".into())),
+                        format!("Joueurs : {}/{} — plugins : {} — blocs modifiés : {}", self.players().len(), self.cfg.max_players, self.plugins.catalog().plugins.len(), self.world.edit_count()),
+                        format!("Mesures {}", if timings::is_enabled() { "en cours" } else { "arrêtées" }),
+                    ];
+                    let (text, top) = match (timings::report(&header), timings::snapshot()) {
+                        (Some(t), Some(s)) if !s.2.is_empty() => (t, s),
+                        _ => return self.reply(sender, "§cAucune mesure : lancez d'abord §f/timings on§c et laissez tourner le serveur."),
+                    };
+                    // Le rapport complet va dans un fichier ; l'essentiel est affiché tout de suite
+                    let dir = self.cfg.root.join("timings");
+                    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                    let path = dir.join(format!("timings-{}.txt", stamp));
+                    let saved = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, text.as_bytes()));
+                    self.reply(sender, &format!("§2---- §fMesures sur {:.0} s §7({} ticks, {:.1} ticks/s) §2----", top.0, top.1, top.1 as f64 / top.0));
+                    for line in top.2.iter().take(8) {
+                        let per_tick = if top.1 == 0 { 0.0 } else { line.total_ms / top.1 as f64 };
+                        let color = if per_tick >= 25.0 {
+                            "§c"
+                        } else if per_tick >= 5.0 {
+                            "§e"
+                        } else {
+                            "§a"
+                        };
+                        self.reply(sender, &format!("{}{:>5.1} %§f  {} §7({:.2} ms par tick, pire {:.1} ms)", color, line.share, line.name, per_tick, line.worst_ms));
+                    }
+                    match saved {
+                        Ok(()) => self.reply(sender, &format!("§6Rapport complet : §f{}", path.display())),
+                        Err(e) => self.reply(sender, &format!("§cRapport complet non enregistré : {}", e)),
+                    }
+                }
+                _ => usage(self),
+            },
             "stop" => {
                 self.broadcast(bedrock::ID_TEXT, &bedrock::text_raw("Arrêt du serveur…"), None);
                 info!("Arrêt du serveur demandé par {}", who);
@@ -1852,6 +1928,7 @@ impl Server {
     }
 
     fn emit(&mut self, event: &str, args: &[LVal]) -> Vec<LVal> {
+        let _t = timings::scope_with(|| format!("Plugins — événement {}", event));
         let info = self.info();
         self.plugins.set_info(&info, self.tick);
         let res = self.plugins.dispatch(event, args);
@@ -2894,6 +2971,7 @@ impl Server {
             return;
         }
         for (id, body) in packets {
+            let _t = timings::scope_with(|| format!("Paquet reçu n° {}{}", id, packet_label(id)));
             let stage = self.clients.get(&addr).map(|c| c.stage).unwrap_or(Stage::Done);
             if self.cfg.debug && id != 144 {
                 if body.len() <= 48 {
@@ -3493,6 +3571,7 @@ impl Server {
                 info!("  whitelist whitelist on | off | add <joueur> | remove <joueur> | list | reload");
                 info!("  motd      affiche ou change le nom du serveur");
                 info!("  version   version du serveur");
+                info!("  timings   timings on | off | reset | report : mesure où passe le temps du serveur");
                 info!("  stop      arrête le serveur");
                 for (n, d, p) in self.plugins.commands() {
                     info!("  {:<9} {} [{}]", n, d, p);
@@ -4006,10 +4085,15 @@ impl Server {
         let mut events = Vec::new();
         let mut next_tick = Instant::now() + TICK;
         while self.running && !stop.load(Ordering::Relaxed) {
-            let mut read = self.rak.poll(&mut events);
-            if let Some(n) = self.nether.as_mut() {
-                read += n.poll(&mut events);
-            }
+            let read = {
+                let _t = timings::scope("Réseau — lecture");
+                let mut read = self.rak.poll(&mut events);
+                if let Some(n) = self.nether.as_mut() {
+                    read += n.poll(&mut events);
+                }
+                read
+            };
+            let _received = if events.is_empty() { None } else { Some(timings::scope("Paquets reçus — traitement")) };
             for ev in events.drain(..).collect::<Vec<_>>() {
                 let addr = match &ev {
                     RakEvent::Connected(a) | RakEvent::Packet(a, _) | RakEvent::Disconnected(a, _) => *a,
@@ -4021,16 +4105,24 @@ impl Server {
                     self.violation(&addr, "erreur interne");
                 }
             }
-            self.poll_logins();
+            drop(_received);
+            {
+                let _t = timings::scope("Logins — vérification");
+                self.poll_logins();
+            }
             while let Ok(line) = console.try_recv() {
+                let _t = timings::scope("Console");
                 self.command(&line);
             }
             let now = Instant::now();
             if now >= next_tick {
+                let _tick = timings::scope("Tick complet");
+                timings::tick();
                 self.measure(now, now.duration_since(next_tick));
                 self.tick += 1;
                 next_tick += TICK;
                 if now.duration_since(self.last_save) > Duration::from_secs(60) {
+                    let _t = timings::scope("Tick — sauvegarde du monde et des joueurs");
                     self.last_save = now;
                     self.save_world();
                     self.save_players();
@@ -4042,28 +4134,52 @@ impl Server {
                 self.plugins.set_info(&info, self.tick);
                 if let Some(d) = &self.data {
                     // Les fours cuisent, qu'un joueur les regarde ou non
+                    let _t = timings::scope("Tick — blocs à données (fours…)");
                     let mut ctx = ItemCatalog { data: d, next: &mut self.tile_net_id };
                     self.world.tiles.tick(&mut ctx);
                 }
                 if self.tick % 4 == 0 {
+                    let _t = timings::scope("Tick — écrans ouverts (coffres, fours)");
                     self.watch_containers();
                 }
                 self.release_buttons();
-                self.plugins.run_timers(self.tick);
-                self.apply_actions();
-                self.send_queued_chunks();
-                self.watch_freezes();
-                self.run_probes();
-                self.broadcast_players();
-                self.poll_signaling();
+                {
+                    let _t = timings::scope("Tick — minuteries des plugins");
+                    self.plugins.run_timers(self.tick);
+                }
+                {
+                    let _t = timings::scope("Tick — actions demandées par les plugins");
+                    self.apply_actions();
+                }
+                {
+                    let _t = timings::scope("Tick — envoi du terrain (chunks)");
+                    self.send_queued_chunks();
+                }
+                {
+                    let _t = timings::scope("Tick — surveillance des connexions");
+                    self.watch_freezes();
+                    self.run_probes();
+                }
+                {
+                    let _t = timings::scope("Tick — joueurs vus par les autres");
+                    self.broadcast_players();
+                }
+                {
+                    let _t = timings::scope("Tick — signalisation NetherNet");
+                    self.poll_signaling();
+                }
                 if self.tick % 20 == 0 {
+                    let _t = timings::scope("Tick — clés Xbox et délais de connexion");
                     self.poll_auth();
                     self.check_deadlines();
                 }
             }
-            self.rak.flush();
-            if let Some(n) = self.nether.as_mut() {
-                n.flush(&mut events);
+            {
+                let _t = timings::scope("Réseau — envoi");
+                self.rak.flush();
+                if let Some(n) = self.nether.as_mut() {
+                    n.flush(&mut events);
+                }
             }
             if read == 0 {
                 // Rien à lire : on rend la main au système au lieu de tourner à vide

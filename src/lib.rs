@@ -51,7 +51,7 @@ pub use plugin::lua;
 pub use security::{auth, crypto};
 #[cfg(feature = "nethernet")]
 pub use security::identity;
-pub use utils::{config, console, inflate, json, log, yaml};
+pub use utils::{config, console, inflate, json, log, timings, yaml};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Compilation : branche ou étiquette, commit et date, inscrits par la publication GitHub.

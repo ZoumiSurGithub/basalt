@@ -1000,6 +1000,19 @@ fn a_chest_opens_and_keeps_what_is_put_in_it() {
     expect_text(&mut steve, "Joueurs : §f1/");
     command(&mut steve, "/version");
     expect_text(&mut steve, "Basalt 0.1.0");
+    // Mesures de temps : rien sans les avoir allumées, puis un résumé et un fichier de rapport
+    command(&mut steve, "/timings on");
+    expect_text(&mut steve, "Mesures allumées");
+    std::thread::sleep(Duration::from_millis(400));
+    command(&mut steve, "/timings report");
+    expect_text(&mut steve, "Mesures sur");
+    expect_text(&mut steve, "Rapport complet");
+    let reports: Vec<_> = std::fs::read_dir(dir.join("timings")).unwrap().flatten().collect();
+    assert_eq!(reports.len(), 1);
+    let text = std::fs::read_to_string(reports[0].path()).unwrap();
+    assert!(text.contains("Tick complet") && text.contains("Réseau — lecture") && text.contains("Tick — joueurs vus par les autres"), "{}", text);
+    command(&mut steve, "/timings off");
+    expect_text(&mut steve, "Mesures éteintes");
 
     // Reprendre plus que ce qu'il contient est refusé
     let mut request = vec![1, 0x07, 1, 1, 0, 9];

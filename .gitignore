@@ -12,3 +12,4 @@ white-list.txt
 Cargo.lock.bak
 .version
 PUBLIER.md
+timings/
