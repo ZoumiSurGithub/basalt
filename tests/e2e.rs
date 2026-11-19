@@ -875,14 +875,24 @@ fn capture_tool_talks_raknet_to_basalt_itself() {
     let witness = std::thread::spawn(move || {
         basalt::tools::capture_rak::run_as("127.0.0.1", port, None, &witness_payload, "BasaltTemoin", Duration::from_secs(15), ("", ""))
     });
-    std::thread::sleep(Duration::from_millis(1500));
-    let summary = basalt::tools::capture_rak::run("127.0.0.1", addr.port(), &out, &payload).expect("capture");
+    std::thread::sleep(Duration::from_millis(3000));
+    // Le joueur de la capture reste 8 s en jeu : sur une machine lente (intégration continue),
+    // le témoin a le temps de lui apparaître
+    let summary = basalt::tools::capture_rak::run_as("127.0.0.1", addr.port(), Some(&out), &payload, "BasaltCapture", Duration::from_secs(8), ("", ""))
+        .expect("capture");
+    // Le témoin est attendu avant de conclure : en cas d'échec, son propre résultat dit pourquoi
+    let witness_result = witness.join().unwrap();
     assert!(summary.contains("start_game"), "{}", summary);
-    assert!(summary.contains("add_player"), "le témoin doit apparaître chez le joueur de la capture : {}", summary);
+    assert!(
+        summary.contains("add_player"),
+        "le témoin doit apparaître chez le joueur de la capture : {} — témoin : {:?}",
+        summary,
+        witness_result
+    );
     let saved = out.join("2225").join("packets");
     assert!(std::fs::metadata(saved.join("start_game.bin")).unwrap().len() > 100);
     assert!(std::fs::metadata(saved.join("add_player.bin")).unwrap().len() > 40);
-    assert!(witness.join().unwrap().expect("témoin").contains("BasaltTemoin"));
+    assert!(witness_result.expect("témoin").contains("BasaltTemoin"));
     stop.store(true, Ordering::Relaxed);
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);

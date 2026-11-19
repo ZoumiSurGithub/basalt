@@ -34,6 +34,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(|a| a == "capture").unwrap_or(false) {
         capture(&args[2..]);
+        basalt::log::flush();
         return;
     }
     basalt::console::init();
@@ -59,6 +60,7 @@ fn main() {
         Ok(s) => s,
         Err(e) => {
             error!("Impossible d'ouvrir {}:{} en UDP : {}", cfg.ip, cfg.port, e);
+            basalt::log::flush();
             basalt::console::restore();
             std::process::exit(1);
         }
@@ -69,6 +71,9 @@ fn main() {
     std::thread::spawn(move || basalt::console::read_commands(tx));
 
     server.run(&STOP, &rx);
+    // Les écritures en arrière-plan (disque, journal) sont terminées avant de quitter
+    basalt::background::DISK.flush(std::time::Duration::from_secs(60));
+    basalt::log::flush();
     basalt::console::restore();
 }
 

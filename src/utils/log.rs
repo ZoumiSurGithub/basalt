@@ -52,6 +52,18 @@ pub fn write(level: Level, msg: &str) {
         Level::Error => ("ERREUR", "\x1b[1;31m", "\x1b[31m"),
     };
     let time = format!("[{:02}:{:02}:{:02}]", secs / 3600, secs / 60 % 60, secs % 60);
+    // L'écriture (fichier et console) se fait sur un fil à part : un terminal ou un disque
+    // lent ne retarde pas le serveur. L'ordre des lignes est conservé.
+    let msg = msg.to_string();
+    crate::background::LOG.run(move || emit(&time, label, color, text_color, &msg));
+}
+
+/// Attend que toutes les lignes du journal soient écrites (avant de quitter).
+pub fn flush() {
+    crate::background::LOG.flush(std::time::Duration::from_secs(2));
+}
+
+fn emit(time: &str, label: &str, color: &str, text_color: &str, msg: &str) {
     if let Ok(mut slot) = FILE.lock() {
         if let Some(f) = slot.as_mut() {
             let _ = writeln!(f, "{} [{}] {}", time, label, msg);

@@ -122,18 +122,30 @@ impl World {
     /// (x, y, z, identifiant) ; l'identifiant est stable (dérivé du nom et de l'état), donc
     /// valable d'une version du jeu à l'autre.
     pub fn save(&mut self, dir: &std::path::Path) -> std::io::Result<()> {
-        use crate::nbt::{self, Tag};
+        let doc = self.snapshot();
+        Self::write_snapshot(dir, &doc)
+    }
+
+    /// Document à enregistrer (la partie rapide de l'enregistrement, faite dans la boucle
+    /// principale) ; le monde est ensuite considéré comme enregistré.
+    pub fn snapshot(&mut self) -> crate::nbt::Tag {
+        use crate::nbt::Tag;
+        self.dirty = false;
         let mut blocks = Vec::with_capacity(self.count * 4);
         for ((cx, cz), edits) in self.edits.iter() {
             for ((x, y, z), block) in edits.iter() {
                 blocks.extend_from_slice(&[cx * 16 + *x as i32, *y as i32, cz * 16 + *z as i32, *block as i32]);
             }
         }
-        let doc = Tag::compound(vec![("Version", Tag::Int(1)), ("Blocks", Tag::IntArray(blocks))]);
-        nbt::save_file(&dir.join("level.nbt"), &doc)?;
+        Tag::compound(vec![("Version", Tag::Int(1)), ("Blocks", Tag::IntArray(blocks))])
+    }
+
+    /// Écrit un document préparé par `snapshot` (compression et disque : la partie lente,
+    /// qui peut se faire sur un autre fil).
+    pub fn write_snapshot(dir: &std::path::Path, doc: &crate::nbt::Tag) -> std::io::Result<()> {
+        crate::nbt::save_file(&dir.join("level.nbt"), doc)?;
         // L'ancien format n'a plus lieu d'être une fois le nouveau fichier écrit
         let _ = std::fs::remove_file(dir.join("blocs.bin"));
-        self.dirty = false;
         Ok(())
     }
 

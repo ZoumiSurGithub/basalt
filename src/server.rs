@@ -758,6 +758,12 @@ impl Server {
         let dir = self.cfg.root.clone();
         let old_dir = std::path::PathBuf::from(&self.cfg.world_dir);
         let now = Self::now_unix();
+        // Sa dernière sauvegarde (départ juste avant) peut être encore en cours d'écriture :
+        // on l'attend, pour ne pas relire un fichier dépassé
+        if crate::background::DISK.pending() > 0 {
+            let _t = timings::scope("Connexion — attente d'une sauvegarde en cours");
+            crate::background::DISK.flush(Duration::from_secs(5));
+        }
         let mut moved = false;
         let found = match PlayerData::load(&dir, &name) {
             // Rien ici : peut-être un fichier d'avant, rangé dans le dossier du monde
@@ -848,11 +854,15 @@ impl Server {
         Some(d)
     }
 
+    /// Sauvegarde d'un joueur : l'état est relevé ici, l'écriture se fait sur le fil des écritures.
     fn store_player(&self, c: &Client) {
         if let Some(d) = self.snapshot_player(c) {
-            if let Err(e) = d.save(&self.cfg.root) {
-                warn!("Sauvegarde de {} impossible : {}", d.name, e);
-            }
+            let root = self.cfg.root.clone();
+            crate::background::DISK.run(move || {
+                if let Err(e) = d.save(&root) {
+                    warn!("Sauvegarde de {} impossible : {}", d.name, e);
+                }
+            });
         }
     }
 
@@ -1901,7 +1911,13 @@ impl Server {
                     let dir = self.cfg.root.join("timings");
                     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
                     let path = dir.join(format!("timings-{}.txt", stamp));
-                    let saved = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, text.as_bytes()));
+                    // Écrit sur le fil des écritures : le rapport peut être long
+                    let target = path.clone();
+                    crate::background::DISK.run(move || {
+                        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&target, text.as_bytes())) {
+                            warn!("Rapport de mesures non enregistré dans {} : {}", target.display(), e);
+                        }
+                    });
                     self.reply(sender, &format!("§2---- §fMesures sur {:.0} s §7({} ticks, {:.1} ticks/s) §2----", top.0, top.1, top.1 as f64 / top.0));
                     for line in top.2.iter().take(8) {
                         let per_tick = if top.1 == 0 { 0.0 } else { line.total_ms / top.1 as f64 };
@@ -1914,10 +1930,7 @@ impl Server {
                         };
                         self.reply(sender, &format!("{}{:>5.1} %§f  {} §7({:.2} ms par tick, pire {:.1} ms)", color, line.share, line.name, per_tick, line.worst_ms));
                     }
-                    match saved {
-                        Ok(()) => self.reply(sender, &format!("§6Rapport complet : §f{}", path.display())),
-                        Err(e) => self.reply(sender, &format!("§cRapport complet non enregistré : {}", e)),
-                    }
+                    self.reply(sender, &format!("§6Rapport complet : §f{}", path.display()));
                 }
                 _ => usage(self),
             },
@@ -4235,22 +4248,35 @@ impl Server {
         }
     }
 
+    /// Enregistre le monde. Le document est préparé ici ; la compression et l'écriture se
+    /// font sur le fil des écritures, sans retenir les joueurs.
     fn save_world(&mut self) {
+        let dir = std::path::PathBuf::from(&self.cfg.world_dir);
         if let (true, Some(d)) = (self.world.tiles.dirty, &self.data) {
             let ctx = ItemCatalog { data: d, next: &mut self.tile_net_id };
-            if let Err(e) = self.world.tiles.save(std::path::Path::new(&self.cfg.world_dir), &ctx) {
-                warn!("Contenu des coffres et des fours non enregistré : {}", e);
-            }
+            let doc = self.world.tiles.snapshot(&ctx);
+            let path = dir.join("tiles.nbt");
+            crate::background::DISK.run(move || {
+                if let Err(e) = crate::nbt::save_file(&path, &doc) {
+                    warn!("Contenu des coffres et des fours non enregistré : {}", e);
+                }
+            });
         }
         if !self.world.dirty {
             return;
         }
-        let dir = std::path::PathBuf::from(&self.cfg.world_dir);
-        match self.world.save(&dir) {
-            Ok(()) if self.cfg.debug || !self.running => info!("Monde enregistré ({} blocs modifiés)", self.world.edit_count()),
+        // Un enregistrement précédent encore en cours (disque très lent) : on attend le suivant
+        // plutôt que d'empiler des copies du monde en mémoire
+        if self.running && crate::background::DISK.pending() > 4 {
+            return;
+        }
+        let doc = self.world.snapshot();
+        let (count, announce) = (self.world.edit_count(), self.cfg.debug || !self.running);
+        crate::background::DISK.run(move || match crate::world::World::write_snapshot(&dir, &doc) {
+            Ok(()) if announce => info!("Monde enregistré ({} blocs modifiés)", count),
             Ok(()) => {}
             Err(e) => warn!("Enregistrement du monde impossible dans {} : {}", dir.display(), e),
-        }
+        });
     }
 
     /// Fait tourner le serveur jusqu'à `stop`, la commande `stop` ou un plugin.
@@ -4405,6 +4431,10 @@ impl Server {
         }
         self.save_world();
         self.save_players();
+        // Tout ce qui attend d'être écrit sur le disque l'est avant de s'arrêter
+        if !crate::background::DISK.flush(Duration::from_secs(60)) {
+            warn!("Certaines sauvegardes n'ont pas pu être terminées à temps");
+        }
         self.plugins.unload_all();
         self.rak.shutdown();
         if let Some(n) = self.nether.as_mut() {

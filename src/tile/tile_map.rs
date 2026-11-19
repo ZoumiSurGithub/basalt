@@ -81,6 +81,13 @@ impl TileMap {
     /// Enregistre dans `tiles.nbt` : une section par bloc, avec sa position, son type, ses
     /// objets (notés par leur nom, valable d'une version du jeu à l'autre) et son état propre.
     pub fn save(&mut self, dir: &Path, ctx: &dyn TileContext) -> std::io::Result<()> {
+        let doc = self.snapshot(ctx);
+        nbt::save_file(&dir.join("tiles.nbt"), &doc)
+    }
+
+    /// Document à enregistrer dans `tiles.nbt` ; les blocs sont ensuite considérés comme
+    /// enregistrés. L'écriture elle-même peut se faire sur un autre fil.
+    pub fn snapshot(&mut self, ctx: &dyn TileContext) -> Tag {
         let mut positions: Vec<&Pos> = self.tiles.keys().collect();
         positions.sort();
         let mut list = Vec::with_capacity(positions.len());
@@ -101,9 +108,8 @@ impl TileMap {
             entries.extend(tile.save_extra());
             list.push(Tag::compound(entries));
         }
-        nbt::save_file(&dir.join("tiles.nbt"), &Tag::compound(vec![("Version", Tag::Int(1)), ("Tiles", Tag::list_of(list))]))?;
         self.dirty = false;
-        Ok(())
+        Tag::compound(vec![("Version", Tag::Int(1)), ("Tiles", Tag::list_of(list))])
     }
 
     /// Recharge. Renvoie le nombre de blocs porteurs de données (0 si aucun fichier).
