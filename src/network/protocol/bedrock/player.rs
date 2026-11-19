@@ -70,12 +70,17 @@ pub fn add_player(uuid: &[u8; 16], name: &str, id: i64, pos: (f32, f32, f32), pi
     super::item_stack(&mut w, 0, 0, 0, 0);
     w.vari32(gamemode);
     // Données de l'entité : drapeaux (nom visible, collisions, gravité) et nom affiché
+    // Chaque donnée s'écrit : numéro, variante, type (un octet), valeur — comme dans le
+    // paquet de données d'entité que le jeu 1.26.65 accepte déjà à l'entrée. Sans l'octet
+    // de type, le jeu répondait « invalid enum value ».
     w.varu32(2);
-    w.varu32(0);
+    w.varu32(0); // n° 0 : indicateurs
     w.varu32(7);
+    w.u8(7); // entier 64 bits
     w.vari64((1 << 14) | (1 << 15) | (1 << 48) | (1 << 49));
+    w.varu32(4); // n° 4 : nom affiché
     w.varu32(4);
-    w.varu32(4);
+    w.u8(4); // texte
     w.string(name);
     w.varu32(0); // propriétés entières
     w.varu32(0); // propriétés flottantes
