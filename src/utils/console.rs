@@ -216,6 +216,46 @@ impl Decoder {
 
 /// Lit le clavier jusqu'à la fermeture de l'entrée et envoie chaque commande validée.
 /// À lancer sur son propre fil d'exécution.
+/// Fichier où l'historique des commandes est gardé d'un démarrage à l'autre.
+static HISTORY_FILE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+
+/// Recharge l'historique des commandes tapées lors des sessions précédentes : la flèche du
+/// haut les retrouve même après un redémarrage du serveur.
+pub fn load_history(path: &std::path::Path) {
+    if let Ok(text) = std::fs::read_to_string(path) {
+        if let Ok(mut state) = STATE.lock() {
+            let lines: Vec<String> = text
+                .lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty() && l.len() <= 512 && !l.chars().any(|c| c.is_control()))
+                .map(|l| l.to_string())
+                .collect();
+            let skip = lines.len().saturating_sub(MAX_HISTORY);
+            state.history = lines.into_iter().skip(skip).collect();
+        }
+    }
+    if let Ok(mut file) = HISTORY_FILE.lock() {
+        *file = Some(path.to_path_buf());
+    }
+}
+
+/// Réécrit le fichier d'historique (au plus `MAX_HISTORY` lignes).
+fn save_history(history: &[String]) {
+    let path = match HISTORY_FILE.lock() {
+        Ok(f) => match f.as_ref() {
+            Some(p) => p.clone(),
+            None => return,
+        },
+        Err(_) => return,
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let mut text = history.join("\n");
+    text.push('\n');
+    let _ = std::fs::write(&path, text);
+}
+
 pub fn read_commands(tx: Sender<String>) {
     let interactive = STATE.lock().map(|s| s.interactive).unwrap_or(false);
     if !interactive {
@@ -265,6 +305,9 @@ pub fn read_commands(tx: Sender<String>) {
                 }
             }
             redraw(&state);
+            if !commands.is_empty() {
+                save_history(&state.history);
+            }
         }
         for command in commands {
             if tx.send(command).is_err() {

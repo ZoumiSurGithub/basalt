@@ -171,6 +171,9 @@ pub fn report(header: &[String]) -> Option<String> {
     out.push_str("               quand « Tick complet » et les étapes réseau approchent 100 % à eux tous.\n");
     out.push_str("  par tick   : temps moyen par tick, à comparer aux 50 ms dont dispose un tick.\n");
     out.push_str("  pire       : appel le plus long. « lents » : appels de plus de 50 ms.\n");
+    out.push_str("  « Pause de 1 ms » n'est pas du travail : c'est le repos du serveur. Son « pire » doit\n");
+    out.push_str("  rester de quelques millisecondes ; s'il atteint des dizaines de ms, le système\n");
+    out.push_str("  d'exploitation ou l'hébergeur ne rend pas la main à temps (processeur partagé).\n");
     out.push_str("  Les lignes s'emboîtent : un paquet est compté dans « Paquets reçus », un événement\n");
     out.push_str("  de plugin dans le paquet ou l'étape qui l'a déclenché.\n\n");
     out.push_str(&format!("{:<44} {:>10} {:>9} {:>10} {:>9} {:>11} {:>9} {:>6}\n", "Étape", "total ms", "% temps", "par tick", "appels", "moyenne", "pire ms", "lents"));

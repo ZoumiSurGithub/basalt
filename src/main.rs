@@ -37,6 +37,8 @@ fn main() {
         return;
     }
     basalt::console::init();
+    // La flèche du haut retrouve aussi les commandes des sessions précédentes
+    basalt::console::load_history(Path::new("logs/console-history.txt"));
     basalt::log::init_file();
     // La compilation GitHub inscrit ici le commit et la date : on sait toujours quelle
     // version tourne en lisant la première ligne du journal

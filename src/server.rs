@@ -4223,7 +4223,10 @@ impl Server {
                 }
             }
             if read == 0 {
-                // Rien à lire : on rend la main au système au lieu de tourner à vide
+                // Rien à lire : on rend la main au système au lieu de tourner à vide.
+                // Cette pause est mesurée : si le système met bien plus d'une milliseconde à
+                // rendre la main, c'est la machine (processeur partagé) qui cause les à-coups.
+                let _t = timings::scope("Pause de 1 ms (au-delà : la machine fait attendre)");
                 std::thread::sleep(Duration::from_millis(1));
             }
         }

@@ -135,6 +135,7 @@ impl Peer {
 
     /// Écrit sur le canal fiable autant de fragments en attente que la pile en accepte.
     fn pump(&mut self) {
+        let _t = crate::timings::scope("NetherNet — écriture des messages (pump)");
         let id = match self.reliable {
             Some(id) => id,
             None => return,
@@ -166,12 +167,17 @@ impl Peer {
     /// Exécute ce que la session demande : émissions réseau et événements.
     fn drain(&mut self, socket: &UdpSocket, events: &mut Vec<RakEvent>) {
         loop {
-            match self.rtc.poll_output() {
+            let output = {
+                let _t = crate::timings::scope("NetherNet — calcul des sorties (chiffrement)");
+                self.rtc.poll_output()
+            };
+            match output {
                 Ok(Output::Timeout(at)) => {
                     self.timeout = at;
                     return;
                 }
                 Ok(Output::Transmit(t)) => {
+                    let _t = crate::timings::scope("NetherNet — envoi d'un datagramme (système)");
                     self.sent += 1;
                     if self.debug && self.sent <= 3 {
                         info!("[nethernet] {} : envoi n°{} vers {} ({} octets)", self.key, self.sent, t.destination, t.contents.len());
