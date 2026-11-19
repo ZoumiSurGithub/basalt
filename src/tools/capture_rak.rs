@@ -18,9 +18,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::crypto::{sha256, BedrockCipher, EcKey, EcSecret};
 use crate::json::{base64_decode, base64_encode};
 use crate::raknet::{put_addr, MAGIC};
-use crate::tools::capture::{build_login, Capture, Stage};
+use crate::tools::capture::{build_login_as, Capture, Stage};
 
 const GUID: i64 = 0x4261_7361_6c74_0001;
+
+/// Identifiant RakNet de cette session. Il doit différer d'une session à l'autre : le serveur
+/// officiel refuse une seconde connexion portant un identifiant déjà en ligne (cas du témoin
+/// et du joueur de capture, lancés depuis la même machine).
+fn guid_of(sock: &UdpSocket) -> i64 {
+    let port = sock.local_addr().map(|a| a.port()).unwrap_or(0) as i64;
+    GUID ^ (port << 16) ^ ((std::process::id() as i64) << 32)
+}
 
 /// Client RakNet minimal : envoi fiable et ordonné, réception réordonnée et dédoublonnée.
 struct RakClient {
@@ -64,7 +72,7 @@ impl RakClient {
         let mut p = vec![0x01];
         p.extend_from_slice(&1i64.to_be_bytes());
         p.extend_from_slice(&MAGIC);
-        p.extend_from_slice(&GUID.to_be_bytes());
+        p.extend_from_slice(&guid_of(sock).to_be_bytes());
         let _ = sock.set_read_timeout(Some(Duration::from_millis(700)));
         let mut buf = [0u8; 4096];
         for _ in 0..4 {
@@ -81,6 +89,7 @@ impl RakClient {
 
     /// Ouvre la session (échange hors connexion, puis demande de connexion).
     fn connect(sock: UdpSocket, server: SocketAddr) -> Result<RakClient, String> {
+        let guid = guid_of(&sock);
         let _ = sock.set_read_timeout(Some(Duration::from_millis(800)));
         let mut buf = [0u8; 4096];
         // 1. Taille des datagrammes : on propose du plus grand au plus petit
@@ -117,7 +126,7 @@ impl RakClient {
         }
         put_addr(&mut p, &server);
         p.extend_from_slice(&(mtu as u16).to_be_bytes());
-        p.extend_from_slice(&GUID.to_be_bytes());
+        p.extend_from_slice(&guid_of(&sock).to_be_bytes());
         let mut ok = false;
         for _ in 0..3 {
             let _ = sock.send(&p);
@@ -151,7 +160,7 @@ impl RakClient {
         };
         // 3. Demande de connexion
         let mut p = vec![0x09];
-        p.extend_from_slice(&GUID.to_be_bytes());
+        p.extend_from_slice(&guid.to_be_bytes());
         p.extend_from_slice(&0i64.to_be_bytes());
         p.push(0);
         c.send(&p);
@@ -455,6 +464,15 @@ pub fn session_key(jwt: &str, secret: &EcSecret) -> Result<[u8; 32], String> {
 
 /// Lance la capture. `data_dir` reçoit les paquets, `payload` est le modèle de données client.
 pub fn run(host: &str, port: u16, data_dir: &Path, payload: &Path) -> Result<String, String> {
+    run_as(host, port, Some(data_dir), payload, "BasaltCapture", Duration::from_secs(3), ("", ""))
+}
+
+/// Une session de capture. `name` : pseudo du faux joueur. `linger` : temps passé en jeu
+/// après l'apparition (le serveur envoie alors les autres joueurs). `data_dir` absent : rien
+/// n'est enregistré — c'est le « témoin », second joueur dont la seule présence fait envoyer
+/// au premier le paquet d'apparition d'un joueur. `account` : identifiants de compte (`mid`,
+/// `xid`) inscrits dans le jeton ; vides par défaut.
+pub fn run_as(host: &str, port: u16, data_dir: Option<&Path>, payload: &Path, name: &str, linger: Duration, account: (&str, &str)) -> Result<String, String> {
     let server: SocketAddr = (host, port)
         .to_socket_addrs()
         .map_err(|e| format!("adresse {} : {}", host, e))?
@@ -490,7 +508,24 @@ pub fn run(host: &str, port: u16, data_dir: &Path, payload: &Path) -> Result<Str
     let spki = base64_encode(&secret.spki(), false, true);
     let now_unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let sign = |m: &[u8]| secret.sign_sha384(m).unwrap_or_else(|| vec![0u8; 96]);
-    let login = build_login(protocol, "BasaltCapture", &spki, client_payload.trim(), &sign, now_unix);
+    // Le témoin se présente avec d'autres identifiants d'appareil que le joueur de capture
+    // Le témoin se présente avec d'autres identifiants d'appareil ; `account.0 == "installation"`
+    // demande seulement de remplir l'identifiant d'installation s'il est vide dans le modèle.
+    let witness = name != "BasaltCapture";
+    let fill = account.0 == "installation";
+    let account = if fill { ("", account.1) } else { account };
+    let payload_b64 = if witness || fill {
+        let (varied, changed, keys) = super::capture::vary_client_payload_with(client_payload.trim(), witness, if witness { 2 } else { 1 });
+        // Noms de clés uniquement, jamais leurs valeurs
+        info!("{} : identifiants modifiés [{}]", name, changed.join(", "));
+        if witness {
+            info!("Clés du modèle : {}", keys.join(", "));
+        }
+        varied
+    } else {
+        client_payload.trim().to_string()
+    };
+    let login = build_login_as(protocol, name, &spki, &payload_b64, &sign, now_unix, account);
     let mut capture = Capture::new(protocol, login);
     capture.stored_deflate = true;
     let mut crypt: Option<Crypt> = None;
@@ -506,13 +541,18 @@ pub fn run(host: &str, port: u16, data_dir: &Path, payload: &Path) -> Result<Str
     let hello = capture.hello();
     send(&mut rak, &mut crypt, &hello);
 
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_secs(60) + linger;
     let mut last_packet = Instant::now();
     let mut announced = Stage::Settings;
     let mut closed = false;
-    while Instant::now() < deadline && !capture.complete && capture.stage != Stage::Failed {
-        // Entré en jeu, puis silence : le serveur a tout envoyé
-        if capture.records.iter().any(|(id, _)| *id == 11) && last_packet.elapsed() > Duration::from_secs(4) {
+    // Fin de la session : `linger` après l'apparition (ou après un long silence en jeu)
+    let mut end: Option<Instant> = None;
+    while Instant::now() < deadline && capture.stage != Stage::Failed {
+        let in_game = capture.complete || (capture.records.iter().any(|(id, _)| *id == 11) && last_packet.elapsed() > Duration::from_secs(4));
+        if in_game && end.is_none() {
+            end = Some(Instant::now() + linger);
+        }
+        if end.map(|e| Instant::now() >= e).unwrap_or(false) {
             break;
         }
         let m = match rak.next(Duration::from_millis(20)) {
@@ -568,6 +608,10 @@ pub fn run(host: &str, port: u16, data_dir: &Path, payload: &Path) -> Result<Str
             if closed { ", session fermée par le serveur" } else { "" }
         ));
     }
+    let data_dir = match data_dir {
+        Some(d) => d,
+        None => return Ok(format!("témoin « {} » : resté en jeu, rien à enregistrer", name)),
+    };
     let dir = capture.save(data_dir).map_err(|e| format!("écriture des fichiers : {}", e))?;
     let list: Vec<String> = found.iter().map(|(name, size)| format!("{} ({} octets)", name, size)).collect();
     Ok(format!("Capture réussie pour le protocole {} : {} — rangés dans {}", protocol, list.join(", "), dir.display()))

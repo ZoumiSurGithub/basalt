@@ -87,12 +87,23 @@ pub fn add_player(uuid: &[u8; 16], name: &str, id: i64, pos: (f32, f32, f32), pi
     w.0.extend_from_slice(&id.to_le_bytes()); // capacités : joueur concerné
     w.u8(1); // permissions : membre
     w.u8(0); // permissions de commande
-    w.u8(0); // aucune couche de capacités
+    // Une couche de capacités, la couche de base, copiée du paquet officiel : toutes les
+    // capacités définies, valeurs d'un joueur ordinaire, vitesses de vol et de marche
+    w.u8(1);
+    w.0.extend_from_slice(&1u16.to_le_bytes());
+    w.u32(0x000f_ffff);
+    w.u32(0x0000_003f);
+    w.f32(0.05);
+    w.f32(1.0);
+    w.f32(0.1);
     w.varu32(0); // liens
-    // (Pas d'autre champ ici : un octet de trop décalait la plateforme, que le jeu 1.26.65
-    // refusait alors comme « invalid enum value ».)
+    // Un octet nul suit les liens dans le paquet du serveur officiel 1.26.65 (relevé par
+    // l'outil de capture) : sans lui, le jeu répond « invalid string ».
+    w.u8(0);
     w.string(""); // identifiant d'appareil
-    w.i32(-1); // plateforme inconnue
+    // Plateforme : 8, la valeur envoyée par le serveur officiel pour un joueur Windows. Le jeu
+    // vérifie cette valeur ; « inconnue » (-1) n'a jamais été vue acceptée.
+    w.i32(8);
     w.0
 }
 
@@ -100,4 +111,45 @@ pub fn remove_actor(id: i64) -> Vec<u8> {
     let mut w = W::default();
     w.vari64(id);
     w.0
+}
+
+#[cfg(test)]
+mod add_player_tests {
+    use super::*;
+
+    /// Paquet du serveur officiel 1.26.65, relevé par l'outil de capture (618 octets) : son
+    /// début, jusqu'au nombre de données d'entité, et sa fin, après ces données. Le pseudo et
+    /// l'identifiant d'appareil y sont remplacés par des valeurs neutres de même longueur.
+    const OFFICIAL_HEAD: &[u8] = b"\x00\x40\x00\xde\xc0\x17\x5a\xb4\x02\x00\x00\x00\x00\x00\x00\x80\x0b\x54\x65\x6d\x6f\x69\x6e\x54\x65\x73\x74\x31\x01\x00\x00\x00\x00\x3f\x00\x00\x8e\x42\x00\x00\x00\x3f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x0a\x50";
+    const OFFICIAL_TAIL: &[u8] = b"\x00\x00\x01\x00\x00\x00\xf0\xff\xff\xff\x01\x00\x02\x05\x00\x3f\x01\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\xff\xff\x0f\x00\x3f\x00\x00\x00\xcd\xcc\x4c\x3d\x00\x00\x80\x3f\xcd\xcc\xcc\x3d\x00\x00\x20\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x30\x08\x00\x00\x00";
+
+    #[test]
+    fn add_player_is_laid_out_like_the_official_one() {
+        let mut uuid = [0u8; 16];
+        uuid.copy_from_slice(&OFFICIAL_HEAD[..16]);
+        let ours = add_player(&uuid, "TemoinTest1", 1, (0.5, 71.0, 0.5), 0.0, 0.0, 5);
+        // Tout le début est identique, à l'octet près ; seul le nombre de données diffère
+        // (le serveur officiel en envoie 80, deux suffisent)
+        assert_eq!(&ours[..75], &OFFICIAL_HEAD[..75]);
+        assert_eq!((ours[75], OFFICIAL_HEAD[75]), (2, 80));
+        // Première donnée : numéro 0, variante 7, type 7 — comme dans le paquet officiel
+        assert_eq!(&ours[76..79], &[0, 7, 7]);
+
+        // Fin officielle : propriétés (0, 0), capacités, liens, octet nul, appareil, plateforme
+        let t = OFFICIAL_TAIL;
+        assert_eq!(&t[..2], &[0, 0]);
+        assert_eq!((t[10], t[11], t[12]), (1, 0, 2), "permissions, puis deux couches de 22 octets");
+        let after_layers = 13 + 2 * 22;
+        assert_eq!(&t[after_layers..after_layers + 3], &[0, 0, 32], "liens, octet nul, longueur de l'identifiant d'appareil");
+        assert_eq!(&t[t.len() - 4..], &[8, 0, 0, 0]);
+        // La nôtre suit le même ordre : une seule couche (la couche de base, identique à
+        // l'officielle) et pas d'identifiant d'appareil
+        let n = ours.len();
+        let base_layer = &t[13 + 22..13 + 44];
+        assert_eq!(&ours[n - 42..n - 40], &[0, 0], "propriétés");
+        assert_eq!(&ours[n - 40..n - 32], &1i64.to_le_bytes());
+        assert_eq!(&ours[n - 32..n - 29], &[1, 0, 1], "permissions, puis une couche");
+        assert_eq!(&ours[n - 29..n - 7], base_layer);
+        assert_eq!(&ours[n - 7..], &[0, 0, 0, 8, 0, 0, 0]);
+    }
 }

@@ -19,8 +19,11 @@ use crate::bedrock;
 use crate::json::base64_encode;
 
 /// Paquets à conserver : (identifiant, nom du fichier).
-pub const WANTED: [(u32, &str); 8] = [
+pub const WANTED: [(u32, &str); 9] = [
     (11, "start_game"),
+    // Apparition d'un autre joueur : relevée pour connaître son format (jamais renvoyée telle
+    // quelle). Elle n'arrive que si un second joueur est présent : voir le « témoin ».
+    (12, "add_player"),
     // Liste des commandes : relevée pour connaître son format (elle n'est pas renvoyée telle quelle)
     (76, "available_commands"),
     (52, "crafting_data"),
@@ -103,6 +106,116 @@ fn b64url(data: &[u8]) -> String {
     base64_encode(data, true, false)
 }
 
+/// Donne au témoin d'autres identifiants d'appareil que ceux du joueur de capture. Les deux
+/// partent du même modèle (relevé auprès du vrai jeu) ; or le serveur officiel refuse un second
+/// joueur portant les mêmes identifiants (« raison 44 », conflit d'identifiant).
+/// `payload_b64` : données client en base64 ; renvoie la variante, ou l'original s'il est illisible.
+pub fn vary_client_payload(payload_b64: &str) -> String {
+    vary_client_payload_report(payload_b64).0
+}
+
+/// Comme `vary_client_payload`, avec en plus les noms des clés modifiées et la liste des noms
+/// de clés du modèle (les noms seulement, jamais les valeurs) pour le journal de capture.
+pub fn vary_client_payload_report(payload_b64: &str) -> (String, Vec<String>, Vec<String>) {
+    vary_client_payload_with(payload_b64, true, 2)
+}
+
+/// `bump` : modifier les identifiants présents (pour le témoin). `serial` : numéro inscrit dans
+/// l'identifiant d'installation (`SelfSignedId`) quand le modèle le laisse vide — deux joueurs
+/// dont cet identifiant est vide sont pris pour la même installation du jeu.
+pub fn vary_client_payload_with(payload_b64: &str, bump_ids: bool, serial: u8) -> (String, Vec<String>, Vec<String>) {
+    let mut json = match crate::json::base64_decode(payload_b64).and_then(|b| String::from_utf8(b).ok()) {
+        Some(j) => j,
+        None => return (payload_b64.to_string(), Vec::new(), Vec::new()),
+    };
+    // Début de la valeur associée à une clé (espaces tolérés autour des deux-points)
+    fn value_start(json: &str, key: &str) -> Option<usize> {
+        let marker = format!("\"{}\"", key);
+        let mut from = 0;
+        while let Some(found) = json[from..].find(&marker) {
+            let after = from + found + marker.len();
+            let rest = json[after..].trim_start();
+            if let Some(value) = rest.strip_prefix(':') {
+                return Some(json.len() - value.trim_start().len());
+            }
+            from = after;
+        }
+        None
+    }
+    // Change le dernier caractère (chiffre ou lettre) de la valeur d'une clé. Faux si la clé
+    // est absente ou sa valeur vide.
+    fn bump(json: &mut String, key: &str) -> bool {
+        let start = match value_start(json, key) {
+            Some(s) => s,
+            None => return false,
+        };
+        // Fin de la valeur : guillemet fermant pour un texte, sinon virgule ou accolade
+        let end = if json[start..].starts_with('"') {
+            match json[start + 1..].find('"') {
+                Some(e) => start + 1 + e,
+                None => return false,
+            }
+        } else {
+            match json[start..].find(|c| c == ',' || c == '}') {
+                Some(e) => start + e,
+                None => return false,
+            }
+        };
+        let at = match json[start..end].char_indices().rev().find(|(_, c)| c.is_ascii_alphanumeric()) {
+            Some((i, _)) => start + i,
+            None => return false,
+        };
+        let new = if json.as_bytes()[at] == b'7' { "3" } else { "7" };
+        json.replace_range(at..at + 1, new);
+        true
+    }
+    let mut changed = Vec::new();
+    if bump_ids {
+        for key in ["ClientRandomId", "SelfSignedId", "DeviceId", "PlayFabId", "PlatformOnlineId", "PlatformUserId", "PlatformOfflineId", "ThirdPartyName"] {
+            if bump(&mut json, key) {
+                changed.push(key.to_string());
+            }
+        }
+    }
+    // Identifiant d'installation vide : on en inscrit un, propre à ce joueur
+    if let Some(start) = value_start(&json, "SelfSignedId") {
+        if json[start..].starts_with("\"\"") {
+            json.replace_range(start..start + 2, &format!("\"b45a17c0-de00-4000-8000-0000000000{:02x}\"", serial));
+            changed.push("SelfSignedId (était vide)".to_string());
+        }
+    }
+    // Noms des clés de premier niveau : un guillemet ouvrant précédé de « { » ou « , »
+    let mut keys = Vec::new();
+    let bytes = json.as_bytes();
+    let (mut depth, mut i, mut expect_key) = (0i32, 0usize, false);
+    while i < bytes.len() && keys.len() < 80 {
+        match bytes[i] {
+            b'{' | b'[' => {
+                depth += 1;
+                expect_key = depth == 1 && bytes[i] == b'{';
+            }
+            b'}' | b']' => depth -= 1,
+            b',' => expect_key = depth == 1,
+            b'"' => {
+                // saute le texte entier (les guillemets échappés restent à l'intérieur)
+                let mut j = i + 1;
+                while j < bytes.len() && bytes[j] != b'"' {
+                    j += if bytes[j] == b'\\' { 2 } else { 1 };
+                }
+                if expect_key && depth == 1 {
+                    let name: String = json.get(i + 1..j.min(json.len())).unwrap_or("").chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(40).collect();
+                    keys.push(name);
+                }
+                expect_key = false;
+                i = j;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    (b64url(json.as_bytes()), changed, keys)
+}
+
 /// Construit le paquet Login d'un joueur hors ligne. `client_payload` est la partie
 /// centrale (base64url) des données client d'un vrai jeu, réutilisée telle quelle : elle
 /// décrit un skin et un appareil valides. `sign` signe en ES384 (96 octets).
@@ -114,17 +227,39 @@ pub fn build_login(
     sign: &dyn Fn(&[u8]) -> Vec<u8>,
     now: u64,
 ) -> Vec<u8> {
+    build_login_as(protocol, name, spki_b64, client_payload, sign, now, ("", ""))
+}
+
+/// Comme `build_login`, avec les identifiants de compte du jeton : (`mid`, `xid`). Deux joueurs
+/// présents en même temps sur le serveur officiel doivent en porter de différents, sinon le
+/// second est refusé (« raison 44 » : ce compte joue déjà ici).
+pub fn build_login_as(
+    protocol: i32,
+    name: &str,
+    spki_b64: &str,
+    client_payload: &str,
+    sign: &dyn Fn(&[u8]) -> Vec<u8>,
+    now: u64,
+    account: (&str, &str),
+) -> Vec<u8> {
+    // Uniquement des chiffres et des lettres : ces valeurs sont placées telles quelles dans le jeton
+    let clean = |s: &str| s.chars().filter(|c| c.is_ascii_alphanumeric()).take(32).collect::<String>();
+    let (mid, xid) = (clean(account.0), clean(account.1));
     let header = b64url(format!("{{\"alg\":\"ES384\",\"x5u\":\"{}\"}}", spki_b64).as_bytes());
     let jwt = |payload_b64: &str| -> String {
         let signing = format!("{}.{}", header, payload_b64);
         let signature = sign(signing.as_bytes());
         format!("{}.{}", signing, b64url(&signature))
     };
-    // Identité signée par le joueur lui-même
+    // Identité signée par le joueur lui-même. Le témoin (second joueur de la capture) porte
+    // un autre identifiant, sinon le serveur officiel le prendrait pour le même joueur.
+    let uuid_end = if name == "BasaltCapture" { "10" } else { "11" };
     let identity = format!(
-        "{{\"exp\":{},\"extraData\":{{\"XUID\":\"\",\"displayName\":\"{}\",\"identity\":\"3c1a4c2e-9d0b-4a6f-8f1e-5b7d2a9c4e10\"}},\"identityPublicKey\":\"{}\",\"nbf\":{}}}",
+        "{{\"exp\":{},\"extraData\":{{\"XUID\":\"{}\",\"displayName\":\"{}\",\"identity\":\"3c1a4c2e-9d0b-4a6f-8f1e-5b7d2a9c4e{}\"}},\"identityPublicKey\":\"{}\",\"nbf\":{}}}",
         now + 86_400,
+        xid,
         name,
+        uuid_end,
         spki_b64,
         now.saturating_sub(60)
     );
@@ -133,11 +268,13 @@ pub fn build_login(
     // Depuis la 1.26.10, le serveur officiel lit l'identité dans un jeton « multijoueur » ;
     // hors ligne, le joueur le signe lui-même avec la clé annoncée dans `cpk`.
     let token_claims = format!(
-        "{{\"aud\":\"api://auth-minecraft-services/multiplayer\",\"cpk\":\"{}\",\"exp\":{},\"iat\":{},\"ipt\":\"PlayFab\",\"iss\":\"self\",\"mid\":\"\",\"nbf\":{},\"tid\":\"20CA2\",\"xid\":\"\",\"xname\":\"{}\"}}",
+        "{{\"aud\":\"api://auth-minecraft-services/multiplayer\",\"cpk\":\"{}\",\"exp\":{},\"iat\":{},\"ipt\":\"PlayFab\",\"iss\":\"self\",\"mid\":\"{}\",\"nbf\":{},\"tid\":\"20CA2\",\"xid\":\"{}\",\"xname\":\"{}\"}}",
         spki_b64,
         now + 86_400,
         now.saturating_sub(60),
+        mid,
         now.saturating_sub(60),
+        xid,
         name
     );
     let token = jwt(&b64url(token_claims.as_bytes()));
@@ -193,6 +330,8 @@ fn disconnect_reason(code: i32) -> &'static str {
         25 => "serveur plein",
         34 => "serveur trop ancien",
         35 => "jeu trop ancien",
+        43 => "déjà connecté ailleurs",
+        44 => "conflit d'identifiant avec un joueur déjà présent",
         45 => "non autorisé (liste blanche)",
         46 => "non authentifié",
         48 => "paquet inconnu",
@@ -312,8 +451,29 @@ impl Capture {
                     out.push(self.pack(bedrock::ID_RESOURCE_PACK_RESPONSE, &PACKS_STACK_DONE));
                 }
                 (Stage::Recording, _) => {
-                    if id == bedrock::ID_PLAY_STATUS {
+                    if id == bedrock::ID_PLAY_STATUS && !self.complete {
                         self.complete = true;
+                        // Comme le vrai jeu : « je suis apparu ». Le serveur officiel montre
+                        // alors ce joueur aux autres.
+                        let runtime_id = self.records.iter().find(|(i, _)| *i == 11).and_then(|(_, start)| {
+                            let mut pos = 0;
+                            bedrock::read_varu64(start, &mut pos)?; // identifiant unique (même longueur d'écriture)
+                            bedrock::read_varu64(start, &mut pos)
+                        });
+                        if let Some(runtime_id) = runtime_id {
+                            let mut body = Vec::new();
+                            let mut v = runtime_id;
+                            loop {
+                                let byte = (v & 0x7f) as u8;
+                                v >>= 7;
+                                if v == 0 {
+                                    body.push(byte);
+                                    break;
+                                }
+                                body.push(byte | 0x80);
+                            }
+                            out.push(self.pack(113, &body));
+                        }
                     }
                     if id == 11 {
                         // Le serveur attend la distance d'affichage pour envoyer la suite
@@ -353,6 +513,32 @@ impl Capture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_witness_gets_other_device_identifiers() {
+        let original = r#"{"ClientRandomId":-4521,"DeviceId":"abcdef07","GameVersion":"1.26.65","SelfSignedId":"3f2a-00c1","SkinData":"AAAA"}"#;
+        let varied = vary_client_payload(&b64url(original.as_bytes()));
+        let text = String::from_utf8(crate::json::base64_decode(&varied).unwrap()).unwrap();
+        assert_eq!(text, r#"{"ClientRandomId":-4527,"DeviceId":"abcdef03","GameVersion":"1.26.65","SelfSignedId":"3f2a-00c7","SkinData":"AAAA"}"#);
+        // Un modèle sans ces clés, ou illisible, est rendu tel quel
+        let plain = b64url(br#"{"GameVersion":"1.26.65"}"#);
+        assert_eq!(vary_client_payload(&plain), plain);
+        assert_eq!(vary_client_payload("pas du base64 !"), "pas du base64 !");
+        // Espaces autour des deux-points, valeur vide, et compte rendu sans aucune valeur
+        let spaced = r#"{ "SelfSignedId" : "ab-12", "DeviceId":"", "SkinData":"x,\"y", "Nested":{"DeviceId":"zz"} }"#;
+        let (varied, changed, keys) = vary_client_payload_report(&b64url(spaced.as_bytes()));
+        let text = String::from_utf8(crate::json::base64_decode(&varied).unwrap()).unwrap();
+        assert!(text.contains(r#""SelfSignedId" : "ab-17""#), "{}", text);
+        assert_eq!(changed, vec!["SelfSignedId"]);
+        // Identifiant d'installation vide : rempli, avec un numéro propre à chaque joueur
+        let empty = b64url(br#"{"DeviceId":"d1","SelfSignedId":""}"#);
+        let (one, changed, _) = vary_client_payload_with(&empty, false, 1);
+        let text = String::from_utf8(crate::json::base64_decode(&one).unwrap()).unwrap();
+        assert_eq!(text, r#"{"DeviceId":"d1","SelfSignedId":"b45a17c0-de00-4000-8000-000000000001"}"#);
+        assert_eq!(changed, vec!["SelfSignedId (était vide)"]);
+        assert_ne!(vary_client_payload_with(&empty, true, 2).0, one);
+        assert_eq!(keys, vec!["SelfSignedId", "DeviceId", "SkinData", "Nested"]);
+    }
 
     fn fake_sign(_: &[u8]) -> Vec<u8> {
         vec![7u8; 96]

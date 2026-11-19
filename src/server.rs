@@ -3765,7 +3765,7 @@ impl Server {
             };
             let mut found = HashMap::new();
             for (id, name) in crate::tools::capture::WANTED.iter() {
-                if *id == bedrock::ID_START_GAME || *id == bedrock::ID_AVAILABLE_COMMANDS {
+                if *id == bedrock::ID_START_GAME || *id == bedrock::ID_AVAILABLE_COMMANDS || *id == bedrock::ID_ADD_PLAYER {
                     continue; // propre au monde du serveur officiel
                 }
                 if let Ok(body) = std::fs::read(entry.path().join("packets").join(format!("{}.bin", name))) {

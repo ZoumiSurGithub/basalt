@@ -868,10 +868,21 @@ fn capture_tool_talks_raknet_to_basalt_itself() {
     let skin = "A".repeat(40_000);
     std::fs::write(&payload, b64(format!(r#"{{"GameVersion":"1.26.65","SkinData":"{}"}}"#, skin).as_bytes())).unwrap();
     let out = dir.join("data");
+    // Un témoin entre d'abord et reste en jeu : la capture reçoit alors, en plus du reste,
+    // le paquet qui fait apparaître un autre joueur
+    let witness_payload = payload.clone();
+    let port = addr.port();
+    let witness = std::thread::spawn(move || {
+        basalt::tools::capture_rak::run_as("127.0.0.1", port, None, &witness_payload, "BasaltTemoin", Duration::from_secs(6), ("", ""))
+    });
+    std::thread::sleep(Duration::from_millis(1500));
     let summary = basalt::tools::capture_rak::run("127.0.0.1", addr.port(), &out, &payload).expect("capture");
     assert!(summary.contains("start_game"), "{}", summary);
+    assert!(summary.contains("add_player"), "le témoin doit apparaître chez le joueur de la capture : {}", summary);
     let saved = out.join("2225").join("packets");
     assert!(std::fs::metadata(saved.join("start_game.bin")).unwrap().len() > 100);
+    assert!(std::fs::metadata(saved.join("add_player.bin")).unwrap().len() > 40);
+    assert!(witness.join().unwrap().expect("témoin").contains("BasaltTemoin"));
     stop.store(true, Ordering::Relaxed);
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
