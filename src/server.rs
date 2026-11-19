@@ -2212,7 +2212,6 @@ impl Server {
             info!("{} : bloc cassé en {} {} {}", addr, x, y, z);
         }
         self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, air), Some(*addr));
-        self.refresh_stairs_around((x, y, z));
         // Une porte part en entier : l'autre moitié disparaît avec elle
         let other_half = self.data.as_ref().and_then(|d| {
             let p = match d.prop(old, "upper_block_bit")? {
@@ -2672,7 +2671,7 @@ impl Server {
                 let (dx, dy, dz) = (c.pos.0 - x as f32 - 0.5, c.pos.1 - y as f32 - 0.5, c.pos.2 - z as f32 - 0.5);
                 // Sens du regard : l'angle annoncé par le jeu, comme en vanilla. C'est ce qui permet
                 // de poser un escalier de biais par rapport au bloc visé, pour former un coin.
-                let looks = placement::facing(c.head_yaw);
+                let looks = placement::facing(c.yaw);
                 (dx * dx + dy * dy + dz * dz <= 8.0 * 8.0, c.inv.held(), looks, c.yaw)
             }
             _ => return,
@@ -2709,7 +2708,15 @@ impl Server {
             None => state == default,
         };
         if near && same_block(self, self.world.get(x, y, z)) {
-            return; // le jeu répète parfois la même pose : déjà enregistrée
+            // Le jeu répète parfois la même pose : elle est déjà enregistrée. Mais en la
+            // répétant, il a pu redessiner le bloc avec sa propre orientation : il reçoit de
+            // nouveau celle que le serveur a retenue, pour que l'affichage reste fidèle.
+            let (current, above) = (self.world.get(x, y, z), self.world.get(x, y + 1, z));
+            self.send(addr, bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, current));
+            if upper.is_some() {
+                self.send(addr, bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y + 1, z, above));
+            }
+            return;
         }
         let room_above = upper.is_none() || (y < 319 && self.world.get(x, y + 1, z) == air);
         if !near || !room_above || self.world.get(x, y, z) != air || !self.world.set(x, y, z, block) {
@@ -2737,7 +2744,6 @@ impl Server {
         }
         // Le poseur reçoit aussi l'état retenu : son jeu a pu prévoir une autre orientation
         self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, block), None);
-        self.refresh_stairs_around((x, y, z));
         if let Some(upper) = upper {
             if self.world.set(x, y + 1, z, upper) {
                 self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y + 1, z, upper), None);
@@ -2777,24 +2783,6 @@ impl Server {
     }
 
     /// Change un bloc et l'annonce à tout le monde.
-    /// Renvoie l'état des escaliers voisins d'un bloc qui vient de changer : le jeu redessine
-    /// alors leurs coins tout de suite, au lieu d'attendre le prochain chargement du terrain.
-    fn refresh_stairs_around(&mut self, pos: (i32, i32, i32)) {
-        let mut again: Vec<(i32, i32, i32, u32)> = Vec::new();
-        if let Some(d) = &self.data {
-            for (dx, dz) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
-                let (x, y, z) = (pos.0 + dx, pos.1, pos.2 + dz);
-                let state = self.world.get(x, y, z);
-                if d.block_name(state).map(|n| n.ends_with("stairs")).unwrap_or(false) {
-                    again.push((x, y, z, state));
-                }
-            }
-        }
-        for (x, y, z, state) in again {
-            self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, state), None);
-        }
-    }
-
     fn change_block(&mut self, pos: (i32, i32, i32), state: u32) {
         if self.world.set(pos.0, pos.1, pos.2, state) {
             self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(pos.0, pos.1, pos.2, state), None);
