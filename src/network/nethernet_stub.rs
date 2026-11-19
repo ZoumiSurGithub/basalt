@@ -26,8 +26,11 @@ impl NetherNet {
     pub fn is_empty(&self) -> bool {
         true
     }
-    pub fn accept(&mut self, _key: SocketAddr, _local_ip: IpAddr, _offer: &str, _cpk: Option<String>, _now: u64) -> Result<String, (u16, &'static str)> {
+    pub fn accept(&mut self, _key: SocketAddr, _local_ip: IpAddr, _offer: &str, _cpk: Option<String>, _now: u64) -> Result<(), (u16, &'static str)> {
         Err((503, "NetherNet transport not available"))
+    }
+    pub fn prepared(&mut self) -> Vec<(SocketAddr, Result<String, (u16, &'static str)>)> {
+        Vec::new()
     }
     pub fn poll(&mut self, _events: &mut Vec<RakEvent>) -> usize {
         0

@@ -10,7 +10,9 @@
 //!
 //! `str0m` ne touche pas au réseau : ce module lit le socket, lui passe les
 //! datagrammes, et envoie ce qu'elle demande d'émettre. Tout tourne dans la
-//! boucle principale du serveur, sans fil d'exécution supplémentaire.
+//! boucle principale du serveur, sauf la préparation d'une nouvelle session
+//! (certificat DTLS, réponse SDP, signature) : elle coûte 20 à 40 ms et se fait
+//! sur deux fils à part, pour ne pas figer les joueurs déjà connectés.
 //!
 //! Vers le reste du serveur, ce transport émet les mêmes événements que RakNet
 //! (`RakEvent`), avec des paquets préfixés de l'octet 0xfe, pour que la couche
@@ -20,6 +22,8 @@ use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::path::Path;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use str0m::change::SdpOffer;
@@ -42,6 +46,92 @@ const MAX_PENDING: usize = 64;
 const MAX_READS: usize = 4096;
 /// Données en attente d'envoi tolérées par joueur avant de couper la liaison.
 const MAX_OUTBOUND: usize = 16 * 1024 * 1024;
+/// Fils qui préparent les nouvelles sessions.
+const PREPARE_THREADS: usize = 2;
+/// Au-delà, une préparation est abandonnée (fil bloqué) et le joueur reçoit un refus.
+const PREPARE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Demande de préparation d'une session, confiée à un fil à part.
+struct Job {
+    key: SocketAddr,
+    local_ip: IpAddr,
+    offer: String,
+    cpk: Option<String>,
+    now_unix: u64,
+}
+
+/// Session préparée : la pile WebRTC, ses adresses locales et la réponse signée.
+type Ready = (Rtc, Vec<SocketAddr>, String);
+
+struct Prepared {
+    key: SocketAddr,
+    cpk: Option<String>,
+    result: Result<Ready, (u16, &'static str)>,
+}
+
+/// Prépare une session : la partie coûteuse de l'acceptation d'un joueur.
+fn prepare(identity: &ServerIdentity, port: u16, public_ip: Option<IpAddr>, job: &Job) -> Result<Ready, (u16, &'static str)> {
+    let mut rtc = Rtc::builder().build(Instant::now());
+    // Candidats : l'adresse par laquelle le joueur a joint le serveur, plus celle que le
+    // système utiliserait pour joindre chacune des adresses annoncées par le joueur
+    // (indispensable quand le jeu tourne sur la même machine et annonce son adresse locale).
+    let mut ips = vec![public_ip.unwrap_or(job.local_ip)];
+    if public_ip.is_none() {
+        for remote in sdp_candidates(&job.offer) {
+            if let Some(ip) = route_local_ip(remote) {
+                if !ips.contains(&ip) && ips.len() < 4 {
+                    ips.push(ip);
+                }
+            }
+        }
+    }
+    let mut locals = Vec::new();
+    for ip in ips {
+        let addr = SocketAddr::new(ip, port);
+        if let Ok(candidate) = Candidate::host(addr, "udp") {
+            let _ = rtc.add_local_candidate(candidate);
+            locals.push(addr);
+        }
+    }
+    if locals.is_empty() {
+        return Err((503, "no usable address"));
+    }
+    let offer = SdpOffer::from_sdp_string(&job.offer).map_err(|_| (400, "invalid SDP offer"))?;
+    let answer = rtc.sdp_api().accept_offer(offer).map_err(|_| (400, "SDP offer rejected"))?;
+    let sdp = answer.to_sdp_string();
+    // Le jeu refuse toute réponse qui ne porte pas l'identité signée du serveur.
+    let fingerprints = sdp_fingerprints(&sdp);
+    if fingerprints.is_empty() {
+        return Err((503, "no DTLS fingerprint"));
+    }
+    let signed = sdp_insert_identity(&sdp, &identity.assertion(&fingerprints, job.now_unix));
+    Ok((rtc, locals, signed))
+}
+
+/// Lance les fils de préparation. Ils s'arrêtent d'eux-mêmes quand le transport est fermé.
+fn start_preparers(identity: Arc<ServerIdentity>, port: u16, public_ip: Option<IpAddr>) -> (Sender<Job>, Receiver<Prepared>) {
+    let (job_tx, job_rx) = channel::<Job>();
+    let (done_tx, done_rx) = channel::<Prepared>();
+    let job_rx = Arc::new(Mutex::new(job_rx));
+    for n in 0..PREPARE_THREADS {
+        let (jobs, done, identity) = (job_rx.clone(), done_tx.clone(), identity.clone());
+        let _ = std::thread::Builder::new().name(format!("nethernet-preparation-{}", n)).spawn(move || loop {
+            let next = match jobs.lock() {
+                Ok(queue) => queue.recv(),
+                Err(_) => break,
+            };
+            let job = match next {
+                Ok(job) => job,
+                Err(_) => break,
+            };
+            let result = prepare(&identity, port, public_ip, &job);
+            if done.send(Prepared { key: job.key, cpk: job.cpk, result }).is_err() {
+                break;
+            }
+        });
+    }
+    (job_tx, done_rx)
+}
 
 struct Peer {
     key: SocketAddr,
@@ -80,9 +170,11 @@ struct Peer {
 
 pub struct NetherNet {
     socket: UdpSocket,
-    port: u16,
-    public_ip: Option<IpAddr>,
-    identity: ServerIdentity,
+    identity: Arc<ServerIdentity>,
+    /// Préparations en cours sur les fils à part, avec leur heure de départ
+    preparing: HashMap<SocketAddr, Instant>,
+    jobs: Option<Sender<Job>>,
+    prepared: Receiver<Prepared>,
     peers: HashMap<SocketAddr, Peer>,
     /// Adresse UDP du joueur -> clé de sa session
     by_remote: HashMap<SocketAddr, SocketAddr>,
@@ -120,6 +212,33 @@ fn sdp_candidates(sdp: &str) -> Vec<SocketAddr> {
 }
 
 impl Peer {
+    fn new(key: SocketAddr, rtc: Rtc, locals: Vec<SocketAddr>, cpk: Option<String>, debug: bool, now: Instant) -> Peer {
+        Peer {
+            key,
+            rtc,
+            locals,
+            debug,
+            route: None,
+            received: 0,
+            sent: 0,
+            messages_in: 0,
+            messages_out: 0,
+            refused_writes: 0,
+            stats_at: now,
+            outbound: VecDeque::new(),
+            outbound_bytes: 0,
+            reliable: None,
+            announced: false,
+            created: now,
+            timeout: now,
+            inbound: Reassembler::new(MAX_PACKET_LOGIN),
+            cpk,
+            close_at: None,
+            dead: None,
+            dirty: true,
+        }
+    }
+
     /// Candidat local par lequel un datagramme venu de `source` est arrivé.
     fn local_for(&self, source: SocketAddr) -> SocketAddr {
         if let Some(ip) = route_local_ip(source) {
@@ -267,12 +386,14 @@ impl NetherNet {
             "" => None,
             text => Some(text.parse::<IpAddr>().map_err(|_| format!("public-ip invalide : {}", text))?),
         };
-        let identity = ServerIdentity::load_or_generate(Path::new("server-identity.key"), domain, cpk_as_jwk)?;
+        let identity = Arc::new(ServerIdentity::load_or_generate(Path::new("server-identity.key"), domain, cpk_as_jwk)?);
+        let (jobs, prepared) = start_preparers(identity.clone(), port, public_ip);
         Ok(NetherNet {
             socket,
-            port,
-            public_ip,
             identity,
+            preparing: HashMap::new(),
+            jobs: Some(jobs),
+            prepared,
             peers: HashMap::new(),
             by_remote: HashMap::new(),
             max_peers: 64,
@@ -292,9 +413,10 @@ impl NetherNet {
         self.peers.is_empty()
     }
 
-    /// Accepte l'offre SDP d'un joueur (sans sa ligne d'identité, déjà vérifiée) et
-    /// renvoie la réponse signée. `local_ip` est l'adresse du serveur que le joueur
-    /// a utilisée pour la signalisation : elle lui est donc joignable.
+    /// Accepte l'offre SDP d'un joueur (sans sa ligne d'identité, déjà vérifiée). La session
+    /// est préparée sur un fil à part : la réponse signée sort ensuite de `prepared`.
+    /// `local_ip` est l'adresse du serveur que le joueur a utilisée pour la signalisation :
+    /// elle lui est donc joignable.
     pub fn accept(
         &mut self,
         key: SocketAddr,
@@ -302,84 +424,60 @@ impl NetherNet {
         offer: &str,
         cpk: Option<String>,
         now_unix: u64,
-    ) -> Result<String, (u16, &'static str)> {
-        let pending = self.peers.values().filter(|p| !p.announced).count();
-        if self.peers.len() >= self.max_peers || pending >= MAX_PENDING {
+    ) -> Result<(), (u16, &'static str)> {
+        let pending = self.peers.values().filter(|p| !p.announced).count() + self.preparing.len();
+        if self.peers.len() + self.preparing.len() >= self.max_peers || pending >= MAX_PENDING {
             return Err((503, "server busy"));
+        }
+        if self.preparing.contains_key(&key) {
+            return Err((503, "retry"));
         }
         if let Some(old) = self.peers.get_mut(&key) {
             old.dead = Some(None); // même origine : l'ancienne tentative est abandonnée
             return Err((503, "retry"));
         }
+        let jobs = match &self.jobs {
+            Some(j) => j,
+            None => return Err((503, "server busy")),
+        };
+        let job = Job { key, local_ip, offer: offer.to_string(), cpk, now_unix };
+        if jobs.send(job).is_err() {
+            return Err((503, "server busy"));
+        }
+        self.preparing.insert(key, Instant::now());
+        Ok(())
+    }
+
+    /// Sessions dont la préparation est terminée : (clé, réponse signée ou refus).
+    pub fn prepared(&mut self) -> Vec<(SocketAddr, Result<String, (u16, &'static str)>)> {
+        let mut out = Vec::new();
+        if self.preparing.is_empty() {
+            return out;
+        }
+        let _t = crate::timings::scope("NetherNet — sessions préparées (reprise)");
         let now = Instant::now();
-        let _t = crate::timings::scope("NetherNet — nouvelle connexion (préparation)");
-        let mut rtc = Rtc::builder().build(now);
-        // Candidats : l'adresse par laquelle le joueur a joint le serveur, plus celle que le
-        // système utiliserait pour joindre chacune des adresses annoncées par le joueur
-        // (indispensable quand le jeu tourne sur la même machine et annonce son adresse locale).
-        let mut ips = vec![self.public_ip.unwrap_or(local_ip)];
-        if self.public_ip.is_none() {
-            for remote in sdp_candidates(offer) {
-                if let Some(ip) = route_local_ip(remote) {
-                    if !ips.contains(&ip) && ips.len() < 4 {
-                        ips.push(ip);
+        while let Ok(done) = self.prepared.try_recv() {
+            // Préparation abandonnée entre-temps : le résultat est jeté
+            if self.preparing.remove(&done.key).is_none() {
+                continue;
+            }
+            match done.result {
+                Ok((rtc, locals, answer)) => {
+                    if self.debug {
+                        info!("[nethernet] {} : réponse envoyée, candidats {:?}", done.key, locals);
                     }
+                    self.peers.insert(done.key, Peer::new(done.key, rtc, locals, done.cpk, self.debug, now));
+                    out.push((done.key, Ok(answer)));
                 }
+                Err(why) => out.push((done.key, Err(why))),
             }
         }
-        let mut locals = Vec::new();
-        for ip in ips {
-            let addr = SocketAddr::new(ip, self.port);
-            if let Ok(candidate) = Candidate::host(addr, "udp") {
-                let _ = rtc.add_local_candidate(candidate);
-                locals.push(addr);
-            }
+        let late: Vec<SocketAddr> = self.preparing.iter().filter(|(_, at)| now.duration_since(**at) > PREPARE_TIMEOUT).map(|(k, _)| *k).collect();
+        for key in late {
+            self.preparing.remove(&key);
+            out.push((key, Err((503, "server busy"))));
         }
-        if locals.is_empty() {
-            return Err((503, "no usable address"));
-        }
-
-        let offer = SdpOffer::from_sdp_string(offer).map_err(|_| (400, "invalid SDP offer"))?;
-        let answer = rtc.sdp_api().accept_offer(offer).map_err(|_| (400, "SDP offer rejected"))?;
-        let sdp = answer.to_sdp_string();
-
-        // Le jeu refuse toute réponse qui ne porte pas l'identité signée du serveur.
-        let fingerprints = sdp_fingerprints(&sdp);
-        if fingerprints.is_empty() {
-            return Err((503, "no DTLS fingerprint"));
-        }
-        let signed = sdp_insert_identity(&sdp, &self.identity.assertion(&fingerprints, now_unix));
-        if self.debug {
-            info!("[nethernet] {} : réponse envoyée, candidats {:?}", key, locals);
-        }
-        self.peers.insert(
-            key,
-            Peer {
-                key,
-                rtc,
-                locals,
-                debug: self.debug,
-                route: None,
-                received: 0,
-                sent: 0,
-                messages_in: 0,
-                messages_out: 0,
-                refused_writes: 0,
-                stats_at: now,
-                outbound: VecDeque::new(),
-                outbound_bytes: 0,
-                reliable: None,
-                announced: false,
-                created: now,
-                timeout: now,
-                inbound: Reassembler::new(MAX_PACKET_LOGIN),
-                cpk,
-                close_at: None,
-                dead: None,
-                dirty: true,
-            },
-        );
-        Ok(signed)
+        out
     }
 
     /// Lit les datagrammes arrivés et fait vivre les sessions. Renvoie le nombre lu.
@@ -626,6 +724,9 @@ impl NetherNet {
     }
 
     pub fn shutdown(&mut self) {
+        // Sans file de travail, les fils de préparation s'arrêtent
+        self.jobs = None;
+        self.preparing.clear();
         let mut sink = Vec::new();
         self.flush(&mut sink);
         for p in self.peers.values_mut() {

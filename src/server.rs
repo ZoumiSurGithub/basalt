@@ -407,6 +407,8 @@ pub struct Server {
     signaling: Option<Signaling>,
     /// Transport NetherNet (liaison WebRTC), si disponible
     nether: Option<NetherNet>,
+    /// Demandes d'entrée NetherNet en attente de leur session (préparée sur un fil à part)
+    join_waiting: HashMap<SocketAddr, Request>,
 }
 
 /// Mesure de la charge : le serveur vise 20 ticks par seconde.
@@ -541,6 +543,7 @@ impl Server {
             last_key_error: String::new(),
             signaling: None,
             nether: None,
+            join_waiting: HashMap::new(),
             perf: Perf {
                 window: Instant::now(),
                 ticks: 0,
@@ -4035,16 +4038,40 @@ impl Server {
             None => Err((503, "NetherNet transport not available")),
         };
         match result {
-            Ok(answer) => {
-                info!("{} : demande de connexion NetherNet acceptée, liaison en cours", req.addr);
-                if self.cfg.debug {
-                    let _ = std::fs::write("logs/last-answer.sdp", answer.as_bytes());
-                }
-                req.respond(200, "application/sdp", answer.as_bytes());
+            // La session se prépare sur un fil à part : la réponse partira de `answer_joins`
+            Ok(()) => {
+                self.join_waiting.insert(req.addr, req);
             }
             Err((status, why)) => {
                 warn!("{} : demande de connexion NetherNet refusée ({})", req.addr, why);
                 req.respond(status, "text/plain", why.as_bytes());
+            }
+        }
+    }
+
+    /// Répond aux demandes d'entrée dont la session WebRTC est prête.
+    fn answer_joins(&mut self) {
+        let done = match self.nether.as_mut() {
+            Some(n) => n.prepared(),
+            None => return,
+        };
+        for (key, result) in done {
+            let req = match self.join_waiting.remove(&key) {
+                Some(r) => r,
+                None => continue,
+            };
+            match result {
+                Ok(answer) => {
+                    info!("{} : demande de connexion NetherNet acceptée, liaison en cours", key);
+                    if self.cfg.debug {
+                        let _ = std::fs::write("logs/last-answer.sdp", answer.as_bytes());
+                    }
+                    req.respond(200, "application/sdp", answer.as_bytes());
+                }
+                Err((status, why)) => {
+                    warn!("{} : demande de connexion NetherNet refusée ({})", key, why);
+                    req.respond(status, "text/plain", why.as_bytes());
+                }
             }
         }
     }
@@ -4349,6 +4376,7 @@ impl Server {
                 {
                     let _t = timings::scope("Tick — signalisation NetherNet");
                     self.poll_signaling();
+                    self.answer_joins();
                 }
                 if self.tick % 20 == 0 {
                     let _t = timings::scope("Tick — clés Xbox et délais de connexion");
