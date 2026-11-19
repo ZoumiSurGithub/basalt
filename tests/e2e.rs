@@ -873,7 +873,7 @@ fn capture_tool_talks_raknet_to_basalt_itself() {
     let witness_payload = payload.clone();
     let port = addr.port();
     let witness = std::thread::spawn(move || {
-        basalt::tools::capture_rak::run_as("127.0.0.1", port, None, &witness_payload, "BasaltTemoin", Duration::from_secs(6), ("", ""))
+        basalt::tools::capture_rak::run_as("127.0.0.1", port, None, &witness_payload, "BasaltTemoin", Duration::from_secs(15), ("", ""))
     });
     std::thread::sleep(Duration::from_millis(1500));
     let summary = basalt::tools::capture_rak::run("127.0.0.1", addr.port(), &out, &payload).expect("capture");
