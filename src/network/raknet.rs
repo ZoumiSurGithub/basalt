@@ -39,6 +39,10 @@ pub const MAX_PACKET_LOGIN: usize = 3 * 1024 * 1024;
 pub const MAX_PACKET_GAME: usize = 512 * 1024;
 /// Datagrammes acceptés par seconde et par session ; au-delà, déconnexion.
 const MAX_DATAGRAMS_PER_SEC: u32 = 1500;
+/// Accusés de réception acceptés par seconde et par session. Comptés à part : pendant
+/// l'envoi des grosses listes (recettes, objets), le serveur émet plus d'un millier de
+/// datagrammes en une seconde, et certains clients accusent réception de chacun séparément.
+const MAX_ACKS_PER_SEC: u32 = 8000;
 /// Paquets hors connexion (ping, ouverture) traités par seconde et par adresse IP.
 const MAX_OFFLINE_PER_IP: u16 = 30;
 /// Idem, toutes adresses confondues.
@@ -159,6 +163,7 @@ pub struct Session {
     max_splits: usize,
     rate_window: Instant,
     rate_count: u32,
+    rate_acks: u32,
     waiting_since: Option<Instant>,
     /// Datagrammes et octets émis depuis le dernier relevé
     sent: (u64, u64),
@@ -195,6 +200,7 @@ impl Session {
             max_splits: 2,
             rate_window: now,
             rate_count: 0,
+            rate_acks: 0,
             waiting_since: None,
             sent: (0, 0),
             ack_queue: Vec::new(),
@@ -258,13 +264,20 @@ impl Session {
         if now.duration_since(self.rate_window) >= Duration::from_secs(1) {
             self.rate_window = now;
             self.rate_count = 0;
+            self.rate_acks = 0;
         }
-        self.rate_count += 1;
-        if self.rate_count > MAX_DATAGRAMS_PER_SEC {
+        let flags = d[0];
+        // Un accusé de réception (ou une demande de renvoi) coûte très peu à traiter
+        let is_ack = flags & 0x60 != 0;
+        if is_ack {
+            self.rate_acks += 1;
+        } else {
+            self.rate_count += 1;
+        }
+        if self.rate_count > MAX_DATAGRAMS_PER_SEC || self.rate_acks > MAX_ACKS_PER_SEC {
             self.abort("trop de datagrammes par seconde");
             return;
         }
-        let flags = d[0];
         let mut r = Reader::new(&d[1..]);
         if flags & 0x40 != 0 {
             self.on_ack(&mut r, false, now);
