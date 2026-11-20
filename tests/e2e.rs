@@ -789,7 +789,15 @@ fn xbox_authentication_flow() {
     // Jeton valide : accepté, sous le pseudo certifié par le jeton
     let mut c = connect();
     c.login_raw(2225, &request(fixtures["token_valid"]), fixtures["client_valid"], false);
-    assert_eq!(c.recv_game(true), (2, vec![0, 0, 0, 0]), "login accepté attendu");
+    // Accepté : le serveur propose le chiffrement (jeton signé avec sa clé et un sel), que
+    // seul le possesseur de la clé du jeton peut suivre
+    let (id, body) = c.recv_game(true);
+    assert_eq!(id, 3, "login accepté : début du chiffrement attendu");
+    let start = body.iter().position(|b| b & 0x80 == 0).unwrap() + 1; // longueur (entier variable)
+    let jwt = String::from_utf8_lossy(&body[start..]).to_string();
+    let header = String::from_utf8(basalt::json::base64_decode(jwt.split('.').next().unwrap()).unwrap()).unwrap();
+    let payload = String::from_utf8(basalt::json::base64_decode(jwt.split('.').nth(1).unwrap()).unwrap()).unwrap();
+    assert!(header.contains("\"x5u\"") && payload.contains("\"salt\""), "{} {}", header, payload);
     std::thread::sleep(Duration::from_millis(100));
     assert!(c.ping().contains(";1;20;"));
 
@@ -1437,6 +1445,83 @@ fn identical_items_on_the_ground_merge() {
             break;
         }
     }
+
+    drop(steve);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Fabrication : un résultat qui correspond à une vraie recette est accepté, un résultat
+/// inventé (tricherie) est refusé et la grille reste intacte.
+#[test]
+fn crafting_is_checked_against_real_recipes() {
+    let data = match basalt::data::GameData::load(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data")) {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-craft-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    steve.walk_to(0.5, 0.5);
+    let give = b"/give Steve oak_planks 4";
+    let mut body = vec![give.len() as u8];
+    body.extend_from_slice(give);
+    body.extend_from_slice(&[0, 0, 0]);
+    steve.game(77, &body, Some(0xff));
+    std::thread::sleep(Duration::from_millis(300));
+
+    let slot = |container: u8, slot: u8| vec![container, 0, slot, 0, 0, 0, 0];
+    let request = |id: u8, actions: Vec<Vec<u8>>| {
+        let mut r = vec![1, id * 2, actions.len() as u8];
+        for (i, a) in actions.into_iter().enumerate() {
+            r.push(i as u8);
+            r.extend(a);
+        }
+        r.extend_from_slice(&[0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]); // textes, origine
+        r
+    };
+    let place = |count: u8, from: Vec<u8>, to: Vec<u8>| {
+        let mut a = vec![1, count];
+        a.extend(from);
+        a.extend(to);
+        a
+    };
+    let results = |name: &str, count: u16| {
+        let mut a = vec![20, 1, 1, 1, name.len() as u8];
+        a.extend_from_slice(name.as_bytes());
+        a.push(0);
+        a.extend_from_slice(&count.to_le_bytes());
+        a.push(0); // bloc
+        a.push(0); // données
+        a.push(1); // fabrications
+        a
+    };
+    let consume = |from: Vec<u8>| {
+        let mut a = vec![5, 1];
+        a.extend(from);
+        a
+    };
+    let status = |steve: &mut Client| steve.wait_for(148)[1];
+
+    // Deux planches dans la grille 2×2 de l'inventaire, l'une au-dessus de l'autre
+    steve.game(147, &request(1, vec![place(1, slot(12, 0), slot(13, 28)), place(1, slot(12, 0), slot(13, 30))]), Some(0xff));
+    assert_eq!(status(&mut steve), 0, "planches posées dans la grille");
+
+    // Tricherie : la grille annonce un bloc de diamant
+    let cheat = request(2, vec![vec![12, 1, 1], results("minecraft:diamond_block", 64), consume(slot(13, 28)), consume(slot(13, 30)), place(64, slot(60, 50), slot(12, 5))]);
+    steve.game(147, &cheat, Some(0xff));
+    assert_eq!(status(&mut steve), 1, "résultat inventé refusé");
+
+    // Fabrication honnête : 4 bâtons
+    let honest = request(3, vec![vec![12, 1, 1], results("minecraft:stick", 4), consume(slot(13, 28)), consume(slot(13, 30)), place(4, slot(60, 50), slot(12, 5))]);
+    steve.game(147, &honest, Some(0xff));
+    assert_eq!(status(&mut steve), 0, "bâtons fabriqués");
+    let _ = data.item("stick").unwrap();
 
     drop(steve);
     stop.store(true, Ordering::Relaxed);

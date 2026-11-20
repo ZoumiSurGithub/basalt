@@ -289,7 +289,7 @@ pub enum StackAction {
     /// Prise d'un objet dans le menu créatif (numéro de l'objet dans ce menu)
     CraftCreative { creative_id: u32 },
     /// Fabrication d'une recette (numéro de la recette dans la liste envoyée au jeu)
-    CraftRecipe { recipe: u32 },
+    CraftRecipe { recipe: u32, times: u8 },
     /// Résultat annoncé par le jeu pour la création précédente (voir `StackRequest::created`)
     Results,
     /// Action que le serveur ne gère pas encore (fabrication, etc.)
@@ -381,8 +381,9 @@ pub fn read_stack_requests(body: &[u8]) -> Option<Vec<StackRequest>> {
                 }
                 12 => {
                     let recipe = read_varu32(body, &mut pos)?;
-                    pos += 1; // nombre de fabrications
-                    StackAction::CraftRecipe { recipe }
+                    let times = *body.get(pos)?; // nombre de fabrications d'affilée
+                    pos += 1;
+                    StackAction::CraftRecipe { recipe, times }
                 }
                 14 => {
                     let creative_id = read_varu32(body, &mut pos)?;

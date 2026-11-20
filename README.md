@@ -27,7 +27,7 @@ dans un monde plat, mais cette partie n'a pas encore été essayée avec le vrai
 | Joueurs visibles entre eux (les plus proches seulement) | **écrit, à valider avec le jeu** |
 | Chat, casser et poser des blocs, inventaire | à faire |
 | Authentification Xbox Live (vérification des jetons) | **écrit, à valider avec le jeu** |
-| Chiffrement des échanges | à faire |
+| Chiffrement des échanges | fait (DTLS en NetherNet, ECDH + AES-256 en RakNet) |
 | Sauvegarde du monde | à faire |
 
 Limites à connaître :
@@ -141,13 +141,23 @@ limite est déconnecté sur-le-champ ; la raison est écrite dans la console
 Ces protections sont vérifiées par des tests (`cargo test`) : paquets aléatoires,
 bombe de décompression, inondation, limite par adresse.
 
+Autres protections :
+
+- **Échanges chiffrés.** Les jeux récents passent par NetherNet, chiffré par sa liaison
+  DTLS. En RakNet, le serveur chiffre la session comme le serveur officiel (échange de clés
+  ECDH sur P-384, AES-256 en mode compteur, somme de contrôle sur chaque lot). Seul le
+  possesseur de la clé du jeton Xbox peut suivre : un login intercepté puis rejoué ne mène
+  à rien, et un lot altéré ou rejoué ferme la connexion.
+- **Fabrication vérifiée.** Le résultat annoncé par le jeu doit venir d'une vraie recette
+  (`data/recipes.json`) qui correspond exactement à la grille, et chaque case doit perdre
+  ce que la recette consomme. Les recettes de l'établi et de la grille d'inventaire sont
+  couvertes.
+
 Ce qu'elles ne couvrent pas :
 
 - **Les attaques par saturation du réseau (DDoS).** Si la connexion de la machine
   est noyée sous le trafic, aucun logiciel serveur ne peut l'empêcher : il faut une
   protection au niveau de l'hébergeur.
-- **L'écoute du trafic** : les échanges ne sont pas encore chiffrés, ce qui laisse
-  possible le rejeu d'un login intercepté (voir « Authentification Xbox »).
 - **Les plugins**, qui sont du code de confiance (voir `docs/PLUGINS.md`).
 
 ## Montée en charge (1000 joueurs et plus)
@@ -250,10 +260,6 @@ Limites actuelles :
   d'un jeton réel n'ont pas pu être essayés ; les tests utilisent des jetons
   fabriqués sur le même modèle. Les noms des champs du jeton (`xid`, `xname`,
   `cpk`) peuvent demander un ajustement.
-- **Rejeu possible.** Sans chiffrement, quelqu'un qui intercepte le login d'un
-  joueur peut le rejouer tant que le jeton n'a pas expiré. Le chiffrement de la
-  session (échange de clés ECDH), qui prouve que le client possède sa clé privée,
-  fermera cette faille ; il reste à écrire.
 - **Ancien format non pris en charge.** Seul le jeton introduit en 2025 est
   accepté, pas l'ancienne chaîne de certificats.
 

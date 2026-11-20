@@ -96,7 +96,9 @@ fn capture(args: &[String]) {
     info!("PENDANT LA CAPTURE (dans la minute qui suit), tapez dans la console du serveur officiel :");
     info!("    setblock 0 -60 0 dirt");
     info!("    setblock 0 -60 0 air destroy");
-    info!("Le second fait tomber un objet au sol : son format sera relevé.");
+    info!("    tp BasaltCapture 5 -59 5");
+    info!("La deuxième fait tomber un objet au sol, la troisième téléporte le joueur de capture :");
+    info!("leurs formats seront relevés.");
     info!("==================================================================================");
     // Le serveur officiel refuse un second joueur qu'il prend pour le même que le premier
     // (« raison 44 »). Cause la plus probable : l'identifiant d'installation, vide dans le

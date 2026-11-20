@@ -8,6 +8,9 @@
 
 pub use crate::nbt;
 
+pub mod recipes;
+pub use recipes::{Craft, Recipes};
+
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -46,6 +49,8 @@ pub struct GameData {
     item_by_id: HashMap<i16, usize>,
     /// Nom de bloc -> identifiants réseau de ses états (le premier est l'état par défaut)
     block_states: HashMap<String, Vec<u32>>,
+    /// Recettes de fabrication (vides si `recipes.json` manque : toute fabrication est refusée)
+    pub recipes: Recipes,
     /// Identifiant réseau -> propriétés de cet état (`open_bit`, `pillar_axis`…)
     state_props: HashMap<u32, Vec<(String, Prop)>>,
     /// Identifiant réseau -> nom de bloc
@@ -202,7 +207,11 @@ impl GameData {
 
         let entity_identifiers = read_nbt(dir, "entity_identifiers.nbt").ok().map(|t| nbt::write_network(&t));
 
+        // --- recettes ---
+        let recipes = read_json(dir, "recipes.json").map(|doc| Recipes::parse(&doc)).unwrap_or_default();
+
         Ok(GameData {
+            recipes,
             items,
             item_by_name,
             item_by_id,

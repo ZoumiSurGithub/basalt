@@ -266,6 +266,10 @@ enum Stage {
 struct Client {
     stage: Stage,
     compression: bool,
+    /// Chiffrement de la session (joueurs en RakNet ; NetherNet est déjà chiffré par DTLS)
+    crypt: Option<crate::crypto::Crypt>,
+    /// Jeton de chiffrement envoyé, réponse du jeu attendue : rien d'autre n'est accepté
+    handshake_pending: bool,
     name: Option<String>,
     protocol: i32,
     connected_at: Instant,
@@ -3297,9 +3301,16 @@ impl Server {
             if !self.load_block_view(addr) {
                 return;
             }
+            // Fabrication : le résultat annoncé doit venir d'une vraie recette qui correspond à la
+            // grille ; le serveur en déduit ce que chaque case doit perdre
+            let crafting = request.actions.iter().any(|a| matches!(a, bedrock::StackAction::CraftRecipe { .. }));
+            let craft = if crafting { self.check_craft(addr, &request) } else { None };
+            if crafting && craft.is_none() && self.cfg.debug {
+                info!("{} : fabrication refusée ({:?} ×{} ne correspond à aucune recette pour cette grille)", addr, request.created, request.created_count);
+            }
             let mut dropped: Vec<(i16, u8)> = Vec::new();
             let outcome = match self.clients.get_mut(addr) {
-                Some(c) if c.stage == Stage::InGame => Self::run_stack_request(&mut c.inv, &request, created, &mut dropped),
+                Some(c) if c.stage == Stage::InGame => Self::run_stack_request(&mut c.inv, &request, created, craft.as_ref(), &mut dropped),
                 _ => return,
             };
             if !dropped.is_empty() {
@@ -3403,7 +3414,35 @@ impl Server {
     }
 
     /// Applique une demande sur une copie de l'inventaire ; rien n'est gardé si une action échoue.
-    fn run_stack_request(inv: &mut PlayerWindows, request: &bedrock::StackRequest, created: Option<i16>, dropped: &mut Vec<(i16, u8)>) -> Option<Vec<(u8, u8, u8, i32)>> {
+    /// Recette correspondant à la grille de fabrication du joueur et au résultat annoncé.
+    fn check_craft(&self, addr: &SocketAddr, request: &bedrock::StackRequest) -> Option<crate::data::Craft> {
+        let data = self.data.as_ref()?;
+        let output = request.created.as_deref()?;
+        let c = self.clients.get(addr)?;
+        let mut grid: [Option<(String, u8)>; 13] = Default::default();
+        for (i, cell) in grid.iter_mut().enumerate() {
+            let stack = c.inv.craft.slots.get(28 + i).copied().unwrap_or(inventory::ItemStack::EMPTY);
+            if !stack.is_empty() {
+                *cell = Some((data.item_by_id(stack.id)?.name.clone(), stack.count));
+            }
+        }
+        // Le jeu annonce la quantité d'une fabrication, et le nombre de fabrications à part
+        data.recipes.check(&grid, output, request.created_count.saturating_mul(Self::craft_times(request)))
+    }
+
+    /// Nombre de fabrications d'affilée demandées (fabriquer tout d'un coup), 1 au moins.
+    fn craft_times(request: &bedrock::StackRequest) -> u16 {
+        request
+            .actions
+            .iter()
+            .find_map(|a| match a {
+                bedrock::StackAction::CraftRecipe { times, .. } => Some((*times).max(1) as u16),
+                _ => None,
+            })
+            .unwrap_or(1)
+    }
+
+    fn run_stack_request(inv: &mut PlayerWindows, request: &bedrock::StackRequest, created: Option<i16>, craft: Option<&crate::data::Craft>, dropped: &mut Vec<(i16, u8)>) -> Option<Vec<(u8, u8, u8, i32)>> {
         let mut work = inv.clone();
         let mut thrown: Vec<(i16, u8)> = Vec::new();
         let mut touched: Vec<(Target, usize)> = Vec::new();
@@ -3429,12 +3468,10 @@ impl Server {
                     continue;
                 }
                 bedrock::StackAction::CraftRecipe { .. } => {
-                    // À faire : vérifier la recette. Pour l'instant le résultat annoncé par le jeu
-                    // est accepté tel quel, à condition que la grille ne soit pas vide.
-                    if work.craft.slots.iter().all(|s| s.is_empty()) {
-                        return None;
-                    }
-                    work.create(created?, request.created_count.clamp(1, inventory::MAX_STACK as u16) as u8);
+                    // Vérifiée avant (`check_craft`) : sans recette correspondante, refus
+                    craft?;
+                    let total = (request.created_count as u32 * Self::craft_times(request) as u32).clamp(1, 255) as u8;
+                    work.create(created?, total);
                     continue;
                 }
                 bedrock::StackAction::Results => continue,
@@ -3443,6 +3480,19 @@ impl Server {
             for slot in work.apply(step)? {
                 if !touched.contains(&slot) {
                     touched.push(slot);
+                }
+            }
+        }
+        // Après une fabrication, chaque case de la grille doit avoir perdu exactement ce que la
+        // recette consomme : ni plus (objets détruits pour rien), ni moins (fabrication gratuite)
+        if let Some(craft) = craft {
+            for slot in 28..=40usize {
+                let before = inv.craft.slots.get(slot).copied().unwrap_or(inventory::ItemStack::EMPTY);
+                let after = work.craft.slots.get(slot).copied().unwrap_or(inventory::ItemStack::EMPTY);
+                let lose = craft.consumed.iter().find(|(s, _)| *s == slot).map(|(_, n)| *n).unwrap_or(0);
+                let expected = before.count.saturating_sub(lose);
+                if after.count != expected || (expected > 0 && after.id != before.id) {
+                    return None;
                 }
             }
         }
@@ -4010,8 +4060,53 @@ impl Server {
         }
         self.net_set_game_limits(&addr);
         self.update_pong();
-        self.send(&addr, bedrock::ID_PLAY_STATUS, &bedrock::play_status(bedrock::STATUS_LOGIN_SUCCESS));
-        self.send(&addr, bedrock::ID_RESOURCE_PACKS_INFO, &bedrock::resource_packs_info(crate::versions::features(login.protocol)));
+        // Chiffrement (RakNet seulement : NetherNet passe déjà par une liaison DTLS chiffrée).
+        // Il prouve aussi que le joueur possède la clé de son jeton : un login intercepté puis
+        // rejoué ne mène à rien. Un joueur authentifié a toujours une clé ; sans
+        // authentification (xbox-auth=false), un client sans clé reste en clair.
+        let raknet = !self.nether.as_ref().map(|n| n.has(&addr)).unwrap_or(false);
+        if raknet {
+            let key = if authenticated {
+                login.token.as_deref().and_then(auth::token_client_key)
+            } else {
+                auth::client_data_key(&login.client_jwt)
+            };
+            match key.as_ref().map(auth::server_handshake) {
+                Some(Some((jwt, session_key))) => {
+                    let mut body = Vec::with_capacity(jwt.len() + 3);
+                    let mut w = bedrock::W::default();
+                    w.varu32(jwt.len() as u32);
+                    body.extend_from_slice(&w.0);
+                    body.extend_from_slice(jwt.as_bytes());
+                    self.send(&addr, bedrock::ID_SERVER_TO_CLIENT_HANDSHAKE, &body);
+                    if let Some(c) = self.clients.get_mut(&addr) {
+                        c.crypt = Some(crate::crypto::Crypt::new(session_key));
+                        c.handshake_pending = true;
+                    }
+                    if self.cfg.debug {
+                        info!("{} : chiffrement proposé, réponse du jeu attendue", addr);
+                    }
+                    return;
+                }
+                Some(None) => {
+                    warn!("{} : chiffrement impossible (aléa du système indisponible ou clé du joueur inutilisable)", addr);
+                    self.kick(&addr, "Connexion sécurisée impossible.");
+                    return;
+                }
+                None if authenticated => {
+                    self.kick(&addr, "Clé du joueur illisible.");
+                    return;
+                }
+                None => {}
+            }
+        }
+        self.send_login_success(&addr, login.protocol);
+    }
+
+    /// Login accepté (et chiffrement en place s'il y en a un) : début des packs de ressources.
+    fn send_login_success(&mut self, addr: &SocketAddr, protocol: i32) {
+        self.send(addr, bedrock::ID_PLAY_STATUS, &bedrock::play_status(bedrock::STATUS_LOGIN_SUCCESS));
+        self.send(addr, bedrock::ID_RESOURCE_PACKS_INFO, &bedrock::resource_packs_info(crate::versions::features(protocol)));
     }
 
     /// Traite les logins analysés et vérifiés en arrière-plan.
@@ -4088,7 +4183,23 @@ impl Server {
         } else {
             crate::raknet::MAX_PACKET_GAME
         };
-        let packets = match bedrock::decode_batch(&data[1..], compression, max) {
+        // Session chiffrée : déchiffrement et somme de contrôle (un lot altéré, rejoué ou
+        // envoyé en clair est refusé)
+        let opened = match self.clients.get_mut(&addr).and_then(|c| c.crypt.as_mut()) {
+            Some(crypt) => match data.get(1..).map(|d| crypt.open(d)) {
+                Some(Ok(plain)) => Some(plain),
+                _ => {
+                    self.violation(&addr, "lot chiffré invalide");
+                    return;
+                }
+            },
+            None => None,
+        };
+        let batch: &[u8] = match &opened {
+            Some(p) => p,
+            None => &data[1..],
+        };
+        let packets = match bedrock::decode_batch(batch, compression, max) {
             Ok(p) => p,
             Err(_) => {
                 self.violation(&addr, "paquet illisible ou trop volumineux");
@@ -4118,6 +4229,23 @@ impl Server {
                 } else {
                     info!("[paquets] <- {} : id {} ({} octets)", addr, id, body.len());
                 }
+            }
+            // Chiffrement proposé : seule la réponse du jeu est attendue
+            if self.clients.get(&addr).map(|c| c.handshake_pending).unwrap_or(false) {
+                if id == bedrock::ID_CLIENT_TO_SERVER_HANDSHAKE {
+                    let protocol = match self.clients.get_mut(&addr) {
+                        Some(c) => {
+                            c.handshake_pending = false;
+                            c.protocol
+                        }
+                        None => return,
+                    };
+                    if self.cfg.debug {
+                        info!("{} : chiffrement en place", addr);
+                    }
+                    self.send_login_success(&addr, protocol);
+                }
+                continue;
             }
             if id == 156 {
                 // PacketViolationWarning : le jeu signale qu'il n'a pas pu lire un de nos paquets.
@@ -4655,6 +4783,8 @@ impl Server {
                     .insert(addr, Client {
                         stage: Stage::Handshake,
                         compression: false,
+                        crypt: None,
+                        handshake_pending: false,
                         name: None,
                         protocol: 0,
                         connected_at: Instant::now(),
@@ -4986,6 +5116,18 @@ impl Server {
     }
 
     fn net_send(&mut self, addr: &SocketAddr, packet: &[u8]) {
+        // Session chiffrée : le lot (après l'octet 0xfe) reçoit sa somme de contrôle puis est
+        // chiffré. Tous les envois passent par ici, dans l'ordre : le flux reste cohérent.
+        let sealed = match self.clients.get_mut(addr).and_then(|c| c.crypt.as_mut()) {
+            Some(crypt) if packet.first() == Some(&0xfe) => {
+                let mut out = Vec::with_capacity(packet.len() + 9);
+                out.push(0xfe);
+                out.extend_from_slice(&crypt.seal(&packet[1..]));
+                Some(out)
+            }
+            _ => None,
+        };
+        let packet: &[u8] = sealed.as_deref().unwrap_or(packet);
         match self.nether.as_mut() {
             // NetherNet transporte le même contenu que RakNet, sans l'octet 0xfe de tête
             Some(n) if n.has(addr) => n.send(addr, &packet[1..]),
@@ -5307,7 +5449,7 @@ impl Server {
             };
             let mut found = HashMap::new();
             for (id, name) in crate::tools::capture::WANTED.iter() {
-                if *id == bedrock::ID_START_GAME || *id == bedrock::ID_AVAILABLE_COMMANDS || *id == bedrock::ID_ADD_PLAYER || *id == 63 || *id == bedrock::ID_ADD_ITEM_ACTOR {
+                if *id == bedrock::ID_START_GAME || *id == bedrock::ID_AVAILABLE_COMMANDS || *id == bedrock::ID_ADD_PLAYER || *id == 63 || *id == bedrock::ID_ADD_ITEM_ACTOR || *id == 19 || *id == 161 {
                     continue; // propre au monde du serveur officiel
                 }
                 if let Ok(body) = std::fs::read(entry.path().join("packets").join(format!("{}.bin", name))) {

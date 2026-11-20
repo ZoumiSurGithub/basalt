@@ -22,7 +22,7 @@ use crate::json::base64_encode;
 pub const REMOVAL_FILE: &str = "player_list_remove";
 
 /// Paquets à conserver : (identifiant, nom du fichier).
-pub const WANTED: [(u32, &str); 11] = [
+pub const WANTED: [(u32, &str); 13] = [
     (11, "start_game"),
     // Apparition d'un autre joueur : relevée pour connaître son format (jamais renvoyée telle
     // quelle). Elle n'arrive que si un second joueur est présent : voir le « témoin ».
@@ -33,6 +33,11 @@ pub const WANTED: [(u32, &str); 11] = [
     // Objet posé au sol : relevé pour connaître son format (il faut en faire tomber un pendant
     // la capture, voir les consignes affichées). Jamais renvoyé tel quel.
     (15, "add_item_actor"),
+    // Téléportation du joueur (commande tp tapée dans la console du serveur officiel pendant
+    // la capture) : relevée pour connaître le format du déplacement imposé par le serveur aux
+    // jeux 1.26.60 et plus. Jamais renvoyée telle quelle.
+    (19, "move_player"),
+    (161, "correct_player_move"),
     // Liste des commandes : relevée pour connaître son format (elle n'est pas renvoyée telle quelle)
     (76, "available_commands"),
     (52, "crafting_data"),

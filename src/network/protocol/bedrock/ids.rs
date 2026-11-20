@@ -4,6 +4,10 @@
 use super::*;
 
 pub const ID_LOGIN: u32 = 0x01;
+/// Début du chiffrement : jeton signé par le serveur (clé éphémère et sel).
+pub const ID_SERVER_TO_CLIENT_HANDSHAKE: u32 = 0x03;
+/// Réponse du jeu, déjà chiffrée : le chiffrement est en place.
+pub const ID_CLIENT_TO_SERVER_HANDSHAKE: u32 = 0x04;
 pub const ID_PLAY_STATUS: u32 = 0x02;
 pub const ID_DISCONNECT: u32 = 0x05;
 pub const ID_RESOURCE_PACKS_INFO: u32 = 6;

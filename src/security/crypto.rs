@@ -783,6 +783,60 @@ impl BedrockCipher {
     }
 }
 
+/// Chiffrement d'une session Bedrock, une fois la clé convenue (ECDH puis SHA-256 avec un sel) :
+/// chaque lot porte une somme de contrôle (compteur, contenu, clé) puis est chiffré en AES-256
+/// mode compteur. Sert au serveur (joueurs en RakNet) et à l'outil de capture.
+pub struct Crypt {
+    key: [u8; 32],
+    enc: BedrockCipher,
+    dec: BedrockCipher,
+    sent: u64,
+    received: u64,
+}
+
+impl Crypt {
+    pub fn new(key: [u8; 32]) -> Crypt {
+        Crypt { key, enc: BedrockCipher::new(&key), dec: BedrockCipher::new(&key), sent: 0, received: 0 }
+    }
+
+    fn checksum(&self, counter: u64, data: &[u8]) -> [u8; 8] {
+        let mut h = Vec::with_capacity(data.len() + 40);
+        h.extend_from_slice(&counter.to_le_bytes());
+        h.extend_from_slice(data);
+        h.extend_from_slice(&self.key);
+        let mut out = [0u8; 8];
+        out.copy_from_slice(&sha256(&h)[..8]);
+        out
+    }
+
+    /// Chiffre un lot (sans l'octet 0xfe) : ajoute la somme de contrôle puis chiffre.
+    pub fn seal(&mut self, message: &[u8]) -> Vec<u8> {
+        let mut out = message.to_vec();
+        let sum = self.checksum(self.sent, message);
+        self.sent += 1;
+        out.extend_from_slice(&sum);
+        self.enc.apply(&mut out);
+        out
+    }
+
+    /// Déchiffre un lot (sans l'octet 0xfe) et vérifie sa somme de contrôle.
+    pub fn open(&mut self, data: &[u8]) -> Result<Vec<u8>, String> {
+        let mut out = data.to_vec();
+        self.dec.apply(&mut out);
+        if out.len() < 8 {
+            return Err("message chiffré trop court".into());
+        }
+        let body = out.len() - 8;
+        let sum = self.checksum(self.received, &out[..body]);
+        self.received += 1;
+        if sum != out[body..] {
+            return Err("déchiffrement incohérent (clé différente, message altéré ou rejoué)".into());
+        }
+        out.truncate(body);
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod capture_crypto_tests {
     use super::*;
