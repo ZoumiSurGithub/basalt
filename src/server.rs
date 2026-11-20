@@ -1014,6 +1014,8 @@ impl Server {
             Some(c) => {
                 c.pos = pos;
                 c.move_budget = SPEED_CREATIVE * 2.0;
+                // Les autres joueurs le voient à sa nouvelle place, même s'il ne bouge plus
+                c.moved_tick = self.tick + 1;
                 bedrock::teleport_player(c.protocol, c.id, pos, c.pitch, c.yaw, c.head_yaw)
             }
             None => return,
