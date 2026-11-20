@@ -209,6 +209,11 @@ pub struct Palette {
     pub diamond: (u32, u32),
     /// Autres blocs, par nom court (« mycelium », « acacia_log »…), pour le terrain vanilla
     pub named: std::collections::HashMap<&'static str, u32>,
+    /// Plantes qui ne vivent que dans l'eau (herbes marines, laminaires) : toujours envoyées
+    /// avec de l'eau dans le même bloc (seconde couche)
+    pub aquatic: std::collections::HashSet<u32>,
+    /// Coraux, gorgones, cornichons de mer : avec de l'eau si un bloc voisin est de l'eau
+    pub soaked: std::collections::HashSet<u32>,
 }
 
 /// Blocs supplémentaires employés par le terrain vanilla.
@@ -279,7 +284,24 @@ impl Palette {
             lapis: ore("lapis"),
             diamond: ore("diamond"),
             named: EXTRA_BLOCKS.iter().map(|n| (*n, or(n, n.split('[').next().unwrap_or(n)))).collect(),
+            aquatic: Default::default(),
+            soaked: Default::default(),
         }
+        .with_water_sets()
+    }
+
+    fn with_water_sets(mut self) -> Palette {
+        for (name, state) in &self.named {
+            let base = name.split('[').next().unwrap_or(name);
+            if base == "seagrass" || base == "kelp" {
+                self.aquatic.insert(*state);
+            } else if base == "sea_pickle" || base.ends_with("_coral") || base.ends_with("_coral_fan") {
+                self.soaked.insert(*state);
+            }
+        }
+        self.aquatic.remove(&self.air);
+        self.soaked.remove(&self.air);
+        self
     }
 }
 

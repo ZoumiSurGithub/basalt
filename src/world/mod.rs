@@ -208,6 +208,24 @@ impl World {
         &self.terrain.generator
     }
 
+    /// Ce qui reste quand ce bloc disparaît : de l'eau pour une plante aquatique ou un corail
+    /// immergé (le bloc contenait de l'eau), de l'air sinon.
+    pub fn left_behind(&self, x: i32, y: i32, z: i32) -> u32 {
+        let p = &self.terrain.generator.blocks;
+        let b = self.get(x, y, z);
+        let wet = p.aquatic.contains(&b)
+            || (p.soaked.contains(&b)
+                && [(1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1), (0, 1, 0)].iter().any(|(dx, dy, dz)| {
+                    let n = self.get(x + dx, y + dy, z + dz);
+                    n == p.water || p.aquatic.contains(&n)
+                }));
+        if wet {
+            p.water
+        } else {
+            self.air
+        }
+    }
+
     /// Bloc du terrain d'origine à cette position.
     fn base(&self, x: i32, y: i32, z: i32) -> u32 {
         self.terrain.column((x >> 4, z >> 4)).get((x & 15) as usize, y, (z & 15) as usize)
@@ -448,10 +466,11 @@ fn encode_chunk(terrain: &Terrain, all_edits: &HashMap<(i32, i32), Arc<ChunkEdit
             let y_index = ((MIN_Y >> 4) + s as i32) as i8;
             let base_y = MIN_Y + s as i32 * 16;
             let touched = edits.map(|e| e.keys().any(|(_, y, _)| (*y as i32) >= base_y && (*y as i32) < base_y + 16)).unwrap_or(false);
+            let p = &terrain.generator.blocks;
             match (&column.sections[s], touched) {
-                (Section::Mixed { palette, index }, false) => {
+                (Section::Mixed { palette, index }, false) if !palette.iter().any(|b| p.aquatic.contains(b) || p.soaked.contains(b)) => {
                     let wide: Vec<u16> = index.iter().map(|i| *i as u16).collect();
-                    encode_sub_chunk(&mut w, y_index, palette, &wide);
+                    encode_sub_chunk(&mut w, y_index, palette, &wide, None);
                 }
                 (section, _) => {
                     let mut palette: Vec<u32> = Vec::new();
@@ -472,7 +491,8 @@ fn encode_chunk(terrain: &Terrain, all_edits: &HashMap<(i32, i32), Arc<ChunkEdit
                             }
                         }
                     }
-                    encode_sub_chunk(&mut w, y_index, &palette, &indices);
+                    let water = waterlogged(p, &palette, &indices);
+                    encode_sub_chunk(&mut w, y_index, &palette, &indices, water.as_ref().map(|wl| (wl, p.air, p.water)));
                 }
             }
         }
@@ -533,10 +553,51 @@ fn encode_biomes(w: &mut W, quarts: &[u8]) {
 }
 
 /// Encode un sous-chunk au format 9 : une couche de blocs avec sa palette.
-fn encode_sub_chunk(w: &mut W, y_index: i8, palette: &[u32], indices: &[u16]) {
+/// Blocs d'un sous-chunk qui contiennent aussi de l'eau (seconde couche) : plantes
+/// aquatiques, et coraux ou cornichons de mer qui touchent de l'eau.
+fn waterlogged(p: &crate::world::generator::Palette, palette: &[u32], indices: &[u16]) -> Option<Vec<bool>> {
+    if !palette.iter().any(|b| p.aquatic.contains(b) || p.soaked.contains(b)) {
+        return None;
+    }
+    let block = |x: usize, z: usize, y: usize| palette[indices[(x << 8) | (z << 4) | y] as usize];
+    let mut out = vec![false; 4096];
+    for x in 0..16usize {
+        for z in 0..16usize {
+            for y in 0..16usize {
+                let b = block(x, z, y);
+                out[(x << 8) | (z << 4) | y] = if p.aquatic.contains(&b) {
+                    true
+                } else if p.soaked.contains(&b) {
+                    let near = [(1i32, 0i32, 0i32), (-1, 0, 0), (0, 0, 1), (0, 0, -1), (0, 1, 0), (0, -1, 0)];
+                    near.iter().any(|(dx, dz, dy)| {
+                        let (nx, nz, ny) = (x as i32 + dx, z as i32 + dz, y as i32 + dy);
+                        (0..16).contains(&nx) && (0..16).contains(&nz) && (0..16).contains(&ny) && {
+                            let n = block(nx as usize, nz as usize, ny as usize);
+                            n == p.water || p.aquatic.contains(&n)
+                        }
+                    })
+                } else {
+                    false
+                };
+            }
+        }
+    }
+    Some(out)
+}
+
+fn encode_sub_chunk(w: &mut W, y_index: i8, palette: &[u32], indices: &[u16], water: Option<(&Vec<bool>, u32, u32)>) {
     w.u8(9);
-    w.u8(1);
+    w.u8(if water.is_some() { 2 } else { 1 });
     w.u8(y_index as u8);
+    write_storage(w, palette, indices);
+    if let Some((cells, air, water)) = water {
+        let second: Vec<u16> = cells.iter().map(|c| *c as u16).collect();
+        write_storage(w, &[air, water], &second);
+    }
+}
+
+/// Une couche de blocs : indices empaquetés dans des mots de 32 bits, puis la palette.
+fn write_storage(w: &mut W, palette: &[u32], indices: &[u16]) {
     let bits: usize = [1usize, 2, 3, 4, 5, 6, 8, 16]
         .iter()
         .copied()
@@ -567,6 +628,22 @@ fn encode_sub_chunk(w: &mut W, y_index: i8, palette: &[u32], indices: &[u16]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Une herbe marine est envoyée avec de l'eau dans le même bloc (seconde couche), et
+    /// la casser laisse de l'eau, pas un trou d'air.
+    #[test]
+    fn sea_plants_carry_their_water() {
+        let mut world = World::new();
+        let p = &world.generator().blocks;
+        let (seagrass, water) = (p.named["seagrass"], p.water);
+        // Section du bas (y de -64 à -49) : un seul stockage tant qu'il n'y a pas de plante
+        assert_eq!(&world.chunk_payload(0, 0).1[..2], &[9, 1]);
+        assert!(world.set(2, -60, 3, seagrass));
+        let (_, bytes) = world.chunk_payload(0, 0);
+        assert_eq!(&bytes[..2], &[9, 2]);
+        assert_eq!(world.left_behind(2, -60, 3), water);
+        assert_eq!(world.left_behind(5, -61, 5), world.air);
+    }
 
     #[test]
     fn edits_are_tracked_and_reverted() {

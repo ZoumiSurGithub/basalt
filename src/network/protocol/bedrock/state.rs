@@ -32,8 +32,20 @@ pub fn update_attributes(runtime_id: u64) -> Vec<u8> {
     update_attributes_with(runtime_id, 20.0, 20.0, 20.0, 0, 0.0)
 }
 
-/// Attributs du joueur : vie, vie maximale, faim, niveau et progression d'expérience.
+/// Attributs du joueur à l'apparition : vie, faim, expérience, et aussi vitesses, attaque…
 pub fn update_attributes_with(runtime_id: u64, health: f32, max_health: f32, food: f32, level: i32, progress: f32) -> Vec<u8> {
+    attributes(runtime_id, health, max_health, food, level, progress, true)
+}
+
+/// Mise à jour en cours de partie : seulement la vie, la faim et l'expérience. Renvoyer la
+/// vitesse de marche annulerait le sprint du joueur (le client remet sa vitesse à 0,1).
+pub fn update_vitals(runtime_id: u64, health: f32, max_health: f32, food: f32, level: i32, progress: f32) -> Vec<u8> {
+    attributes(runtime_id, health, max_health, food, level, progress, false)
+}
+
+const VITALS: [&str; 4] = ["minecraft:health", "minecraft:player.hunger", "minecraft:player.level", "minecraft:player.experience"];
+
+fn attributes(runtime_id: u64, health: f32, max_health: f32, food: f32, level: i32, progress: f32, full: bool) -> Vec<u8> {
     const BIG: f32 = 3.402_823_5e38;
     // (nom, minimum, maximum, valeur, valeur par défaut)
     let list: [(&str, f32, f32, f32, f32); 10] = [
@@ -48,10 +60,11 @@ pub fn update_attributes_with(runtime_id: u64, health: f32, max_health: f32, foo
         ("minecraft:attack_damage", 0.0, BIG, 1.0, 1.0),
         ("minecraft:absorption", 0.0, 16.0, 0.0, 0.0),
     ];
+    let list: Vec<_> = list.iter().filter(|a| full || VITALS.contains(&a.0)).collect();
     let mut w = W::default();
     w.varu64(runtime_id);
     w.varu32(list.len() as u32);
-    for (name, min, max, value, default) in list.iter() {
+    for (name, min, max, value, default) in list.iter().copied() {
         w.f32(*min);
         w.f32(*max);
         w.f32(*value);
@@ -220,4 +233,19 @@ pub fn biome_definition_list_plains() -> Vec<u8> {
     w.varu32(1); // une chaîne
     w.string("plains");
     w.0
+}
+
+#[cfg(test)]
+mod attribute_tests {
+    /// Le sprint ne doit pas être annulé : une mise à jour de la vie ne contient pas la vitesse.
+    #[test]
+    fn vitals_update_leaves_movement_alone() {
+        let p = super::update_vitals(1, 15.0, 20.0, 18.0, 0, 0.0);
+        let text = String::from_utf8_lossy(&p);
+        assert!(text.contains("minecraft:health") && text.contains("minecraft:player.hunger"));
+        assert!(!text.contains("minecraft:movement"));
+        assert_eq!(p[1], 4);
+        let full = super::update_attributes_with(1, 15.0, 20.0, 18.0, 0, 0.0);
+        assert!(String::from_utf8_lossy(&full).contains("minecraft:movement"));
+    }
 }

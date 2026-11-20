@@ -1050,9 +1050,16 @@ impl Server {
 
     /// Envoie au joueur sa vie, sa faim et son expérience.
     fn sync_attributes(&mut self, addr: &SocketAddr) {
+        self.send_attributes(addr, false);
+    }
+
+    /// Tous les attributs (vitesses comprises) : seulement à l'arrivée et à la réapparition,
+    /// sinon le sprint en cours serait annulé.
+    fn send_attributes(&mut self, addr: &SocketAddr, full: bool) {
         let packet = match self.clients.get(addr) {
             Some(c) if c.protocol >= 2225 => match &c.data {
-                Some(d) => bedrock::update_attributes_with(c.id as u64, d.health, d.max_health, d.food, d.xp_level, d.xp_progress),
+                Some(d) if full => bedrock::update_attributes_with(c.id as u64, d.health, d.max_health, d.food, d.xp_level, d.xp_progress),
+                Some(d) => bedrock::update_vitals(c.id as u64, d.health, d.max_health, d.food, d.xp_level, d.xp_progress),
                 None => return,
             },
             _ => return,
@@ -2716,7 +2723,7 @@ impl Server {
         if !self.refused_extras.contains(&bedrock::ID_RESPAWN) {
             self.send(addr, bedrock::ID_RESPAWN, &bedrock::respawn(spawn, bedrock::RESPAWN_READY, id));
         }
-        self.sync_attributes(addr);
+        self.send_attributes(addr, true);
         let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.visible.contains(&id)).map(|(a, _)| *a).collect();
         for v in viewers {
             if let Some(c) = self.clients.get_mut(&v) {
@@ -3252,13 +3259,15 @@ impl Server {
                     .collect();
             }
         }
-        if !self.world.set(x, y, z, air) {
+        // Une plante aquatique (ou un corail immergé) laisse son eau derrière elle
+        let after = self.world.left_behind(x, y, z);
+        if !self.world.set(x, y, z, after) {
             return;
         }
         if self.cfg.debug {
             info!("{} : bloc cassé en {} {} {}", addr, x, y, z);
         }
-        self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, air), Some(*addr));
+        self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, after), Some(*addr));
         self.settle_stairs((x, y, z));
         // Une porte part en entier : l'autre moitié disparaît avec elle
         let other_half = self.data.as_ref().and_then(|d| {
@@ -4910,7 +4919,7 @@ impl Server {
                     self.load_player(&addr);
                     let fresh = self.clients.get(&addr).map(|c| c.first_visit).unwrap_or(false);
                     self.emit("load", &[LVal::Player(name.clone()), LVal::Bool(fresh)]);
-                    self.sync_attributes(&addr);
+                    self.send_attributes(&addr, true);
                     if self.clients.get(&addr).map(|c| c.inv_touched).unwrap_or(false) {
                         self.send_inventory(&addr);
                     }
