@@ -12,6 +12,7 @@
 //! est encore utilisée ; le terrain généré est partagé tel quel.
 
 pub mod generator;
+pub mod liquid;
 pub mod vanilla;
 
 use std::collections::{HashMap, HashSet};

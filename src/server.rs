@@ -424,6 +424,8 @@ pub struct Server {
     data: Option<GameData>,
     /// Tous les blocs du jeu, avec leurs règles (construit à partir des données)
     blocks: Option<BlockRegistry>,
+    /// Eau et lave qui s'écoulent (absent sans les données du jeu)
+    liquids: Option<crate::world::liquid::Liquids>,
     /// Prochain numéro de pile pour les objets créés par les blocs (fours)
     tile_net_id: i32,
     /// Envoie les numéros de pile avec les objets ; coupé si le jeu refuse ce format
@@ -678,6 +680,7 @@ impl Server {
             items_level: 1,
             data: None,
             blocks: None,
+            liquids: None,
             tile_net_id: 1_000_000_000,
             item_net_ids: true,
             experiment: 0,
@@ -2656,6 +2659,28 @@ impl Server {
             info!("Terrain du monde : {}, graine {}", kind.name(), seed as i64);
         }
         self.spawn = self.find_spawn();
+        self.liquids = self.data.as_ref().and_then(crate::world::liquid::Liquids::new);
+    }
+
+    /// Un bloc a changé : l'eau et la lave voisines seront recalculées.
+    fn liquid_neighbours(&mut self, pos: (i32, i32, i32)) {
+        if let Some(l) = self.liquids.as_mut() {
+            l.block_changed(&self.world, self.tick, pos);
+        }
+    }
+
+    /// Fait couler l'eau et la lave dont la mise à jour est arrivée à échéance.
+    fn flow_liquids(&mut self) {
+        let Some(mut liquids) = self.liquids.take() else { return };
+        let changed = {
+            let data = self.data.as_ref();
+            let washable = |state: u32| data.and_then(|d| d.block_name(state)).map(washed_away).unwrap_or(false);
+            liquids.tick(&mut self.world, self.tick, &washable)
+        };
+        self.liquids = Some(liquids);
+        for (x, y, z, state) in changed {
+            self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, state), None);
+        }
     }
 
     /// Point de réapparition (à hauteur des yeux).
@@ -3267,6 +3292,7 @@ impl Server {
         if self.cfg.debug {
             info!("{} : bloc cassé en {} {} {}", addr, x, y, z);
         }
+        self.liquid_neighbours((x, y, z));
         self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, after), Some(*addr));
         if after != air {
             // L'eau du bloc revient sur la couche principale : la seconde couche se vide
@@ -3892,6 +3918,10 @@ impl Server {
             }
             _ => return,
         };
+        // Seau : remplir à une source, ou vider de l'eau ou de la lave
+        if near && item.count > 0 && self.use_bucket(addr, item.id, (x, y, z), face) {
+            return;
+        }
         let block = match self.block_for(item.id) {
             Some(b) if item.count > 0 => b,
             _ => return, // rien de posable en main
@@ -3980,6 +4010,7 @@ impl Server {
         // Le poseur reçoit aussi l'état retenu : son jeu a pu prévoir une autre orientation
         self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, block), None);
         self.world.set_wet(x, y, z, soak);
+        self.liquid_neighbours((x, y, z));
         if soak {
             let water = self.world.generator().blocks.water;
             self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block_layer(x, y, z, water, 1), None);
@@ -4090,6 +4121,7 @@ impl Server {
         }
         self.show_held(addr);
         self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, double), None);
+        self.liquid_neighbours((x, y, z));
         // Une double dalle est un bloc plein : elle ne garde pas d'eau
         if self.world.is_wet(x, y, z) {
             self.world.set_wet(x, y, z, false);
@@ -4098,6 +4130,129 @@ impl Server {
         }
         if self.cfg.debug {
             info!("{} : double dalle en {} {} {}", addr, x, y, z);
+        }
+    }
+
+    /// Seau tenu en main, clic sur un bloc (`target` : la case devant la face cliquée).
+    /// Renvoie vrai si le seau a servi (ou si l'objet tenu est un seau, même sans effet).
+    fn use_bucket(&mut self, addr: &SocketAddr, item: i16, target: (i32, i32, i32), face: u8) -> bool {
+        use crate::world::liquid::Fluid;
+        let name = match self.data.as_ref().and_then(|d| d.item_by_id(item)) {
+            Some(def) => def.name.trim_start_matches("minecraft:").to_string(),
+            None => return false,
+        };
+        let filled = match name.as_str() {
+            "bucket" => None,
+            "water_bucket" => Some(Fluid::Water),
+            "lava_bucket" => Some(Fluid::Lava),
+            _ => return false,
+        };
+        let Some(liquids) = self.liquids.as_ref() else { return true };
+        let clicked = bedrock::unplace_target(target, face);
+        let creative = self.clients.get(addr).map(|c| c.mode == GameMode::Creative).unwrap_or(false);
+        let at = |s: &Self, p: (i32, i32, i32)| s.world.get(p.0, p.1, p.2);
+        // Ce que l'opération change : (position, nouveau bloc, eau gardée dans le bloc ?)
+        let (pos, state, wet, give): ((i32, i32, i32), u32, Option<bool>, &str) = match filled {
+            None => {
+                // Remplir : la source cliquée, sinon celle devant la face (le jeu vise parfois
+                // le bloc sous l'eau), ou l'eau d'un bloc posé dans l'eau
+                let source = [clicked, target].into_iter().find_map(|p| match liquids.fluid(at(self, p)) {
+                    Some((f, 0)) => Some((p, f)),
+                    _ => None,
+                });
+                match source {
+                    Some((p, f)) => (p, self.world.air, None, if f == Fluid::Water { "water_bucket" } else { "lava_bucket" }),
+                    None if self.world.is_wet(clicked.0, clicked.1, clicked.2) => (clicked, at(self, clicked), Some(false), "water_bucket"),
+                    None => {
+                        self.send_inventory(addr);
+                        return true;
+                    }
+                }
+            }
+            Some(fluid) => {
+                let source = liquids.source(fluid);
+                let c = at(self, clicked);
+                if fluid == Fluid::Water && self.holds_water(c) && !self.world.is_wet(clicked.0, clicked.1, clicked.2) {
+                    // Vidé sur une dalle, un escalier… : le bloc garde l'eau
+                    (clicked, c, Some(true), "bucket")
+                } else if self.replaceable(c) && liquids.fluid(c) != Some((fluid, 0)) {
+                    (clicked, source, None, "bucket")
+                } else if self.replaceable(at(self, target)) {
+                    (target, source, None, "bucket")
+                } else {
+                    self.send_inventory(addr);
+                    let current = at(self, target);
+                    self.send(addr, bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(target.0, target.1, target.2, current));
+                    return true;
+                }
+            }
+        };
+        let event_block = if filled.is_some() { state } else { at(self, pos) };
+        let event = if filled.is_some() { "BlockPlaceEvent" } else { "BlockBreakEvent" };
+        let refused = self.plugins.listens(event) && {
+            let fields = vec![("player", self.name_json(addr)), ("block", self.block_json(event_block, pos))];
+            let out = self.fire(event, fields);
+            cancelled(&out)
+        };
+        let before = at(self, pos);
+        if refused || (state != before && !self.world.set(pos.0, pos.1, pos.2, state)) {
+            self.send_inventory(addr);
+            self.send(addr, bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(pos.0, pos.1, pos.2, before));
+            return true;
+        }
+        if state != before {
+            self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(pos.0, pos.1, pos.2, state), None);
+        }
+        if let Some(wet) = wet {
+            self.world.set_wet(pos.0, pos.1, pos.2, wet);
+            let layer = if wet { self.world.generator().blocks.water } else { self.world.air };
+            self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block_layer(pos.0, pos.1, pos.2, layer, 1), None);
+        }
+        self.liquid_neighbours(pos);
+        // En survie, le seau change ; en créatif, il reste tel quel
+        if !creative {
+            if let Some(id) = self.item_id(give) {
+                if let Some(c) = self.clients.get_mut(addr) {
+                    c.inv.replace_held(id);
+                }
+            }
+        }
+        self.send_inventory(addr);
+        self.show_held(addr);
+        if self.cfg.debug {
+            info!("{} : seau ({}) en {} {} {}", addr, name, pos.0, pos.1, pos.2);
+        }
+        true
+    }
+
+    /// Seau vide utilisé sans viser de bloc : la première source de liquide sur la ligne du
+    /// regard (5 blocs au plus) est ramassée.
+    fn bucket_in_air(&mut self, addr: &SocketAddr) {
+        let Some((eye, pitch, yaw, item)) = self.clients.get(addr).map(|c| (c.pos, c.pitch, c.yaw, c.inv.held())) else { return };
+        let empty_bucket = self.data.as_ref().and_then(|d| d.item_by_id(item.id)).map(|d| d.name == "minecraft:bucket").unwrap_or(false);
+        let Some(liquids) = self.liquids.as_ref() else { return };
+        if !empty_bucket || item.count == 0 {
+            return;
+        }
+        let (p, y) = (pitch.to_radians(), yaw.to_radians());
+        let dir = (-y.sin() * p.cos(), -p.sin(), y.cos() * p.cos());
+        let mut hit = None;
+        for i in 1..=50 {
+            let d = i as f32 * 0.1;
+            let b = ((eye.0 + dir.0 * d).floor() as i32, (eye.1 + dir.1 * d).floor() as i32, (eye.2 + dir.2 * d).floor() as i32);
+            let s = self.world.get(b.0, b.1, b.2);
+            if let Some((_, depth)) = liquids.fluid(s) {
+                if depth == 0 {
+                    hit = Some(b);
+                    break;
+                }
+            } else if s != self.world.air {
+                break;
+            }
+        }
+        if let Some(b) = hit {
+            // Même chemin qu'un clic sur la face du dessus de la source
+            self.use_bucket(addr, item.id, (b.0, b.1 + 1, b.2), 1);
         }
     }
 
@@ -4140,6 +4295,7 @@ impl Server {
 
     fn change_block(&mut self, pos: (i32, i32, i32), state: u32) {
         if self.world.set(pos.0, pos.1, pos.2, state) {
+            self.liquid_neighbours(pos);
             self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(pos.0, pos.1, pos.2, state), None);
         }
     }
@@ -5014,6 +5170,9 @@ impl Server {
                                     self.on_place(&addr, target, u.face, u.click);
                                 }
                             }
+                        } else if u.action == 1 {
+                            // Clic dans le vide : un seau vide peut viser une source d'eau ou de lave
+                            self.bucket_in_air(&addr);
                         }
                     }
                 }
@@ -5906,6 +6065,10 @@ impl Server {
                     let _t = timings::scope("Tick — vie regagnée");
                     self.regenerate();
                 }
+                {
+                    let _t = timings::scope("Tick — eau et lave");
+                    self.flow_liquids();
+                }
                 if self.tick % 4 == 0 {
                     let _t = timings::scope("Tick — écrans ouverts (coffres, fours)");
                     self.watch_containers();
@@ -5990,4 +6153,20 @@ mod tests {
         assert_eq!(fall_damage(10.0), 7.0);
         assert_eq!(fall_damage(23.0), 20.0);
     }
+}
+
+/// Blocs emportés par l'eau ou brûlés par la lave qui coule : herbes, fleurs, torches,
+/// pousses, cultures, rails, poudre de redstone…
+fn washed_away(name: &str) -> bool {
+    let n = name.trim_start_matches("minecraft:");
+    if n.contains("seagrass") || n.contains("kelp") || n.contains("coral") || n == "sea_pickle" {
+        return false; // plantes aquatiques : déjà dans l'eau
+    }
+    const PARTS: [&str; 16] = ["flower", "sapling", "torch", "rail", "short_grass", "tall_grass", "fern", "deadbush", "dead_bush", "redstone_wire", "tripwire", "tulip", "mushroom", "petals", "leaf_litter", "dry_grass"];
+    PARTS.iter().any(|p| n.contains(p))
+        || matches!(
+            n,
+            "dandelion" | "poppy" | "allium" | "azure_bluet" | "oxeye_daisy" | "cornflower" | "lily_of_the_valley" | "wither_rose" | "wheat" | "carrots" | "potatoes"
+                | "beetroot" | "snow_layer" | "web" | "bush" | "firefly_bush" | "wildflowers" | "sweet_berry_bush" | "lever" | "unpowered_repeater" | "unpowered_comparator"
+        )
 }

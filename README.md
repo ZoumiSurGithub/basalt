@@ -65,6 +65,17 @@ Un nouveau monde est généré comme dans le jeu depuis la 1.18 (`src/world/vani
   fougères, buissons de baies, cactus, cannes à sucre, nénuphars, algues, pics de glace ;
 - **minerais** à leurs hauteurs (émeraude dans les montagnes), poches de granite,
   diorite, andésite, tuf, gravier.
+- **fonds marins** : herbes marines, laminaires, récifs de corail et cornichons de mer des
+  océans chauds, icebergs, magma ; feuilles mortes en forêt, pétales roses sous les cerisiers.
+
+**Eau et lave** coulent comme dans le jeu (`src/world/liquid.rs`) : un liquide n'est
+recalculé que lorsqu'un bloc change à côté de lui (bloc cassé, posé, seau vidé). L'eau
+s'étale sur 7 blocs, la lave sur 3 ; le liquide se dirige vers le trou le plus proche,
+tombe, et disparaît quand plus rien ne l'alimente. Deux sources d'eau en créent une
+troisième entre elles ; l'eau qui touche la lave donne obsidienne, pierre ou pierre
+taillée. Les seaux remplissent et vident ; un bloc posé dans l'eau (dalle, escalier,
+clôture…) la garde, et la laisse en place quand on le casse. Les modifications faites par
+les plugins (EasyEdit…) ne déclenchent pas l'écoulement, comme WorldEdit dans le jeu.
 
 Pas encore générés : villages et autres structures, lacs, aquifères (l'eau souterraine du
 jeu), filons géants de fer et de cuivre. Les valeurs ne sont pas celles du jeu : le monde

@@ -173,6 +173,19 @@ impl PlayerWindows {
         self.main.item_in_hand(HeldSlot(self.selected))
     }
 
+    /// Échange un exemplaire de l'objet tenu contre un autre (seau rempli ou vidé). Une pile
+    /// de plusieurs objets garde le reste en main ; le nouvel objet va dans le sac.
+    pub fn replace_held(&mut self, id: i16) {
+        let slot = (self.selected as usize).min(8);
+        if self.held().count <= 1 {
+            let net_id = self.fresh_net_id();
+            self.main.set_item(slot, ItemStack { id, count: 1, net_id });
+        } else {
+            self.consume_held();
+            self.add(id, 1);
+        }
+    }
+
     /// Retire un objet de la pile tenue en main (bloc posé). Faux si la main est vide.
     pub fn consume_held(&mut self) -> bool {
         self.main.consume_in_hand(HeldSlot(self.selected))
