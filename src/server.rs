@@ -3268,6 +3268,10 @@ impl Server {
             info!("{} : bloc cassé en {} {} {}", addr, x, y, z);
         }
         self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, after), Some(*addr));
+        if after != air {
+            // L'eau du bloc revient sur la couche principale : la seconde couche se vide
+            self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block_layer(x, y, z, air, 1), None);
+        }
         self.settle_stairs((x, y, z));
         // Une porte part en entier : l'autre moitié disparaît avec elle
         let other_half = self.data.as_ref().and_then(|d| {
@@ -3930,13 +3934,16 @@ impl Server {
             }
             return;
         }
-        let room_above = upper.is_none() || (y < 319 && self.world.get(x, y + 1, z) == air);
+        let room_above = upper.is_none() || (y < 319 && self.replaceable(self.world.get(x, y + 1, z)));
         let refused = near && room_above && self.plugins.listens("BlockPlaceEvent") && {
             let fields = vec![("player", self.name_json(addr)), ("block", self.block_json(block, (x, y, z)))];
             let out = self.fire("BlockPlaceEvent", fields);
             cancelled(&out)
         };
-        if refused || !near || !room_above || self.world.get(x, y, z) != air || !self.world.set(x, y, z, block) {
+        // Posé dans de l'eau : le bloc la garde s'il le peut (dalle, escalier, clôture…)
+        let was = self.world.get(x, y, z);
+        let soak = self.is_water_source(was) && self.holds_water(block);
+        if refused || !near || !room_above || !self.replaceable(was) || !self.world.set(x, y, z, block) {
             // Pose refusée : le joueur retrouve son inventaire exact et le bloc d'origine
             self.send_inventory(addr);
             let current = self.world.get(x, y, z);
@@ -3965,6 +3972,11 @@ impl Server {
         }
         // Le poseur reçoit aussi l'état retenu : son jeu a pu prévoir une autre orientation
         self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, block), None);
+        self.world.set_wet(x, y, z, soak);
+        if soak {
+            let water = self.world.generator().blocks.water;
+            self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block_layer(x, y, z, water, 1), None);
+        }
         self.settle_stairs((x, y, z));
         if let Some(upper) = upper {
             if self.world.set(x, y + 1, z, upper) {
@@ -4022,6 +4034,43 @@ impl Server {
         for (p, state) in changes {
             self.change_block(p, state);
         }
+    }
+
+    /// Un bloc peut-il être posé à la place de celui-ci (air, eau, lave) ?
+    fn replaceable(&self, state: u32) -> bool {
+        if state == self.world.air {
+            return true;
+        }
+        match self.data.as_ref().and_then(|d| d.block_name(state)) {
+            Some(n) => matches!(n, "minecraft:water" | "minecraft:flowing_water" | "minecraft:lava" | "minecraft:flowing_lava"),
+            None => state == self.world.generator().blocks.water,
+        }
+    }
+
+    /// Eau immobile (une source) : c'est elle qu'un bloc posé dedans peut garder.
+    fn is_water_source(&self, state: u32) -> bool {
+        match &self.data {
+            Some(d) => matches!(d.block_name(state), Some("minecraft:water" | "minecraft:flowing_water")) && matches!(d.prop(state, "liquid_depth"), Some(Prop::Int(0)) | None),
+            None => state == self.world.generator().blocks.water,
+        }
+    }
+
+    /// Le bloc peut-il contenir de l'eau, comme dans le jeu ?
+    fn holds_water(&self, state: u32) -> bool {
+        let Some(name) = self.data.as_ref().and_then(|d| d.block_name(state)) else { return false };
+        let n = name.trim_start_matches("minecraft:");
+        if n.contains("double_slab") || n.ends_with("_double_slab") {
+            return false;
+        }
+        const ENDS: [&str; 18] = [
+            "_slab", "_stairs", "_fence", "_fence_gate", "_wall", "_trapdoor", "_sign", "_hanging_sign", "_coral", "_coral_fan", "glass_pane", "_bars",
+            "lantern", "chain", "_candle", "_rod", "_grate", "_bud",
+        ];
+        ENDS.iter().any(|e| n.ends_with(e))
+            || matches!(
+                n,
+                "ladder" | "chest" | "trapped_chest" | "ender_chest" | "scaffolding" | "sea_pickle" | "conduit" | "candle" | "hopper" | "amethyst_cluster" | "pointed_dripstone" | "mangrove_roots" | "heavy_core" | "barrier" | "copper_chain" | "decorated_pot"
+            )
     }
 
     fn change_block(&mut self, pos: (i32, i32, i32), state: u32) {

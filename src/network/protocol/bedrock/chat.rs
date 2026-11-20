@@ -306,13 +306,18 @@ pub fn read_chat(body: &[u8]) -> Option<String> {
 }
 
 pub fn update_block(x: i32, y: i32, z: i32, block: u32) -> Vec<u8> {
+    update_block_layer(x, y, z, block, 0)
+}
+
+/// Changement d'un bloc sur une couche : 0 pour le bloc, 1 pour l'eau qu'il contient.
+pub fn update_block_layer(x: i32, y: i32, z: i32, block: u32, layer: u32) -> Vec<u8> {
     let mut w = W::default();
     w.vari32(x);
     w.vari32(y);
     w.vari32(z);
     w.varu32(block);
     w.varu32(3); // prévenir les voisins et les joueurs
-    w.varu32(0); // couche des blocs
+    w.varu32(layer);
     w.0
 }
 

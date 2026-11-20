@@ -36,6 +36,8 @@ const CACHE_CHUNKS: usize = 2048;
 
 /// Blocs modifiés d'un chunk : (x local, y, z local) -> identifiant réseau du bloc.
 type ChunkEdits = HashMap<(u8, i16, u8), u32>;
+/// Blocs posés dans l'eau qui la gardent (dalles, escaliers, clôtures…), par chunk
+type WetMap = HashMap<(i32, i32), Arc<HashSet<(u8, i16, u8)>>>;
 
 /// Chunks générés, partagés entre la boucle du serveur, les fils de génération et les plugins.
 struct Terrain {
@@ -138,6 +140,7 @@ impl Terrain {
 #[derive(Clone)]
 pub struct WorldView {
     edits: Arc<HashMap<(i32, i32), Arc<ChunkEdits>>>,
+    wet: Arc<WetMap>,
     terrain: Arc<Terrain>,
     air: u32,
 }
@@ -160,6 +163,8 @@ impl WorldView {
 pub struct World {
     /// (chunk x, chunk z) -> (x local, y, z local) -> identifiant réseau du bloc
     edits: Arc<HashMap<(i32, i32), Arc<ChunkEdits>>>,
+    /// Blocs posés dans l'eau qui contiennent encore cette eau (seconde couche)
+    wet: Arc<WetMap>,
     count: usize,
     terrain: Arc<Terrain>,
     /// Version de chaque chunk modifié (voir `chunk_version`)
@@ -191,6 +196,7 @@ impl World {
         let air = generator.blocks.air;
         World {
             edits: Arc::new(HashMap::new()),
+            wet: Arc::new(HashMap::new()),
             count: 0,
             terrain: Terrain::new(generator),
             versions: HashMap::new(),
@@ -213,7 +219,8 @@ impl World {
     pub fn left_behind(&self, x: i32, y: i32, z: i32) -> u32 {
         let p = &self.terrain.generator.blocks;
         let b = self.get(x, y, z);
-        let wet = p.aquatic.contains(&b)
+        let wet = self.is_wet(x, y, z)
+            || p.aquatic.contains(&b)
             || (p.soaked.contains(&b)
                 && [(1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1), (0, 1, 0)].iter().any(|(dx, dy, dz)| {
                     let n = self.get(x + dx, y + dy, z + dz);
@@ -224,6 +231,32 @@ impl World {
         } else {
             self.air
         }
+    }
+
+    /// Le bloc posé ici contient-il de l'eau (posé dans l'eau) ?
+    pub fn is_wet(&self, x: i32, y: i32, z: i32) -> bool {
+        let key = ((x & 15) as u8, y as i16, (z & 15) as u8);
+        self.wet.get(&(x >> 4, z >> 4)).map(|c| c.contains(&key)).unwrap_or(false)
+    }
+
+    /// Le bloc garde (ou perd) l'eau dans laquelle il a été posé.
+    pub fn set_wet(&mut self, x: i32, y: i32, z: i32, wet: bool) {
+        if !Self::in_bounds(y) || self.is_wet(x, y, z) == wet {
+            return;
+        }
+        let chunk = (x >> 4, z >> 4);
+        let key = ((x & 15) as u8, y as i16, (z & 15) as u8);
+        let all = Arc::make_mut(&mut self.wet);
+        if wet {
+            Arc::make_mut(all.entry(chunk).or_default()).insert(key);
+        } else if let Some(c) = all.get_mut(&chunk) {
+            Arc::make_mut(c).remove(&key);
+            if c.is_empty() {
+                all.remove(&chunk);
+            }
+        }
+        self.dirty = true;
+        self.bump(chunk);
     }
 
     /// Bloc du terrain d'origine à cette position.
@@ -262,6 +295,9 @@ impl World {
     pub fn set(&mut self, x: i32, y: i32, z: i32, block: u32) -> bool {
         if !Self::in_bounds(y) {
             return false;
+        }
+        if block == self.air || block == self.terrain.generator.blocks.water {
+            self.set_wet(x, y, z, false);
         }
         let chunk = (x >> 4, z >> 4);
         let key = ((x & 15) as u8, y as i16, (z & 15) as u8);
@@ -306,7 +342,7 @@ impl World {
 
     /// Vue du monde pour un autre fil (plugins) : copie instantanée, sans recopie des blocs.
     pub fn view(&self) -> WorldView {
-        WorldView { edits: self.edits.clone(), terrain: self.terrain.clone(), air: self.air }
+        WorldView { edits: self.edits.clone(), wet: self.wet.clone(), terrain: self.terrain.clone(), air: self.air }
     }
 
     /// Nombre de blocs qui diffèrent du terrain d'origine.
@@ -343,12 +379,19 @@ impl World {
                 blocks.extend_from_slice(&[cx * 16 + *x as i32, *y as i32, cz * 16 + *z as i32, *block as i32]);
             }
         }
+        let mut wet = Vec::new();
+        for ((cx, cz), cells) in self.wet.iter() {
+            for (x, y, z) in cells.iter() {
+                wet.extend_from_slice(&[cx * 16 + *x as i32, *y as i32, cz * 16 + *z as i32]);
+            }
+        }
         let g = self.generator();
         Tag::compound(vec![
             ("Version", Tag::Int(1)),
             ("Generator", Tag::string(g.kind.name())),
             ("Seed", Tag::Long(g.seed as i64)),
             ("Blocks", Tag::IntArray(blocks)),
+            ("Waterlogged", Tag::IntArray(wet)),
         ])
     }
 
@@ -386,6 +429,11 @@ impl World {
                 for b in blocks.chunks_exact(4) {
                     if Self::in_bounds(b[1]) {
                         self.store((b[0] >> 4, b[2] >> 4), ((b[0] & 15) as u8, b[1] as i16, (b[2] & 15) as u8), b[3] as u32);
+                    }
+                }
+                if let Some(wet) = doc.get("Waterlogged").and_then(|t| t.as_int_array()) {
+                    for w in wet.chunks_exact(3) {
+                        self.set_wet(w[0], w[1], w[2], true);
                     }
                 }
                 self.dirty = false;
@@ -426,7 +474,7 @@ impl World {
     /// Contenu d'un chunk à envoyer : (nombre de sous-chunks, données). Les sous-chunks d'air
     /// au-dessus du dernier bloc ne sont pas envoyés.
     pub fn chunk_payload(&self, cx: i32, cz: i32) -> (u32, Vec<u8>) {
-        encode_chunk(&self.terrain, &self.edits, self.air, cx, cz)
+        encode_chunk(&self.terrain, &self.edits, &self.wet, self.air, cx, cz)
     }
 
     /// Numéro de version d'un chunk : il change à chaque bloc modifié dedans. Sert à savoir si
@@ -443,15 +491,16 @@ impl World {
 impl WorldView {
     /// Contenu d'un chunk à envoyer, encodé depuis un autre fil (même résultat que `World`).
     pub fn chunk_payload(&self, cx: i32, cz: i32) -> (u32, Vec<u8>) {
-        encode_chunk(&self.terrain, &self.edits, self.air, cx, cz)
+        encode_chunk(&self.terrain, &self.edits, &self.wet, self.air, cx, cz)
     }
 }
 
 /// Contenu d'un chunk : terrain généré et blocs modifiés.
-fn encode_chunk(terrain: &Terrain, all_edits: &HashMap<(i32, i32), Arc<ChunkEdits>>, air: u32, cx: i32, cz: i32) -> (u32, Vec<u8>) {
+fn encode_chunk(terrain: &Terrain, all_edits: &HashMap<(i32, i32), Arc<ChunkEdits>>, all_wet: &WetMap, air: u32, cx: i32, cz: i32) -> (u32, Vec<u8>) {
     {
         let column = terrain.column((cx, cz));
         let edits = all_edits.get(&(cx, cz));
+        let wet = all_wet.get(&(cx, cz));
         // Sous-chunks à envoyer : jusqu'au plus haut qui n'est pas que de l'air
         let mut sections = column.sections.iter().rposition(|s| !matches!(s, Section::Uniform(b) if *b == air)).map(|i| i + 1).unwrap_or(1);
         if let Some(edits) = edits {
@@ -465,7 +514,8 @@ fn encode_chunk(terrain: &Terrain, all_edits: &HashMap<(i32, i32), Arc<ChunkEdit
         for s in 0..sections {
             let y_index = ((MIN_Y >> 4) + s as i32) as i8;
             let base_y = MIN_Y + s as i32 * 16;
-            let touched = edits.map(|e| e.keys().any(|(_, y, _)| (*y as i32) >= base_y && (*y as i32) < base_y + 16)).unwrap_or(false);
+            let in_section = |y: i16| (y as i32) >= base_y && (y as i32) < base_y + 16;
+            let touched = edits.map(|e| e.keys().any(|(_, y, _)| in_section(*y))).unwrap_or(false) || wet.map(|w| w.iter().any(|(_, y, _)| in_section(*y))).unwrap_or(false);
             let p = &terrain.generator.blocks;
             match (&column.sections[s], touched) {
                 (Section::Mixed { palette, index }, false) if !palette.iter().any(|b| p.aquatic.contains(b) || p.soaked.contains(b)) => {
@@ -491,7 +541,11 @@ fn encode_chunk(terrain: &Terrain, all_edits: &HashMap<(i32, i32), Arc<ChunkEdit
                             }
                         }
                     }
-                    let water = waterlogged(p, &palette, &indices);
+                    let mut water = waterlogged(p, &palette, &indices);
+                    // Blocs posés dans l'eau par les joueurs
+                    for (x, y, z) in wet.iter().flat_map(|w| w.iter()).filter(|(_, y, _)| in_section(*y)) {
+                        water.get_or_insert_with(|| vec![false; 4096])[((*x as usize) << 8) | ((*z as usize) << 4) | (*y as i32 - base_y) as usize] = true;
+                    }
                     encode_sub_chunk(&mut w, y_index, &palette, &indices, water.as_ref().map(|wl| (wl, p.air, p.water)));
                 }
             }
@@ -643,6 +697,29 @@ mod tests {
         assert_eq!(&bytes[..2], &[9, 2]);
         assert_eq!(world.left_behind(2, -60, 3), water);
         assert_eq!(world.left_behind(5, -61, 5), world.air);
+    }
+
+    /// Une dalle posée dans l'eau la garde : envoyée avec sa seconde couche, conservée à
+    /// l'enregistrement, et rendue en eau quand on la casse.
+    #[test]
+    fn blocks_placed_in_water_keep_it() {
+        let dir = std::env::temp_dir().join(format!("basalt-wet-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut world = World::new();
+        let slab = block_hash("minecraft:oak_slab");
+        let water = world.generator().blocks.water;
+        assert!(world.set(4, -60, 4, slab));
+        world.set_wet(4, -60, 4, true);
+        assert_eq!(&world.chunk_payload(0, 0).1[..2], &[9, 2]);
+        world.save(&dir).unwrap();
+        let mut again = World::new();
+        again.load(&dir).unwrap();
+        assert!(again.is_wet(4, -60, 4));
+        assert_eq!(again.left_behind(4, -60, 4), water);
+        // Remplacé par de l'eau (cassé) : plus rien dans la seconde couche
+        assert!(again.set(4, -60, 4, water));
+        assert!(!again.is_wet(4, -60, 4));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
