@@ -45,6 +45,16 @@ pub fn add_item_actor(entity_id: i64, item: i16, count: u8, block: u32, pos: (f3
     w.0
 }
 
+/// Le paquet relevé, à l'identique (identifiants compris : 34 à l'exécution). Pour un essai.
+pub fn add_item_actor_recorded() -> Vec<u8> {
+    let pos = (0.7581789493560791, -59.28812789916992, 0.8182617425918579);
+    let motion = (-0.07429742068052292, 0.20000000298023224, -0.054183147847652435);
+    let mut p = add_item_actor(34, 3, 1, 2_186_211_206, pos, motion);
+    // Identifiant unique d'origine (-85899345913) à la place du nôtre
+    p.splice(0..1, [0xf1, 0xff, 0xff, 0xff, 0xff, 0x04]);
+    p
+}
+
 fn item_metadata() -> Vec<u8> {
     let h = ITEM_METADATA_HEX.as_bytes();
     (0..h.len() / 2).map(|i| u8::from_str_radix(std::str::from_utf8(&h[2 * i..2 * i + 2]).unwrap_or("00"), 16).unwrap_or(0)).collect()
@@ -82,6 +92,9 @@ mod tests {
         assert_eq!(&p[2..], &recorded[..]);
         assert_eq!(item_metadata().len(), 334);
         assert_eq!(item_metadata()[0], 0x40, "64 entrées");
+        let exact = add_item_actor_recorded();
+        assert_eq!(&exact[..7], &[0xf1, 0xff, 0xff, 0xff, 0xff, 0x04, 0x22]);
+        assert_eq!(exact.len(), 388, "même taille que le relevé");
         assert_eq!(take_item_actor(5, 300), vec![5, 0xac, 0x02]);
     }
 }

@@ -2740,7 +2740,9 @@ impl Server {
                         if self.cfg.debug {
                             info!("[objets] objet {} montré à {}", id, addr);
                         }
-                        out.push((*addr, bedrock::ID_ADD_ITEM_ACTOR, bedrock::add_item_actor(*id, g.item, g.count, g.block, g.pos, (0.0, 0.0, 0.0))));
+                        // Affiché un peu au-dessus du sol, comme un objet qui vient de tomber
+                        let shown = (g.pos.0, g.pos.1 + 0.25, g.pos.2);
+                        out.push((*addr, bedrock::ID_ADD_ITEM_ACTOR, bedrock::add_item_actor(*id, g.item, g.count, g.block, shown, (0.0, 0.0, 0.0))));
                     }
                 } else if far > 80.0 * 80.0 && c.items_seen.remove(id) {
                     out.push((*addr, bedrock::ID_REMOVE_ACTOR, bedrock::remove_actor(*id)));
@@ -4549,6 +4551,16 @@ impl Server {
             "stop" => {
                 info!("Arrêt du serveur…");
                 self.running = false;
+            }
+            // Essai : renvoie tel quel l'objet au sol relevé auprès du serveur officiel (un bloc de
+            // terre en 0,8 -59,3 0,8). Sert à savoir si le jeu l'affiche venant de Basalt.
+            "testitem" => {
+                let packet = bedrock::add_item_actor_recorded();
+                let targets: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.joined).map(|(a, _)| *a).collect();
+                for a in &targets {
+                    self.send(a, bedrock::ID_ADD_ITEM_ACTOR, &packet);
+                }
+                info!("Objet de terre du relevé envoyé à {} joueur(s), en 0.8 -59.3 0.8 (allez voir près de 0 -60 0)", targets.len());
             }
             "help" | "aide" | "?" => {
                 info!("Commandes disponibles :");
