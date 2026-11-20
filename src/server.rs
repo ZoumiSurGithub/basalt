@@ -2601,6 +2601,10 @@ impl Server {
 
     /// Un joueur en frappe un autre.
     fn on_attack(&mut self, addr: &SocketAddr, target: u64) {
+        if self.cfg.debug {
+            let found = self.clients.values().find(|c| c.id as u64 == target).map(|c| (c.name.clone().unwrap_or_default(), c.mode.label(), c.pos));
+            info!("[combat] {} frappe l'entité {} : {:?}", addr, target, found);
+        }
         let (from, eye, name, damage) = match self.clients.get(addr) {
             Some(c) if c.joined && c.dead.is_none() => {
                 let held = c.inv.held();
@@ -2699,6 +2703,9 @@ impl Server {
         self.next_id += 1;
         let pos = (at.0, self.ground_below(at.0, at.1, at.2), at.2);
         let block = self.block_for(item).unwrap_or(0);
+        if self.cfg.debug {
+            info!("[objets] objet {} posé au sol : objet n°{} ×{} en {:.1} {:.1} {:.1}", id, item, count, pos.0, pos.1, pos.2);
+        }
         self.ground.insert(id, GroundItem { item, block, count, pos, born: self.tick, pickup_at: self.tick + delay });
         self.show_ground_items();
         true
@@ -2730,6 +2737,9 @@ impl Server {
                 let far = dx * dx + dz * dz;
                 if far < 64.0 * 64.0 {
                     if c.items_seen.insert(*id) {
+                        if self.cfg.debug {
+                            info!("[objets] objet {} montré à {}", id, addr);
+                        }
                         out.push((*addr, bedrock::ID_ADD_ITEM_ACTOR, bedrock::add_item_actor(*id, g.item, g.count, g.block, g.pos, (0.0, 0.0, 0.0))));
                     }
                 } else if far > 80.0 * 80.0 && c.items_seen.remove(id) {
