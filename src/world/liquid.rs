@@ -397,3 +397,28 @@ mod tests {
         assert_eq!(l.fluid(w.get(1, -60, 0)), Some((Fluid::Water, 0)));
     }
 }
+
+#[cfg(test)]
+mod real_palette {
+    use super::*;
+    use crate::world::generator::{Generator, Kind, Palette};
+
+    /// Avec la palette du serveur (et non celle des tests), l'eau générée est bien une source
+    /// reconnue, et elle coule dans un trou creusé à côté.
+    #[test]
+    fn generated_water_flows_into_a_hole() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
+        let Ok(data) = GameData::load(&dir) else { return };
+        let p = Palette::new(&|n| data.state_from_spec(n));
+        let mut l = Liquids::new(&data).unwrap();
+        assert_eq!(l.fluid(p.water), Some((Fluid::Water, 0)), "eau du terrain non reconnue : {:?}", data.block_name(p.water));
+        let mut w = World::with_generator(Generator::new(Kind::Flat, 0, p));
+        let water = w.generator().blocks.water;
+        w.set(0, -60, 0, water);
+        l.block_changed(&w, 0, (0, -60, 0));
+        for t in 0..100 {
+            l.tick(&mut w, t, &|_| false);
+        }
+        assert!(l.fluid(w.get(3, -60, 0)).is_some());
+    }
+}

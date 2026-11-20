@@ -5115,7 +5115,14 @@ impl Server {
                 (Stage::InGame, bedrock::ID_INVENTORY_TRANSACTION) => {
                     // Une transaction par bloc posé, y compris quand le clic droit reste appuyé
                     let player = self.clients.get(&addr).map(|c| c.pos).unwrap_or((0.0, 0.0, 0.0));
-                    let block_use = bedrock::read_use_item(&body).or_else(|| bedrock::read_use_item_scan(&body, player));
+                    // La lecture directe peut se tromper quand la transaction commence par des
+                    // objets (seau rempli ou vidé…) : un bloc hors de portée du joueur est
+                    // écarté au profit de la lecture de secours, qui se cale sur sa position.
+                    let in_reach = |u: &bedrock::BlockUse| {
+                        let (x, y, z) = u.pos;
+                        u.action == 1 || ((x as f32 - player.0).abs() < 9.0 && (y as f32 - player.1).abs() < 9.0 && (z as f32 - player.2).abs() < 9.0)
+                    };
+                    let block_use = bedrock::read_use_item(&body).filter(|u| in_reach(u)).or_else(|| bedrock::read_use_item_scan(&body, player));
                     if self.cfg.debug {
                         if let Some(c) = self.clients.get_mut(&addr) {
                             // Les transactions longues (avec des objets) sont les plus instructives

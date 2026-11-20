@@ -1104,3 +1104,26 @@ mod key_drop_tests {
         assert_eq!(read_world_drop(&attack), None);
     }
 }
+
+#[cfg(test)]
+mod bucket_transactions {
+    use super::*;
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+
+    /// Seau utilisé (paquets relevés en jeu, 1.26.65) : la transaction commence par des
+    /// objets. La lecture de secours, calée sur la position du joueur, trouve le bon bloc.
+    #[test]
+    fn bucket_clicks_are_read_from_the_player_position() {
+        let player = (-10559.79f32, 65.62f32, -1774.15f32);
+        let cases = [
+            ("c35f01011d0202000202000100000200000000000000006d0101000000000a0000000000000000000000010000006b0110000000000a000000000000000000006b010f000000000a000000000000000000000001fda4017cd31b0100006b0110000000000a00000000000000000000b7f524c6723d8142be72ddc400008a3e0000803f0050673faa96eec1040100", (-10559, 62, -1770), 1),
+            ("cb5f01011d0102020100010000026d0101000000000a000000000000000000006b0101000000000a00000000000000000000000181a5018001e31b0304006d0101000000000a000000000000000000002aff24c6723d8342a4c4ddc400c0163f0004233f0000803fe3f28d420100", (-10561, 64, -1778), 3),
+        ];
+        for (h, pos, face) in cases {
+            let u = read_use_item_scan(&hex(h), player).expect("transaction non lue");
+            assert_eq!((u.action, u.pos, u.face), (0, pos, face));
+        }
+    }
+}

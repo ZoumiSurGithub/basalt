@@ -26,12 +26,14 @@ jobs:
       # est recompile, ce qui ramene la duree de plusieurs minutes a une ou deux
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y liblua5.4-0
-      - run: cargo test --locked
+      # Inscrit dans l'executable : branche ou etiquette, commit, date. Fixe des le debut,
+      # pour que les tests et la compilation finale partagent exactement le meme travail.
+      - run: echo "BASALT_BUILD=${GITHUB_REF_NAME} ${GITHUB_SHA::7} $(date -u +%Y-%m-%dT%H:%MZ)" >> "$GITHUB_ENV"
+      # Tests compiles en mode « release » : la compilation finale reprend ensuite ce qui
+      # est deja fait, au lieu de tout recompiler une seconde fois
+      - run: cargo test --release --locked
       - name: Compilation
-        run: |
-          # Inscrit dans l'executable : branche ou etiquette, commit, date
-          export BASALT_BUILD="${GITHUB_REF_NAME} ${GITHUB_SHA::7} $(date -u +%Y-%m-%dT%H:%MZ)"
-          cargo build --release --locked
+        run: cargo build --release --locked
       - name: Archive
         run: |
           mkdir basalt
@@ -88,11 +90,7 @@ jobs:
           del lua.c luac.c
           cl /nologo /O2 /MD /LD /DLUA_BUILD_AS_DLL /Felua54.dll *.c
           copy lua54.dll ..\..\lua54.dll
-      - name: Tests
-        shell: cmd
-        run: |
-          set PATH=%CD%;%PATH%
-          cargo test --locked
+      # Les tests sont faits par la compilation Linux ; ici, seulement l'executable Windows
       - name: Compilation
         shell: pwsh
         run: |
