@@ -31,6 +31,10 @@ pub fn actor_event(runtime_id: i64, event: u8, data: i32) -> Vec<u8> {
     w.varu64(runtime_id as u64);
     w.u8(event);
     w.vari32(data);
+    // Octet supplémentaire attendu par le jeu 1.26 : sans lui, il signale « read() overflow »
+    // juste après les données (relevé dans le journal du serveur avec le vrai jeu). Sa
+    // signification n'est pas connue ; 0 convient à un indicateur comme à un entier variable.
+    w.u8(0);
     w.0
 }
 
@@ -141,7 +145,7 @@ mod tests {
 
     #[test]
     fn combat_packets_have_the_documented_layout() {
-        assert_eq!(actor_event(5, EVENT_HURT, 0), vec![5, 2, 0]);
+        assert_eq!(actor_event(5, EVENT_HURT, 0), vec![5, 2, 0, 0]);
         let r = respawn((1.0, 2.0, 3.0), RESPAWN_READY, 300);
         assert_eq!(r.len(), 12 + 1 + 2);
         assert_eq!((r[12], &r[13..]), (RESPAWN_READY, &[0xac, 0x02][..]));
