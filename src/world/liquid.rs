@@ -252,27 +252,31 @@ impl Liquids {
             }
         }
 
-        // Il descend s'il peut
+        // Il descend s'il peut. Comme dans le jeu, un liquide au-dessus d'un vide ou du même
+        // liquide en train de couler ne s'étale pas sur les côtés, même une source (vidée
+        // contre une falaise, elle fait une seule cascade), sauf entre trois sources
         let down = (x, y - 1, z);
+        let below = self.fluid(world.get(down.0, down.1, down.2));
         let falls = !wet && self.can_enter(world, down, fluid, FALLING, washable);
-        // Au-dessus du même liquide (une chute déjà en place, un plan d'eau) : comme s'il
-        // tombait, il ne s'étale pas sur les côtés (sauf une source)
-        let over_same = !wet && matches!(self.fluid(world.get(down.0, down.1, down.2)), Some((f, _)) if f == fluid);
-        if over_same && !falls && depth != 0 {
+        let over_flow = !wet && matches!(below, Some((f, d)) if f == fluid && d != 0);
+        if falls || over_flow {
+            if falls {
+                if fluid == Fluid::Water && matches!(below, Some((Fluid::Lava, _))) {
+                    // L'eau qui tombe sur de la lave la change en pierre
+                    let stone = self.stone;
+                    self.set(world, now, down, stone, changed);
+                } else {
+                    let state = self.state(fluid, FALLING);
+                    self.set(world, now, down, state, changed);
+                }
+            }
+            let sources = SIDES.iter().filter(|(dx, dz)| self.at(world, (x + dx, y, z + dz)) == Some((fluid, 0))).count();
+            if sources < 3 {
+                return;
+            }
+        } else if depth != 0 && matches!(below, Some((f, _)) if f == fluid) {
+            // Liquide qui coule au-dessus d'une source du même liquide : il s'y fond
             return;
-        }
-        if falls {
-            // L'eau qui tombe sur de la lave la change en pierre
-            if fluid == Fluid::Water && matches!(self.fluid(world.get(down.0, down.1, down.2)), Some((Fluid::Lava, _))) {
-                let stone = self.stone;
-                self.set(world, now, down, stone, changed);
-            } else {
-                let state = self.state(fluid, FALLING);
-                self.set(world, now, down, state, changed);
-            }
-            if depth != 0 {
-                return; // seule une source s'étale aussi sur les côtés quand elle tombe
-            }
         }
         // Puis s'étale sur les côtés, de préférence vers le trou le plus proche
         let level = if depth >= FALLING { 0 } else { depth };
@@ -370,13 +374,11 @@ mod tests {
         l.block_changed(&w, 0, (0, -55, 0));
         run(&mut w, &mut l, 200);
         assert_eq!(l.fluid(w.get(0, -58, 0)), Some((Fluid::Water, FALLING)));
-        // Une source flottante donne une croix de chutes ; chacune s'étale sur 7 blocs au sol,
-        // mais l'eau qui tombe ne s'étale pas en l'air
-        assert_eq!(l.fluid(w.get(1, -56, 0)), Some((Fluid::Water, FALLING)));
-        assert_eq!(l.fluid(w.get(2, -55, 0)), None);
-        assert_eq!(l.fluid(w.get(1, -60, 0)), Some((Fluid::Water, FALLING)));
-        assert_eq!(l.fluid(w.get(8, -60, 0)), Some((Fluid::Water, 7)));
-        assert_eq!(l.fluid(w.get(9, -60, 0)), None);
+        // Une source en l'air tombe en une seule colonne, qui s'étale sur 7 blocs au sol
+        assert_eq!(l.fluid(w.get(1, -55, 0)), None);
+        assert_eq!(l.fluid(w.get(0, -60, 0)), Some((Fluid::Water, FALLING)));
+        assert_eq!(l.fluid(w.get(7, -60, 0)), Some((Fluid::Water, 7)));
+        assert_eq!(l.fluid(w.get(8, -60, 0)), None);
         // La lave avance de 2 en 2, sur 3 blocs
         w.set(40, -60, 40, lava);
         l.block_changed(&w, 200, (40, -60, 40));
@@ -450,6 +452,9 @@ mod shape_dump {
         let water = l.source(Fluid::Water);
         w.set(0, -60, 0, water);
         l.block_changed(&w, 0, (0, -60, 0));
+        // Source vidée contre la paroi de la falaise, en l'air
+        w.set(6, -61, 6, water);
+        l.block_changed(&w, 0, (6, -61, 6));
         for t in 0..400 { l.tick(&mut w, t, &|_| false); }
         for y in [-60, -61, -62, -63] {
             eprintln!("y = {}", y);
