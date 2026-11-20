@@ -948,7 +948,7 @@ impl Server {
         d.last_played = Self::now_unix();
         d.game_type = Some(c.mode.save_id());
         // Dossier du monde, comme PocketMine le note
-        d.level = std::path::Path::new(&self.cfg.world_dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        d.world = std::path::Path::new(&self.cfg.world_dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         d.items.clear();
         let name_of = |id: i16| self.data.as_ref().and_then(|g| g.item_by_id(id)).map(|i| i.name.clone());
         let groups: [(&str, &[inventory::ItemStack]); 3] =

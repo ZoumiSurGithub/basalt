@@ -9,7 +9,7 @@
 //!                `ChestInventory`, `FurnaceInventory`… et les transactions
 //!   block/       `Block` (base), puis les blocs vanilla et `VanillaBlocks`
 //!   item/        `Item` (base), puis `Tool`, `Armor`, `Food`… et `VanillaItems` ; `ItemStack` (une pile)
-//!   level/       `Level` : le monde, ses blocs et sa sauvegarde
+//!   world/       `World` : le monde, ses blocs et sa sauvegarde
 //!   tile/        `Tile` (base), puis `ContainerTile`, `FurnaceTile`, `SignTile` : les données
 //!                attachées aux blocs (contenu d'un coffre, état d'un four…)
 //!   network/     transports RakNet et NetherNet, signalisation, et `protocol/` (paquets Bedrock)
@@ -33,7 +33,6 @@ pub mod data;
 pub mod entity;
 pub mod inventory;
 pub mod item;
-pub mod level;
 pub mod nbt;
 pub mod network;
 pub mod permission;
@@ -43,8 +42,8 @@ pub mod security;
 pub mod server;
 pub mod tile;
 pub mod tools;
+pub mod world;
 
-pub use level as world;
 pub use network::protocol::{self, bedrock, versions};
 pub use network::{framing, nethernet, raknet, signaling};
 pub use plugin::lua;

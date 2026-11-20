@@ -383,7 +383,7 @@ est dans **[docs/PLUGINS.md](docs/PLUGINS.md)**.
 | `src/block/` | `Block` (base de tous les blocs), types de blocs (`types.rs`), registre `VanillaBlocks` couvrant tous les blocs du jeu |
 | `src/tile/` | `Tile` (base des données attachées aux blocs), `ContainerTile`, `FurnaceTile`, `SignTile`, `TileMap` et sa sauvegarde |
 | `src/item/` | `Item` (base de tous les objets), `Tool`, `Armor`, `Food`, `VanillaItems` ; `ItemStack` (une pile) |
-| `src/level/` | `Level` : le monde, ses blocs modifiés et leur sauvegarde |
+| `src/world/` | `World` : le monde, ses blocs modifiés et leur sauvegarde |
 | `src/permission/` | `Permission`, règles par défaut, liste des opérateurs |
 | `src/utils/` | journal (`log.rs`), `server.properties` (`config.rs`), JSON et base64 (`json.rs`), YAML (`yaml.rs`), décompression (`inflate.rs`) |
 | `src/security/` | authentification Xbox (`auth.rs`), SHA-2 et signatures (`crypto.rs`), clé du serveur (`identity.rs`) |

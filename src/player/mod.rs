@@ -38,7 +38,7 @@ pub struct Player {
     /// Mode de jeu (0 survie, 1 créatif) ; None : celui du serveur
     pub game_type: Option<i32>,
     /// Dossier du monde où le joueur se trouvait
-    pub level: String,
+    pub world: String,
     /// Direction du regard : (orientation, inclinaison), en degrés
     pub rotation: (f32, f32),
 }
@@ -72,7 +72,7 @@ impl Player {
             items: Vec::new(),
             permissions: Vec::new(),
             game_type: None,
-            level: String::new(),
+            world: String::new(),
             rotation: (0.0, 0.0),
         }
     }
@@ -131,7 +131,7 @@ impl Player {
         p.first_played = date("firstPlayed", "FirstPlayed");
         p.last_played = date("lastPlayed", "LastPlayed");
         p.game_type = int(&["playerGameType"]).filter(|g| (0..=1).contains(g)).map(|g| g as i32);
-        p.level = doc.str_of("Level").map(|s| clean_text(s, 64)).unwrap_or_default();
+        p.world = doc.str_of("Level").map(|s| clean_text(s, 64)).unwrap_or_default();
         if let Some(r) = doc.get("Rotation").and_then(|t| t.as_list()) {
             let v: Vec<f32> = r.iter().filter_map(|t| t.as_f32()).filter(|f| f.is_finite()).collect();
             if v.len() == 2 {
@@ -275,7 +275,7 @@ impl Player {
             ("SelectedInventorySlot", Tag::Int(0)),
             ("firstPlayed", Tag::Long(self.first_played as i64 * 1000)),
             ("lastPlayed", Tag::Long(self.last_played as i64 * 1000)),
-            ("Level", Tag::string(&self.level)),
+            ("Level", Tag::string(&self.world)),
         ];
         if self.has_pos {
             entries.push(("Pos", doubles(feet)));
@@ -341,7 +341,7 @@ mod tests {
         p.permissions.push(("gardien.expulser".into(), true));
         p.permissions.push(("monde.casser".into(), false));
         p.game_type = Some(1);
-        p.level = "world".into();
+        p.world = "world".into();
         p.items.push(("armor".into(), 1, "minecraft:iron_chestplate".into(), 1));
         p.items.push(("offhand".into(), 0, "minecraft:shield".into(), 1));
         p.save(&dir).unwrap();

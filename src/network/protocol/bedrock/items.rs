@@ -972,10 +972,14 @@ pub struct WorldDrop {
 pub fn read_world_drop(body: &[u8]) -> Option<WorldDrop> {
     // L'objet vide n'a pas été relevé dans une capture : les deux écritures possibles sont
     // essayées, et seule une lecture qui tombe exactement sur la fin du paquet est gardée.
-    for air_short in [false, true] {
-        for slots_flag in [false, true] {
-            if let Some(d) = world_drop_at(body, slots_flag, air_short) {
-                return Some(d);
+    // Relevé avec le jeu 1.26.63 : deux octets inconnus suivent le numéro de case de chaque
+    // action ; les versions précédentes n'en avaient pas. Les deux dispositions sont essayées.
+    for pad in [2usize, 0, 1] {
+        for air_short in [false, true] {
+            for slots_flag in [true, false] {
+                if let Some(d) = world_drop_at(body, slots_flag, air_short, pad) {
+                    return Some(d);
+                }
             }
         }
     }
@@ -993,7 +997,7 @@ fn read_net_item(d: &[u8], pos: &mut usize, air_short: bool) -> Option<(i16, u16
     Some((id, if id == 0 { 0 } else { count }))
 }
 
-fn world_drop_at(body: &[u8], slots_flag: bool, air_short: bool) -> Option<WorldDrop> {
+fn world_drop_at(body: &[u8], slots_flag: bool, air_short: bool, pad: usize) -> Option<WorldDrop> {
     let mut pos = 0;
     let legacy = read_vari32(body, &mut pos)?;
     let has_slots = if slots_flag {
@@ -1037,12 +1041,14 @@ fn world_drop_at(body: &[u8], slots_flag: bool, air_short: bool) -> Option<World
             _ => return None,
         }
         let s = read_varu32(body, &mut pos)?;
+        pos = pos.checked_add(pad)?;
         let _old = read_net_item(body, &mut pos, air_short)?;
         let new = read_net_item(body, &mut pos, air_short)?;
         if source == 2 && flags == Some(0) && new.0 != 0 && new.1 > 0 {
             thrown = Some(new);
         }
-        if source == 0 && window == Some(0) && (s as usize) < 36 {
+        // Fenêtre du sac : 0 dans les anciennes versions, 1 relevé avec le jeu 1.26.63
+        if source == 0 && matches!(window, Some(0) | Some(-1) | Some(1)) && (s as usize) < 36 {
             slot = Some(s as usize);
         }
     }
@@ -1073,6 +1079,17 @@ mod key_drop_tests {
         p.extend(item(5, 1));
         p.extend_from_slice(air);
         p
+    }
+
+    #[test]
+    fn key_drop_sent_by_the_real_game_is_read() {
+        // Q avec 60 blocs en main (case 0), relevé dans le journal du serveur avec le jeu 1.26.63
+        let h = "a71201011d010000020001000000b8fb3c0000008ded8cdc050a00000000000000000000b8fb3b0000008ded8cdc050a0000000000000000000002000100000000000000000000b8fb010000008ded8cdc050a00000000000000000000";
+        let body: Vec<u8> = (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect();
+        let id = i16::from_le_bytes([0xb8, 0xfb]);
+        assert_eq!(read_world_drop(&body), Some(WorldDrop { id, count: 1, slot: Some(0) }));
+        // Ce n'est ni un coup porté ni un bloc posé
+        assert!(crate::bedrock::read_attack(&body).is_none());
     }
 
     #[test]
