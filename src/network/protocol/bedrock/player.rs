@@ -49,6 +49,31 @@ pub fn move_player(id: i64, pos: (f32, f32, f32), pitch: f32, yaw: f32, head_yaw
     w.0
 }
 
+/// Téléporte le joueur lui-même, dans le format de sa version. À partir du protocole 2225
+/// (1.26.60), relevé auprès du serveur officiel 1.26.65 (commande tp) : après la monture, un
+/// octet de présence précède les données de téléportation (cause, type de la source).
+pub fn teleport_player(protocol: i32, id: i64, pos: (f32, f32, f32), pitch: f32, yaw: f32, head_yaw: f32) -> Vec<u8> {
+    if protocol < 2225 {
+        return move_player(id, pos, pitch, yaw, head_yaw, true);
+    }
+    let mut w = W::default();
+    w.varu64(id as u64);
+    w.f32(pos.0);
+    w.f32(pos.1);
+    w.f32(pos.2);
+    w.f32(pitch);
+    w.f32(yaw);
+    w.f32(head_yaw);
+    w.u8(2); // mode : téléportation
+    w.bool(false); // au sol : comme le serveur officiel
+    w.varu64(0); // monture
+    w.bool(true); // données de téléportation présentes
+    w.i32(3); // cause : commande (valeur du serveur officiel)
+    w.i32(1); // type de la source (valeur du serveur officiel)
+    w.varu64(0); // tick
+    w.0
+}
+
 /// Fait apparaître un autre joueur chez un client.
 /// `held` : objet tenu en main (identifiant, quantité, bloc associé) ; quantité 0 : main vide.
 pub fn add_player(uuid: &[u8; 16], name: &str, id: i64, pos: (f32, f32, f32), pitch: f32, yaw: f32, head_yaw: f32, gamemode: i32, flags: i64, held: (i16, u8, u32)) -> Vec<u8> {
@@ -240,6 +265,17 @@ pub fn remove_actor(id: i64) -> Vec<u8> {
 #[cfg(test)]
 mod add_player_tests {
     use super::*;
+
+    #[test]
+    fn teleport_matches_the_official_server() {
+        // MovePlayer relevé auprès du serveur officiel 1.26.65 : « tp » vers 5 -59 5, joueur n°38
+        let recorded: [u8; 38] = [
+            0x26, 0x00, 0x00, 0xb0, 0x40, 0x1c, 0x85, 0x65, 0xc2, 0x00, 0x00, 0xb0, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0x02, 0x00, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let y = f32::from_le_bytes([0x1c, 0x85, 0x65, 0xc2]);
+        assert_eq!(teleport_player(2225, 38, (5.5, y, 5.5), 0.0, 0.0, 0.0), recorded.to_vec());
+    }
 
     /// La liste des joueurs suit la disposition relevée : en-tête de joueur, skin, puis fin.
     /// Le retrait reprend la disposition relevée (identifiant remplacé par une valeur neutre).

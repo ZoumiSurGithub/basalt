@@ -82,7 +82,7 @@ fn capture(args: &[String]) {
     let host = args.first().map(|s| s.as_str()).unwrap_or("127.0.0.1");
     let port: u16 = args.get(1).and_then(|p| p.parse().ok()).unwrap_or(19132);
     basalt::log::init_capture_file();
-    info!("Capture des données du jeu auprès du serveur officiel {}:{} (outil version 13, RakNet, avec témoin et objet au sol)", host, port);
+    info!("Capture des données du jeu auprès du serveur officiel {}:{} (outil version 14, RakNet, avec témoin, objet au sol et téléportation)", host, port);
     // Le témoin repart avant le joueur de la capture (20 s contre 35 s en jeu) : celui-ci reçoit
     // alors aussi le paquet qui retire un joueur de la liste.
     // Un second faux joueur, le « témoin », entre d'abord et reste en jeu : le serveur officiel
@@ -96,7 +96,7 @@ fn capture(args: &[String]) {
     info!("PENDANT LA CAPTURE (dans la minute qui suit), tapez dans la console du serveur officiel :");
     info!("    setblock 0 -60 0 dirt");
     info!("    setblock 0 -60 0 air destroy");
-    info!("    tp BasaltCapture 5 -59 5");
+    info!("    tp @a 5 -59 5");
     info!("La deuxième fait tomber un objet au sol, la troisième téléporte le joueur de capture :");
     info!("leurs formats seront relevés.");
     info!("==================================================================================");

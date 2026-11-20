@@ -31,9 +31,6 @@ use crate::signaling::{json_string, sdp_fingerprints, sdp_identity, sdp_without_
 
 const TICK: Duration = Duration::from_millis(50);
 
-/// Le paquet de déplacement (MovePlayer) n'est connu que pour les protocoles d'avant la
-/// 1.26.60 : un vrai jeu 1.26.63 l'a refusé (« lecture incomplète ») et s'est déconnecté.
-/// Tant que son nouveau format n'est pas relevé, il n'est plus envoyé à ces versions.
 /// Couleur d'un joueur dans la liste (AARRGGBB), choisie d'après son identifiant.
 fn list_colour(id: i64) -> u32 {
     const COLOURS: [u32; 8] = [0xffed_eded, 0xff54_ffff, 0xfff7_0c0c, 0xff00_c800, 0xfff9_a602, 0xffb1_54ff, 0xff40_a0ff, 0xffff_82c8];
@@ -68,6 +65,9 @@ fn memory_mb() -> Option<u64> {
     Some(kb / 1024)
 }
 
+/// Le paquet de déplacement (MovePlayer) en mode normal (déplacement d'un autre joueur) n'est
+/// connu que pour les protocoles d'avant la 1.26.60 : ces versions reçoivent MoveActorAbsolute.
+/// La téléportation, elle, a été relevée (`bedrock::teleport_player`).
 fn move_player_known(protocol: i32) -> bool {
     protocol < 2225
 }
@@ -390,7 +390,6 @@ pub struct Server {
     whitelist: NameList,
     /// Édition du monde en volume : presse-papiers et historique de chaque joueur (pseudo en minuscules)
     /// L'avertissement « téléportation indisponible » a déjà été affiché
-    teleport_warned: bool,
     /// Heure du monde au démarrage (en ticks de jeu), décalée par /time
     time_base: i64,
     /// Le jeu a refusé le paquet qui fait apparaître un autre joueur : il n'est plus envoyé
@@ -610,7 +609,6 @@ impl Server {
             last_save: Instant::now(),
             ops: OpList::default(),
             whitelist: NameList::default(),
-            teleport_warned: false,
             time_base: 6000,
             add_player_refused: false,
             move_actor_refused: false,
@@ -1012,17 +1010,11 @@ impl Server {
             return;
         }
         let pos = (pos.0, pos.1.clamp(-64.0, 400.0), pos.2);
-        if !self.clients.get(addr).map(|c| move_player_known(c.protocol)).unwrap_or(false) {
-            if !std::mem::replace(&mut self.teleport_warned, true) {
-                warn!("Téléportation indisponible pour les jeux 1.26.60 et plus : le format du paquet de déplacement de cette version n'est pas encore connu. Les demandes de téléportation sont ignorées.");
-            }
-            return;
-        }
         let packet = match self.clients.get_mut(addr) {
             Some(c) => {
                 c.pos = pos;
                 c.move_budget = SPEED_CREATIVE * 2.0;
-                bedrock::move_player(c.id, pos, c.pitch, c.yaw, c.head_yaw, true)
+                bedrock::teleport_player(c.protocol, c.id, pos, c.pitch, c.yaw, c.head_yaw)
             }
             None => return,
         };
@@ -1089,19 +1081,15 @@ impl Server {
                     c.move_budget_at = now;
                     if horizontal > MAX_STEP || dy.abs() > MAX_STEP_VERTICAL || horizontal > c.move_budget {
                         c.corrections += 1;
-                        let can_fix = move_player_known(c.protocol);
                         if c.corrections == 1 || c.corrections % 200 == 0 {
                             warn!(
-                                "{} : déplacement anormal ({:.1} blocs d'un coup, {} fois) — {}",
+                                "{} : déplacement anormal ({:.1} blocs d'un coup, {} fois) — joueur replacé",
                                 c.name.as_deref().unwrap_or("?"),
                                 horizontal.max(dy.abs()),
                                 c.corrections,
-                                if can_fix { "joueur replacé" } else { "signalé seulement : le serveur ne sait pas encore replacer un jeu 1.26.60 et plus" }
                             );
                         }
-                        if can_fix {
-                            correction = Some(bedrock::move_player(c.id, c.pos, c.pitch, c.yaw, c.head_yaw, true));
-                        }
+                        correction = Some(bedrock::teleport_player(c.protocol, c.id, c.pos, c.pitch, c.yaw, c.head_yaw));
                     } else {
                         c.move_budget -= horizontal;
                     }
@@ -1878,12 +1866,8 @@ impl Server {
                 }
                 for v in victims {
                     let name = self.name_at(&v);
-                    if self.clients.get(&v).map(|c| move_player_known(c.protocol)).unwrap_or(false) {
-                        self.teleport(&v, (destination.0, destination.1 + 1.62, destination.2));
-                        self.reply(sender, &format!("{} téléporté en {:.2}, {:.2}, {:.2}", name, destination.0, destination.1, destination.2));
-                    } else {
-                        self.reply(sender, &format!("§cTéléportation de {} impossible : le paquet de déplacement de cette version du jeu n'est pas encore connu du serveur.", name));
-                    }
+                    self.teleport(&v, (destination.0, destination.1 + 1.62, destination.2));
+                    self.reply(sender, &format!("{} téléporté en {:.2}, {:.2}, {:.2}", name, destination.0, destination.1, destination.2));
                 }
             }
             "kill" => {

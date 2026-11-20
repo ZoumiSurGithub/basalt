@@ -548,6 +548,9 @@ pub fn run_as(host: &str, port: u16, data_dir: Option<&Path>, payload: &Path, na
     if let Some(why) = &capture.refusal {
         return Err(why.clone());
     }
+    // Numéros des paquets reçus et leur nombre : sert à repérer celui d'une commande (tp…)
+    let seen: Vec<String> = capture.seen.iter().map(|(id, n)| format!("{}×{}", id, n)).collect();
+    info!("{} : paquets reçus par numéro : {}", name, seen.join(" "));
     let found = capture.found();
     if found.is_empty() {
         return Err(format!(

@@ -838,15 +838,18 @@ fn players_see_each_other_without_packets_the_game_refuses() {
     assert!(seen_by_bravo.windows(5).any(|w| w == b"Alpha"));
     let alpha_id = seen_by_bravo[16 + 1 + 5]; // après l'UUID et le nom : identifiant d'exécution
 
-    // Alpha marche, puis fait un bond de 50 blocs. Un vrai jeu 1.26.63 a refusé le paquet de
-    // déplacement (19) tel que le serveur l'écrivait et s'est déconnecté : tant que son
-    // format n'est pas connu pour ce protocole, il ne doit plus partir, ni vers Bravo
-    // (déplacements d'Alpha), ni vers Alpha (correction).
+    // Alpha marche, puis fait un bond de 50 blocs. Bravo voit Alpha bouger par
+    // MoveActorAbsolute (le paquet 19 en mode normal n'est pas connu pour ce protocole) ;
+    // Alpha, lui, est replacé par une téléportation au format relevé (paquet 19).
     for step in 1..=4 {
         alpha.walk_to(0.5 + step as f32 * 0.5, 0.5);
         std::thread::sleep(Duration::from_millis(60));
     }
     alpha.walk_to(52.5, 0.5);
+    let corrected = alpha.wait_for(19);
+    assert_eq!(corrected[corrected.len() - 13..], [0x02, 0x00, 0x00, 0x01, 0x03, 0, 0, 0, 0x01, 0, 0, 0, 0][..], "téléportation au format du serveur officiel");
+    let x = f32::from_le_bytes([corrected[1], corrected[2], corrected[3], corrected[4]]);
+    assert!(x < 10.0, "replacé à sa dernière position valide, pas à {}", x);
     std::thread::sleep(Duration::from_millis(200));
 
     // Alpha se déconnecte : il disparaît chez Bravo, qui n'a reçu aucun paquet 19 entre-temps

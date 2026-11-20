@@ -77,6 +77,8 @@ pub struct Capture {
     login: Vec<u8>,
     /// Paquets reçus : (identifiant, contenu)
     pub records: Vec<(u32, Vec<u8>)>,
+    /// Nombre de paquets reçus par numéro (jamais leur contenu)
+    pub seen: std::collections::BTreeMap<u32, u32>,
     /// Raison donnée par le serveur en cas de refus
     pub refusal: Option<String>,
     /// Le serveur a envoyé le signal d'apparition : tout est arrivé
@@ -366,6 +368,7 @@ impl Capture {
             compression: false,
             login,
             records: Vec::new(),
+            seen: std::collections::BTreeMap::new(),
             refusal: None,
             complete: false,
             handshake: None,
@@ -493,7 +496,11 @@ impl Capture {
                         // Le serveur attend la distance d'affichage pour envoyer la suite
                         out.push(self.pack(69, &[16, 16]));
                     }
-                    if self.records.len() < 4096 {
+                    // Inventaire de tout ce qui arrive (numéros seulement), pour reconnaître le
+                    // paquet produit par une commande tapée pendant la capture
+                    *self.seen.entry(id).or_insert(0) += 1;
+                    // Les paquets recherchés sont toujours gardés ; les autres jusqu'à une limite
+                    if self.records.len() < 4096 || WANTED.iter().any(|(w, _)| *w == id) {
                         self.records.push((id, body));
                     }
                 }
