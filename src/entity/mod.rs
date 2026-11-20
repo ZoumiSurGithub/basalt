@@ -13,6 +13,7 @@
 //! (`joueur.health`, `joueur.pos`).
 
 mod entity;
+pub mod item_physics;
 mod human;
 mod living;
 

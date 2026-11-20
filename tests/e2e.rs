@@ -1311,7 +1311,9 @@ fn players_get_hurt_die_and_respawn() {
     assert!(attributes.windows(4).filter(|w| *w == health_max).count() >= 2, "vie pleine après la réapparition");
     // Réapparu à l'endroit de sa mort (le point de départ), il ramasse ses pierres
     let taken = steve.wait_for(17);
-    assert_eq!(taken[0], dropped[1], "c'est bien l'objet tombé qui est ramassé");
+    // L'identifiant d'exécution suit l'identifiant unique (entier variable) dans l'apparition
+    let runtime_at = dropped.iter().position(|b| b & 0x80 == 0).unwrap() + 1;
+    assert_eq!(taken[0], dropped[runtime_at], "c'est bien l'objet tombé qui est ramassé");
 
     drop(steve);
     drop(alex);

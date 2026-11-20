@@ -26,7 +26,7 @@ const ITEM_METADATA_HEX: &str = concat!(
 /// AddItemActor : un objet apparaît au sol. Disposition relevée auprès du serveur officiel.
 pub fn add_item_actor(entity_id: i64, item: i16, count: u8, block: u32, pos: (f32, f32, f32), motion: (f32, f32, f32)) -> Vec<u8> {
     let mut w = W::default();
-    w.vari64(entity_id);
+    w.vari64(item_unique_id(entity_id));
     w.varu64(entity_id as u64);
     // L'objet : comme dans les inventaires, mais ses données annexes ne sont pas vides : 10
     // octets à zéro (pas de NBT, aucun bloc « peut être posé sur » ni « peut casser »)
@@ -51,13 +51,21 @@ pub fn add_item_actor_recorded() -> Vec<u8> {
     let motion = (-0.07429742068052292, 0.20000000298023224, -0.054183147847652435);
     let mut p = add_item_actor(34, 3, 1, 2_186_211_206, pos, motion);
     // Identifiant unique d'origine (-85899345913) à la place du nôtre
-    p.splice(0..1, [0xf1, 0xff, 0xff, 0xff, 0xff, 0x04]);
+    let ours = { let mut w = W::default(); w.vari64(item_unique_id(34)); w.0.len() };
+    p.splice(0..ours, [0xf1, 0xff, 0xff, 0xff, 0xff, 0x04]);
     p
 }
 
 fn item_metadata() -> Vec<u8> {
     let h = ITEM_METADATA_HEX.as_bytes();
     (0..h.len() / 2).map(|i| u8::from_str_radix(std::str::from_utf8(&h[2 * i..2 * i + 2]).unwrap_or("00"), 16).unwrap_or(0)).collect()
+}
+
+/// Identifiant « unique » d'un objet au sol, distinct de son identifiant d'exécution, comme
+/// ceux du serveur officiel (le jeu affiche l'objet relevé, pas le même avec un identifiant
+/// unique égal à son identifiant d'exécution). À utiliser aussi pour le retirer (RemoveActor).
+pub fn item_unique_id(entity_id: i64) -> i64 {
+    -(1i64 << 36) - entity_id
 }
 
 /// TakeItemActor : un joueur ramasse l'objet (animation de l'objet qui vole vers lui).
@@ -88,8 +96,9 @@ mod tests {
         }
         recorded.extend_from_slice(&item_metadata());
         recorded.push(0);
-        assert_eq!(&p[..2], &[0x44, 0x22]);
-        assert_eq!(&p[2..], &recorded[..]);
+        let head = { let mut w = W::default(); w.vari64(item_unique_id(34)); w.varu64(34); w.0 };
+        assert_eq!(&p[..head.len()], &head[..]);
+        assert_eq!(&p[head.len()..], &recorded[..]);
         assert_eq!(item_metadata().len(), 334);
         assert_eq!(item_metadata()[0], 0x40, "64 entrées");
         let exact = add_item_actor_recorded();

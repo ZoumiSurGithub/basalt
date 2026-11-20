@@ -21,6 +21,7 @@ use crate::config::Config;
 use crate::level::edit::{EditSession, Outcome, Region};
 use crate::permission::{self, NameList, OpList};
 use crate::player::{clean_text, GameMode, PlayerData};
+use crate::entity::item_physics::{self, Cell, Step};
 use crate::lua::{Action, Info, LVal, PlayerSnap};
 use crate::plugin::host::PluginHost;
 use crate::inventory::{self, PlayerWindows, Target};
@@ -466,10 +467,17 @@ struct GroundItem {
     /// Bloc correspondant à l'objet (pour son affichage)
     block: u32,
     count: u8,
-    /// Position de l'objet, posé sur le sol
-    pos: (f32, f32, f32),
-    /// Tick d'apparition (disparition au bout de 5 minutes, comme dans le jeu)
+    /// Position (centre de la base), vitesse, contact avec le sol
+    body: item_physics::Body,
+    /// Immobile au sol : recalculé seulement de temps en temps
+    resting: bool,
+    /// Dernière position envoyée aux joueurs
+    sent: (f32, f32, f32),
+    /// Tick d'apparition
     born: u64,
+    /// Âge en ticks, compté seulement quand un joueur est assez près (comme dans le jeu, où un
+    /// objet ne vieillit que dans une zone chargée) : disparition à 5 minutes
+    age: u64,
     /// Ramassable à partir de ce tick
     pickup_at: u64,
 }
@@ -2522,10 +2530,10 @@ impl Server {
             };
             if !stuff.is_empty() {
                 for (n, (item, count)) in stuff.into_iter().enumerate() {
-                    // Éparpillés en cercle autour du corps
-                    let angle = n as f32 * 2.4;
-                    let spot = (at.0 + angle.cos() * 0.8, at.1, at.2 + angle.sin() * 0.8);
-                    self.drop_item(spot, item, count, 40);
+                    // Éparpillés autour du corps, avec un petit élan au hasard
+                    let spot = (at.0, at.1 - player_eye_height() + 0.5, at.2);
+                    let vel = self.scatter(n as u64, 0.2);
+                    self.drop_item(spot, vel, item, count, 40);
                 }
                 self.send_inventory_with(addr, true);
             }
@@ -2663,30 +2671,57 @@ impl Server {
         }
     }
 
-    /// Hauteur du sol sous un point : le dessus du premier bloc plein en dessous (64 blocs au plus).
-    fn ground_below(&self, x: f32, y: f32, z: f32) -> f32 {
-        let (bx, bz) = (x.floor() as i32, z.floor() as i32);
-        let air = self.world.air;
-        let top = y.floor() as i32;
-        for by in (top - 64..=top).rev() {
-            if !crate::world::World::in_bounds(by) {
-                continue;
-            }
-            let state = self.world.get(bx, by, bz);
-            if state == air {
-                continue;
-            }
-            let passable = self.data.as_ref().and_then(|d| d.block_name(state)).map(|n| n.contains("water") || n.contains("lava")).unwrap_or(false);
-            if !passable {
-                return by as f32 + 1.0;
-            }
+    /// Ce qu'un objet au sol trouve à un endroit du monde.
+    fn cell(&self, x: i32, y: i32, z: i32) -> Cell {
+        if !crate::world::World::in_bounds(y) {
+            return if y < 0 { Cell::Solid(1.0) } else { Cell::Empty };
         }
-        y
+        let state = self.world.get(x, y, z);
+        if state == self.world.air {
+            return Cell::Empty;
+        }
+        let d = match &self.data {
+            Some(d) => d,
+            None => return Cell::Solid(1.0),
+        };
+        let name = d.block_name(state).unwrap_or("");
+        let short = name.trim_start_matches("minecraft:");
+        if short.contains("water") {
+            return Cell::Water;
+        }
+        if short.contains("lava") || short == "fire" || short == "soul_fire" || short == "cactus" {
+            return Cell::Deadly;
+        }
+        // Ce qu'un objet traverse : plantes, torches, rails, panneaux…
+        const THROUGH: [&str; 20] = [
+            "flower", "sapling", "torch", "button", "lever", "rail", "sign", "vine", "short_grass", "tall_grass", "fern", "dead_bush", "redstone_wire",
+            "tripwire", "seagrass", "kelp", "pressure_plate", "web", "banner", "tulip",
+        ];
+        if THROUGH.iter().any(|w| short.contains(w))
+            || matches!(short, "dandelion" | "poppy" | "allium" | "azure_bluet" | "oxeye_daisy" | "cornflower" | "lily_of_the_valley" | "wheat" | "carrots" | "potatoes" | "beetroot" | "brown_mushroom" | "red_mushroom")
+        {
+            return Cell::Empty;
+        }
+        if short.ends_with("_slab") && !short.contains("double") {
+            let top = matches!(d.prop(state, "minecraft:vertical_half"), Some(crate::data::Prop::Str(s)) if s == "top");
+            return Cell::Solid(if top { 1.0 } else { 0.5 });
+        }
+        if short.ends_with("carpet") {
+            return Cell::Solid(0.0625);
+        }
+        if short == "snow_layer" {
+            let h = match d.prop(state, "height") {
+                Some(crate::data::Prop::Int(h)) => h as f32,
+                _ => 0.0,
+            };
+            return Cell::Solid((h + 1.0) / 8.0);
+        }
+        Cell::Solid(1.0)
     }
 
-    /// Pose un objet au sol. Faux si le jeu refuse les objets au sol (l'appelant le garde
+    /// Fait tomber un objet. Faux si le jeu refuse les objets au sol (l'appelant le garde
     /// alors ailleurs). `delay` : ticks avant de pouvoir être ramassé.
-    fn drop_item(&mut self, at: (f32, f32, f32), item: i16, count: u8, delay: u64) -> bool {
+    fn drop_item(&mut self, at: (f32, f32, f32), vel: (f32, f32, f32), item: i16, count: u8, delay: u64) -> bool {
         if self.drops_refused {
             return false;
         }
@@ -2701,14 +2736,26 @@ impl Server {
         }
         let id = self.next_id;
         self.next_id += 1;
-        let pos = (at.0, self.ground_below(at.0, at.1, at.2), at.2);
         let block = self.block_for(item).unwrap_or(0);
         if self.cfg.debug {
-            info!("[objets] objet {} posé au sol : objet n°{} ×{} en {:.1} {:.1} {:.1}", id, item, count, pos.0, pos.1, pos.2);
+            info!("[objets] objet {} lâché : objet n°{} ×{} en {:.1} {:.1} {:.1}", id, item, count, at.0, at.1, at.2);
         }
-        self.ground.insert(id, GroundItem { item, block, count, pos, born: self.tick, pickup_at: self.tick + delay });
+        let body = item_physics::Body { pos: at, vel, on_ground: false };
+        self.ground.insert(id, GroundItem { item, block, count, body, resting: false, sent: at, born: self.tick, age: 0, pickup_at: self.tick + delay });
         self.show_ground_items();
         true
+    }
+
+    /// Petit élan au hasard (butin d'un bloc, inventaire lâché à la mort), comme dans le jeu.
+    fn scatter(&self, salt: u64, strength: f32) -> (f32, f32, f32) {
+        let r = |k: u64| -> f32 {
+            let mut h = (self.next_id as u64 ^ salt.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ k.wrapping_mul(0xc2b2_ae3d_27d4_eb4f)).wrapping_add(self.tick);
+            h ^= h >> 31;
+            h = h.wrapping_mul(0x94d0_49bb_1331_11eb);
+            h ^= h >> 29;
+            (h % 10_000) as f32 / 10_000.0
+        };
+        ((r(1) - 0.5) * strength, 0.2, (r(2) - 0.5) * strength)
     }
 
     /// Retire un objet du sol ; `taker` : le joueur qui l'a ramassé (l'objet vole vers lui).
@@ -2721,7 +2768,7 @@ impl Server {
             if let Some(by) = taker {
                 self.send(&v, bedrock::ID_TAKE_ITEM_ACTOR, &bedrock::take_item_actor(id, by));
             }
-            self.send(&v, bedrock::ID_REMOVE_ACTOR, &bedrock::remove_actor(id));
+            self.send(&v, bedrock::ID_REMOVE_ACTOR, &bedrock::remove_actor(bedrock::item_unique_id(id)));
         }
     }
 
@@ -2733,19 +2780,14 @@ impl Server {
                 continue;
             }
             for (id, g) in &self.ground {
-                let (dx, dz) = (g.pos.0 - c.pos.0, g.pos.2 - c.pos.2);
+                let (dx, dz) = (g.body.pos.0 - c.pos.0, g.body.pos.2 - c.pos.2);
                 let far = dx * dx + dz * dz;
                 if far < 64.0 * 64.0 {
                     if c.items_seen.insert(*id) {
-                        if self.cfg.debug {
-                            info!("[objets] objet {} montré à {}", id, addr);
-                        }
-                        // Affiché un peu au-dessus du sol, comme un objet qui vient de tomber
-                        let shown = (g.pos.0, g.pos.1 + 0.25, g.pos.2);
-                        out.push((*addr, bedrock::ID_ADD_ITEM_ACTOR, bedrock::add_item_actor(*id, g.item, g.count, g.block, shown, (0.0, 0.0, 0.0))));
+                        out.push((*addr, bedrock::ID_ADD_ITEM_ACTOR, bedrock::add_item_actor(*id, g.item, g.count, g.block, g.body.pos, g.body.vel)));
                     }
                 } else if far > 80.0 * 80.0 && c.items_seen.remove(id) {
-                    out.push((*addr, bedrock::ID_REMOVE_ACTOR, bedrock::remove_actor(*id)));
+                    out.push((*addr, bedrock::ID_REMOVE_ACTOR, bedrock::remove_actor(bedrock::item_unique_id(*id))));
                 }
             }
         }
@@ -2754,17 +2796,73 @@ impl Server {
         }
     }
 
-    /// Objets au sol : disparition au bout de 5 minutes, ramassage par les joueurs proches.
+    /// Physique des objets au sol (chaque tick) : ceux qui bougent sont recalculés et leur
+    /// position envoyée ; ceux au repos sont vérifiés deux fois par seconde (bloc cassé en
+    /// dessous, bloc posé dessus).
+    fn move_ground_items(&mut self) {
+        let recheck = self.tick % 10 == 0;
+        let ids: Vec<i64> = self.ground.iter().filter(|(_, g)| !g.resting || recheck).map(|(id, _)| *id).collect();
+        let mut destroyed = Vec::new();
+        let mut moves: Vec<(i64, (f32, f32, f32), bool)> = Vec::new();
+        for id in ids {
+            let mut body = match self.ground.get(&id) {
+                Some(g) => g.body,
+                None => continue,
+            };
+            let outcome = item_physics::step(&mut body, &|x, y, z| self.cell(x, y, z));
+            if let Some(g) = self.ground.get_mut(&id) {
+                g.body = body;
+                g.resting = outcome == Step::Resting;
+                let (dx, dy, dz) = (body.pos.0 - g.sent.0, body.pos.1 - g.sent.1, body.pos.2 - g.sent.2);
+                if dx * dx + dy * dy + dz * dz > 0.0001 {
+                    g.sent = body.pos;
+                    moves.push((id, body.pos, body.on_ground));
+                }
+            }
+            if outcome == Step::Destroyed {
+                destroyed.push(id);
+            }
+        }
+        for id in destroyed {
+            self.remove_ground_item(id, None);
+        }
+        for (id, pos, on_ground) in moves {
+            let packet = bedrock::move_actor_absolute(id, pos, 0.0, 0.0, 0.0, on_ground);
+            let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.items_seen.contains(&id)).map(|(a, _)| *a).collect();
+            for v in viewers {
+                self.send(&v, bedrock::ID_MOVE_ACTOR_ABSOLUTE, &packet);
+            }
+        }
+    }
+
+    /// Objets au sol : vieillissement et disparition, fusion des tas identiques, ramassage.
     fn update_ground_items(&mut self) {
         if self.ground.is_empty() {
             return;
         }
         let tick = self.tick;
-        let expired: Vec<i64> = self.ground.iter().filter(|(_, g)| tick.saturating_sub(g.born) > ITEM_LIFETIME).map(|(id, _)| *id).collect();
-        for id in expired {
-            self.remove_ground_item(id, None);
+        // Vieillissement (toutes les secondes) : seulement près d'un joueur
+        if tick % 20 == 0 {
+            let players: Vec<(f32, f32)> = self.clients.values().filter(|c| c.joined).map(|c| (c.pos.0, c.pos.2)).collect();
+            let mut expired = Vec::new();
+            for (id, g) in self.ground.iter_mut() {
+                if players.iter().any(|p| (p.0 - g.body.pos.0).powi(2) + (p.1 - g.body.pos.2).powi(2) < 128.0 * 128.0) {
+                    g.age += 20;
+                }
+                if g.age > ITEM_LIFETIME {
+                    expired.push(*id);
+                }
+            }
+            for id in expired {
+                self.remove_ground_item(id, None);
+            }
         }
-        // Ramassage : à moins d'un bloc et demi des pieds du joueur
+        // Fusion (toutes les demi-secondes) : deux tas du même objet, au repos, à moins de
+        // 0,75 bloc l'un de l'autre ne font plus qu'un, dans la limite de 64
+        if tick % 10 == 5 {
+            self.merge_ground_items();
+        }
+        // Ramassage : objet dans la zone du joueur élargie d'un bloc (et d'un demi en hauteur)
         let mut taken: Vec<(SocketAddr, i64, i64)> = Vec::new();
         for (addr, c) in self.clients.iter() {
             // Un spectateur ne ramasse rien
@@ -2773,8 +2871,9 @@ impl Server {
             }
             let feet = c.pos.1 - player_eye_height();
             for (id, g) in &self.ground {
-                let (dx, dy, dz) = (g.pos.0 - c.pos.0, g.pos.1 - feet, g.pos.2 - c.pos.2);
-                if tick >= g.pickup_at && dx * dx + dz * dz <= 1.5 * 1.5 && dy.abs() <= 1.5 && !taken.iter().any(|t| t.1 == *id) {
+                let (dx, dz) = (g.body.pos.0 - c.pos.0, g.body.pos.2 - c.pos.2);
+                let y = g.body.pos.1;
+                if tick >= g.pickup_at && dx.abs() <= 1.3 && dz.abs() <= 1.3 && y >= feet - 0.75 && y <= feet + 2.3 && !taken.iter().any(|t| t.1 == *id) {
                     taken.push((*addr, *id, c.id));
                 }
             }
@@ -2804,22 +2903,141 @@ impl Server {
             self.show_held(&addr);
             if left == 0 {
                 self.remove_ground_item(id, Some(by));
-            } else if let Some(g) = self.ground.get_mut(&id) {
-                // Ramassé en partie : le reste reste au sol (réaffiché avec sa nouvelle quantité)
-                g.count = left as u8;
-                let viewers: Vec<SocketAddr> = self.clients.iter_mut().filter_map(|(a, c)| if c.items_seen.remove(&id) { Some(*a) } else { None }).collect();
-                for v in viewers {
-                    self.send(&v, bedrock::ID_REMOVE_ACTOR, &bedrock::remove_actor(id));
-                }
-                self.show_ground_items();
+            } else {
+                self.recount_ground_item(id, left as u8);
             }
         }
     }
 
-    /// Position où tombe un objet jeté par un joueur : un bloc et demi devant lui.
-    fn in_front_of(c: &Client) -> (f32, f32, f32) {
-        let yaw = c.yaw.to_radians();
-        (c.pos.0 - yaw.sin() * 1.5, c.pos.1 - 0.3, c.pos.2 + yaw.cos() * 1.5)
+    /// Change la quantité d'un tas au sol : le jeu ne sait pas la mettre à jour, l'objet est
+    /// donc retiré puis réaffiché chez ceux qui le voient.
+    fn recount_ground_item(&mut self, id: i64, count: u8) {
+        match self.ground.get_mut(&id) {
+            Some(g) => g.count = count,
+            None => return,
+        }
+        let viewers: Vec<SocketAddr> = self.clients.iter_mut().filter_map(|(a, c)| if c.items_seen.remove(&id) { Some(*a) } else { None }).collect();
+        for v in viewers {
+            self.send(&v, bedrock::ID_REMOVE_ACTOR, &bedrock::remove_actor(bedrock::item_unique_id(id)));
+        }
+        self.show_ground_items();
+    }
+
+    /// Fusionne les tas identiques et proches, au repos. Le plus ancien absorbe les autres.
+    fn merge_ground_items(&mut self) {
+        // Rangés par bloc : seuls les tas d'un même bloc ou de blocs voisins sont comparés
+        let mut cells: HashMap<(i32, i32, i32), Vec<i64>> = HashMap::new();
+        for (id, g) in &self.ground {
+            if g.resting && g.count < 64 {
+                let p = g.body.pos;
+                cells.entry((p.0.floor() as i32, p.1.floor() as i32, p.2.floor() as i32)).or_default().push(*id);
+            }
+        }
+        let mut gone: HashSet<i64> = HashSet::new();
+        let mut grown: Vec<(i64, u8)> = Vec::new();
+        let mut ids: Vec<i64> = cells.values().flatten().copied().collect();
+        ids.sort_unstable();
+        for a in ids {
+            if gone.contains(&a) {
+                continue;
+            }
+            let (pa, item, mut count) = match self.ground.get(&a) {
+                Some(g) => (g.body.pos, g.item, g.count),
+                None => continue,
+            };
+            let base = (pa.0.floor() as i32, pa.1.floor() as i32, pa.2.floor() as i32);
+            let mut absorbed = false;
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    for b in cells.get(&(base.0 + dx, base.1, base.2 + dz)).into_iter().flatten() {
+                        if *b <= a || gone.contains(b) {
+                            continue;
+                        }
+                        let g = match self.ground.get(b) {
+                            Some(g) => g,
+                            None => continue,
+                        };
+                        let (ex, ey, ez) = (g.body.pos.0 - pa.0, g.body.pos.1 - pa.1, g.body.pos.2 - pa.2);
+                        if g.item == item && ex * ex + ez * ez <= 0.75 * 0.75 && ey.abs() <= 0.5 && count as u16 + g.count as u16 <= 64 {
+                            count += g.count;
+                            gone.insert(*b);
+                            absorbed = true;
+                        }
+                    }
+                }
+            }
+            if absorbed {
+                grown.push((a, count));
+            }
+        }
+        for id in gone {
+            self.remove_ground_item(id, None);
+        }
+        for (id, count) in grown {
+            self.recount_ground_item(id, count);
+        }
+    }
+
+    /// Enregistre les objets au sol dans le dossier du monde (`items.json`), pour les retrouver
+    /// après un redémarrage.
+    fn ground_items_json(&self) -> Option<String> {
+        let d = self.data.as_ref()?;
+        let list: Vec<Json> = self
+            .ground
+            .values()
+            .filter_map(|g| {
+                let name = d.item_by_id(g.item)?.name.clone();
+                let n = |v: f32| Json::Num((v as f64 * 1000.0).round() / 1000.0);
+                Some(Json::Obj(vec![
+                    ("item".into(), Json::Str(name)),
+                    ("count".into(), Json::Num(g.count as f64)),
+                    ("x".into(), n(g.body.pos.0)),
+                    ("y".into(), n(g.body.pos.1)),
+                    ("z".into(), n(g.body.pos.2)),
+                    ("age".into(), Json::Num(g.age as f64)),
+                ]))
+            })
+            .collect();
+        Some(Json::Arr(list).to_json())
+    }
+
+    /// Recharge les objets au sol enregistrés.
+    fn load_ground_items(&mut self) {
+        let path = std::path::Path::new(&self.cfg.world_dir).join("items.json");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let list = match crate::json::parse(&text) {
+            Ok(Json::Arr(list)) => list,
+            _ => {
+                warn!("{} illisible : objets au sol non rechargés", path.display());
+                return;
+            }
+        };
+        let mut loaded = 0;
+        for v in list.iter().take(MAX_GROUND_ITEMS) {
+            let item = match v.get("item").and_then(|i| i.as_str()).and_then(|n| self.item_id(n)) {
+                Some(i) => i,
+                None => continue,
+            };
+            let num = |k: &str| v.get(k).and_then(|n| n.as_f64()).filter(|n| n.abs() < 3.0e7).map(|n| n as f32);
+            let (x, y, z) = match (num("x"), num("y"), num("z")) {
+                (Some(x), Some(y), Some(z)) => (x, y, z),
+                _ => continue,
+            };
+            let count = num("count").unwrap_or(1.0).clamp(1.0, 64.0) as u8;
+            let id = self.next_id;
+            self.next_id += 1;
+            let block = self.block_for(item).unwrap_or(0);
+            let body = item_physics::Body { pos: (x, y, z), vel: (0.0, 0.0, 0.0), on_ground: true };
+            let age = num("age").unwrap_or(0.0).max(0.0) as u64;
+            self.ground.insert(id, GroundItem { item, block, count, body, resting: false, sent: (x, y, z), born: self.tick, age, pickup_at: 0 });
+            loaded += 1;
+        }
+        if loaded > 0 {
+            info!("Objets au sol rechargés : {}", loaded);
+        }
     }
 
     /// Un joueur casse (ou tente de poser) un bloc.
@@ -2939,10 +3157,11 @@ impl Server {
                 loot.extend(inv.contents().into_iter().map(|(_, item)| (item.id, item.count)));
             }
         }
-        // Le butin tombe au sol, au centre du bloc (ou va dans l'inventaire si le jeu refuse
+        // Le butin saute du centre du bloc et retombe (ou va dans l'inventaire si le jeu refuse
         // les objets au sol)
-        for (id, count) in loot {
-            if !self.drop_item((x as f32 + 0.5, y as f32, z as f32 + 0.5), id, count, 10) {
+        for (n, (id, count)) in loot.into_iter().enumerate() {
+            let vel = self.scatter(n as u64, 0.2);
+            if !self.drop_item((x as f32 + 0.5, y as f32 + 0.25, z as f32 + 0.5), vel, id, count, 10) {
                 self.add_item(addr, id, count as u16);
             }
         }
@@ -3109,8 +3328,9 @@ impl Server {
                 _ => return,
             };
             if !dropped.is_empty() {
-                let at = self.clients.get(addr).map(Self::in_front_of);
-                if let Some(at) = at {
+                // Lancé depuis les yeux du joueur, dans la direction de son regard
+                let at = self.clients.get(addr).map(|c| ((c.pos.0, c.pos.1 - 0.3, c.pos.2), item_physics::throw_velocity(c.yaw, c.pitch)));
+                if let Some((at, vel)) = at {
                     for (id, count) in dropped {
                         // Écouteurs : un objet dont le lâcher est annulé revient dans l'inventaire
                         let out = self.fire("PlayerDropItemEvent", vec![("player", self.name_json(addr)), ("item", self.item_json(id, count))]);
@@ -3119,7 +3339,7 @@ impl Server {
                             continue;
                         }
                         // Jeu qui refuse les objets au sol : l'objet est perdu, comme avant
-                        self.drop_item(at, id, count, 40);
+                        self.drop_item(at, vel, id, count, 40);
                     }
                 }
             }
@@ -5063,6 +5283,17 @@ impl Server {
     /// font sur le fil des écritures, sans retenir les joueurs.
     fn save_world(&mut self) {
         let dir = std::path::PathBuf::from(&self.cfg.world_dir);
+        // Objets au sol (petit fichier, réécrit à chaque enregistrement)
+        if let Some(text) = self.ground_items_json() {
+            let path = dir.join("items.json");
+            crate::background::DISK.run(move || {
+                let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
+                let tmp = path.with_extension("json.tmp");
+                if let Err(e) = std::fs::write(&tmp, text.as_bytes()).and_then(|_| std::fs::rename(&tmp, &path)) {
+                    warn!("Objets au sol non enregistrés : {}", e);
+                }
+            });
+        }
         if let (true, Some(d)) = (self.world.tiles.dirty, &self.data) {
             let ctx = ItemCatalog { data: d, next: &mut self.tile_net_id };
             let doc = self.world.tiles.snapshot(&ctx);
@@ -5123,6 +5354,7 @@ impl Server {
                 Err(e) => warn!("Contenu des coffres et des fours non rechargé : {}", e),
             }
         }
+        self.load_ground_items();
         self.self_test();
         self.start_signaling();
         let mut events = Vec::new();
@@ -5184,8 +5416,12 @@ impl Server {
                     let mut ctx = ItemCatalog { data: d, next: &mut self.tile_net_id };
                     self.world.tiles.tick(&mut ctx);
                 }
+                if !self.ground.is_empty() {
+                    let _t = timings::scope("Tick — objets au sol (physique)");
+                    self.move_ground_items();
+                }
                 if self.tick % 2 == 0 {
-                    let _t = timings::scope("Tick — objets au sol (ramassage)");
+                    let _t = timings::scope("Tick — objets au sol (ramassage, fusion)");
                     self.update_ground_items();
                 }
                 if self.tick % 10 == 0 && !self.ground.is_empty() {
