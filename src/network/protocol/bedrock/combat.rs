@@ -82,7 +82,8 @@ pub fn read_player_action(body: &[u8]) -> Option<(u64, i32)> {
 }
 
 /// Coup porté : InventoryTransaction de type « objet utilisé sur une entité ».
-/// Renvoie (identifiant de la cible, action : 0 interaction, 1 attaque).
+/// Renvoie (identifiant de la cible, action). Le jeu 1.26 envoie 2 pour un coup (relevé dans
+/// le journal du serveur avec le vrai jeu) ; les versions précédentes envoyaient 1.
 pub fn read_attack(body: &[u8]) -> Option<(u64, u32)> {
     read_attack_at(body, false).or_else(|| read_attack_at(body, true))
 }
@@ -133,10 +134,15 @@ fn read_attack_at(body: &[u8], slots_flag: bool) -> Option<(u64, u32)> {
     }
     let target = read_varu64(body, &mut pos)?;
     let action = read_varu32(body, &mut pos)?;
-    if action > 1 {
+    if action > 2 {
         return None;
     }
     Some((target, action))
+}
+
+/// L'action d'un InventoryTransaction « sur une entité » est-elle un coup ?
+pub fn is_attack(action: u32) -> bool {
+    action == 1 || action == 2
 }
 
 #[cfg(test)]
@@ -165,5 +171,10 @@ mod tests {
         // Une utilisation d'objet sur un bloc (type 2) n'est pas un coup
         let other = vec![0x00, 0x02, 0x00, 0x07, 0x01];
         assert_eq!(read_attack(&other), None);
+        // Coup tel que le jeu 1.26 l'envoie (relevé) : en-tête avec l'indicateur, cible 1, action 2
+        let real = [0x00, 0x00, 0x03, 0x00, 0x01, 0x02, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let (target, action) = read_attack(&real).unwrap();
+        assert_eq!(target, 1);
+        assert!(is_attack(action));
     }
 }

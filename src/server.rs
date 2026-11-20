@@ -4261,8 +4261,10 @@ impl Server {
                 (Stage::InGame, bedrock::ID_ITEM_STACK_REQUEST) => self.on_stack_request(&addr, &body),
                 (Stage::InGame, bedrock::ID_INVENTORY_TRANSACTION) if bedrock::read_attack(&body).is_some() => {
                     // Coup porté à un autre joueur
-                    if let Some((target, 1)) = bedrock::read_attack(&body) {
-                        self.on_attack(&addr, target);
+                    if let Some((target, action)) = bedrock::read_attack(&body) {
+                        if bedrock::is_attack(action) {
+                            self.on_attack(&addr, target);
+                        }
                     }
                 }
                 (Stage::InGame, bedrock::ID_PLAYER_ACTION) => {
@@ -5029,7 +5031,7 @@ impl Server {
             };
             let mut found = HashMap::new();
             for (id, name) in crate::tools::capture::WANTED.iter() {
-                if *id == bedrock::ID_START_GAME || *id == bedrock::ID_AVAILABLE_COMMANDS || *id == bedrock::ID_ADD_PLAYER || *id == 63 {
+                if *id == bedrock::ID_START_GAME || *id == bedrock::ID_AVAILABLE_COMMANDS || *id == bedrock::ID_ADD_PLAYER || *id == 63 || *id == bedrock::ID_ADD_ITEM_ACTOR {
                     continue; // propre au monde du serveur officiel
                 }
                 if let Ok(body) = std::fs::read(entry.path().join("packets").join(format!("{}.bin", name))) {

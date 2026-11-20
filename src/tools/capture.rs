@@ -22,7 +22,7 @@ use crate::json::base64_encode;
 pub const REMOVAL_FILE: &str = "player_list_remove";
 
 /// Paquets à conserver : (identifiant, nom du fichier).
-pub const WANTED: [(u32, &str); 10] = [
+pub const WANTED: [(u32, &str); 11] = [
     (11, "start_game"),
     // Apparition d'un autre joueur : relevée pour connaître son format (jamais renvoyée telle
     // quelle). Elle n'arrive que si un second joueur est présent : voir le « témoin ».
@@ -30,6 +30,9 @@ pub const WANTED: [(u32, &str); 10] = [
     // Liste des joueurs avec leur skin : relevée pour connaître son format. Elle contient le
     // skin du modèle de données : ce fichier reste sur la machine, il n'est jamais publié.
     (63, "player_list"),
+    // Objet posé au sol : relevé pour connaître son format (il faut en faire tomber un pendant
+    // la capture, voir les consignes affichées). Jamais renvoyé tel quel.
+    (15, "add_item_actor"),
     // Liste des commandes : relevée pour connaître son format (elle n'est pas renvoyée telle quelle)
     (76, "available_commands"),
     (52, "crafting_data"),
