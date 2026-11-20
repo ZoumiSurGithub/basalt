@@ -284,16 +284,31 @@ impl Liquids {
         if next >= FALLING {
             return;
         }
-        let open: Vec<(i32, i32)> = SIDES.iter().copied().filter(|(dx, dz)| self.can_enter(world, (x + dx, y, z + dz), fluid, next, washable)).collect();
-        if open.is_empty() {
+        // Directions possibles : libres, ou déjà occupées par ce liquide en train de couler.
+        // Comme dans le jeu, celles déjà mouillées comptent dans le choix : sinon, une fois
+        // le chemin vers le trou rempli, le liquide repartirait dans toutes les autres.
+        let passable: Vec<(i32, i32)> = SIDES
+            .iter()
+            .copied()
+            .filter(|(dx, dz)| {
+                let p = (x + dx, y, z + dz);
+                if !World::in_bounds(p.1) || world.is_wet(p.0, p.1, p.2) {
+                    return false;
+                }
+                let b = world.get(p.0, p.1, p.2);
+                b == world.air || washable(b) || matches!(self.fluid(b), Some((f, d)) if f == fluid && d != 0)
+            })
+            .collect();
+        if passable.is_empty() {
             return;
         }
-        let distances: Vec<u8> = open.iter().map(|(dx, dz)| self.hole_distance(world, (x + dx, y, z + dz), (-dx, -dz), 1, fluid, washable)).collect();
+        let distances: Vec<u8> = passable.iter().map(|(dx, dz)| self.hole_distance(world, (x + dx, y, z + dz), (-dx, -dz), 1, fluid, washable)).collect();
         let nearest = distances.iter().copied().min().unwrap_or(u8::MAX);
         let state = self.state(fluid, next);
-        for (i, (dx, dz)) in open.iter().enumerate() {
-            if distances[i] == nearest {
-                self.set(world, now, (x + dx, y, z + dz), state, changed);
+        for (i, (dx, dz)) in passable.iter().enumerate() {
+            let p = (x + dx, y, z + dz);
+            if distances[i] == nearest && self.can_enter(world, p, fluid, next, washable) {
+                self.set(world, now, p, state, changed);
             }
         }
     }
@@ -396,6 +411,25 @@ mod tests {
         assert_eq!(data.block_name(w.get(40, -60, 40)), Some("minecraft:obsidian"));
     }
 
+    /// Un trou à 2 blocs : l'eau n'y va que par le chemin le plus court, et ne repart pas
+    /// dans les autres directions une fois ce chemin rempli (bug constaté sur une falaise).
+    #[test]
+    fn water_keeps_heading_for_the_nearest_hole() {
+        let Some((mut w, mut l, _)) = setup() else { return };
+        let (air, water) = (w.air, l.source(Fluid::Water));
+        for y in -63..=-61 {
+            w.set(2, y, 0, air);
+        }
+        w.set(0, -60, 0, water);
+        l.block_changed(&w, 0, (0, -60, 0));
+        run(&mut w, &mut l, 300);
+        assert_eq!(l.fluid(w.get(1, -60, 0)), Some((Fluid::Water, 1)));
+        assert!(l.fluid(w.get(2, -61, 0)).is_some(), "l'eau doit tomber dans le trou");
+        for (x, z) in [(-1, 0), (0, 1), (0, -1)] {
+            assert_eq!(l.fluid(w.get(x, -60, z)), None, "l'eau est partie en {} {}", x, z);
+        }
+    }
+
     /// Deux sources côte à côte remplissent la case entre elles (source infinie).
     #[test]
     fn two_sources_make_a_third() {
@@ -467,5 +501,53 @@ mod shape_dump {
                 eprintln!("{}", s);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod real_case {
+    use super::*;
+    use crate::world::generator::{Generator, Kind, Palette};
+    #[test]
+    #[ignore]
+    fn replay_user_bucket() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
+        let data = GameData::load(&dir).unwrap();
+        let p = Palette::new(&|n| data.state_from_spec(n));
+        let mut l = Liquids::new(&data).unwrap();
+        let mut w = World::with_generator(Generator::new(Kind::Vanilla, 6692080325188732092, p));
+        let (x0, y0, z0): (i32, i32, i32) = (std::env::var("BX").map(|v| v.parse().unwrap()).unwrap_or(-10588), std::env::var("BY").map(|v| v.parse().unwrap()).unwrap_or(71), std::env::var("BZ").map(|v| v.parse().unwrap()).unwrap_or(-1876));
+        let washable = |s: u32| data.block_name(s).map(|n| { let n = n.trim_start_matches("minecraft:"); ["grass", "fern", "flower", "bush", "petals", "litter", "poppy", "dandelion", "tulip", "daisy", "bluet", "orchid", "allium", "cornflower", "snow_layer", "sapling", "mushroom"].iter().any(|k| n.contains(k)) && !n.contains("grass_block") }).unwrap_or(false);
+        let water = l.source(Fluid::Water);
+        w.set(x0, y0, z0, water);
+        l.block_changed(&w, 0, (x0, y0, z0));
+        let mut total = 0;
+        for t in 0..1200 { total += l.tick(&mut w, t, &washable).len(); }
+        eprintln!("changements : {}, en attente : {}", total, l.pending());
+        // Vue de dessus : hauteur de l'eau la plus haute par colonne (lettre = y - (y0-20))
+        let r = 24;
+        let mut cells = 0;
+        for z in z0 - r..=z0 + r {
+            let mut s = String::new();
+            for x in x0 - r..=x0 + r {
+                let mut c = '.';
+                for y in (y0 - 40..=y0).rev() {
+                    let b = w.get(x, y, z);
+                    if let Some((_, d)) = l.fluid(b) { cells += 1; c = if x == x0 && z == z0 { '@' } else if d == 0 { 'S' } else if d >= 8 { '|' } else { char::from(b'0' + d) }; break; }
+                }
+                s.push(c);
+            }
+            eprintln!("{}", s);
+        }
+        // Coupe verticale le long de x (z = z0)
+        for y in (y0 - 25..=y0 + 1).rev() {
+            let mut s = format!("{:4} ", y);
+            for x in x0 - r..=x0 + r {
+                let b = w.get(x, y, z0);
+                s.push(match l.fluid(b) { Some((_, 0)) => 'S', Some((_, d)) if d >= 8 => '|', Some((_, d)) => char::from(b'0' + d), None => if b == w.air || washable(b) { ' ' } else { '#' } });
+            }
+            eprintln!("{}", s);
+        }
+        eprintln!("colonnes avec eau : {}", cells);
     }
 }
