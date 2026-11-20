@@ -120,7 +120,9 @@ impl Liquids {
             let p = (x + dx, y + dy, z + dz);
             let fluid = self.fluid(world.get(p.0, p.1, p.2)).map(|f| f.0).or(if world.is_wet(p.0, p.1, p.2) { Some(Fluid::Water) } else { None });
             if let Some(f) = fluid {
-                self.plan(now + f.delay(), p);
+                // Lave au contact de l'eau : la pierre se forme presque aussitôt, comme dans le jeu
+                let delay = if f == Fluid::Lava && self.lava_meets_water(world, p) { 1 } else { f.delay() };
+                self.plan(now + delay, p);
             }
         }
     }
@@ -166,6 +168,12 @@ impl Liquids {
         self.block_changed(world, now, pos);
     }
 
+    /// De la lave à cette position touche-t-elle de l'eau (côtés, dessus, ou dessous) ?
+    fn lava_meets_water(&self, world: &World, p: (i32, i32, i32)) -> bool {
+        let (x, y, z) = p;
+        SIDES.iter().map(|(dx, dz)| (x + dx, y, z + dz)).chain([(x, y + 1, z), (x, y - 1, z)]).any(|n| matches!(self.at(world, n), Some((Fluid::Water, _))))
+    }
+
     /// Liquide présent à une position (un bloc posé dans l'eau compte comme une source).
     fn at(&self, w: &World, p: (i32, i32, i32)) -> Option<(Fluid, u8)> {
         match self.fluid(w.get(p.0, p.1, p.2)) {
@@ -202,7 +210,12 @@ impl Liquids {
             _ => return,
         };
 
-        // Lave touchée par de l'eau : obsidienne (source) ou pierre (lave qui coule)
+        // Lave au-dessus de l'eau : elle la change en pierre en tombant dedans
+        if fluid == Fluid::Lava && matches!(self.at(world, (x, y - 1, z)), Some((Fluid::Water, _))) && !world.is_wet(x, y - 1, z) {
+            let stone = self.stone;
+            self.set(world, now, (x, y - 1, z), stone, changed);
+        }
+        // Lave touchée par de l'eau : obsidienne (source) ou pierre taillée (lave qui coule)
         if fluid == Fluid::Lava {
             let touches_water = SIDES.iter().map(|(dx, dz)| (x + dx, y, z + dz)).chain([(x, y + 1, z)]).any(|p| matches!(self.at(world, p), Some((Fluid::Water, _))));
             if touches_water {
@@ -430,6 +443,26 @@ mod tests {
         }
     }
 
+    /// De la lave versée au-dessus de l'eau la change en pierre au lieu de flotter dessus,
+    /// et réagit presque aussitôt.
+    #[test]
+    fn lava_poured_over_water_makes_stone() {
+        let Some((mut w, mut l, data)) = setup() else { return };
+        let (water, lava) = (l.source(Fluid::Water), l.source(Fluid::Lava));
+        w.set(0, -60, 0, water);
+        w.set(0, -59, 3, lava);
+        // Une marche sous la lave, pour qu'elle coule jusqu'au-dessus de l'eau
+        let stone = data.default_state("minecraft:stone").unwrap();
+        for z in 1..=3 {
+            w.set(0, -60, z, stone);
+        }
+        l.block_changed(&w, 0, (0, -60, 0));
+        l.block_changed(&w, 0, (0, -59, 3));
+        run(&mut w, &mut l, 400);
+        assert_eq!(data.block_name(w.get(0, -60, 0)), Some("minecraft:stone"));
+        assert!(l.fluid(w.get(1, -60, 0)).map(|f| f.0) != Some(Fluid::Lava));
+    }
+
     /// Deux sources côte à côte remplissent la case entre elles (source infinie).
     #[test]
     fn two_sources_make_a_third() {
@@ -549,5 +582,40 @@ mod real_case {
             eprintln!("{}", s);
         }
         eprintln!("colonnes avec eau : {}", cells);
+    }
+}
+
+#[cfg(test)]
+mod lava_probe {
+    use super::*;
+    #[test]
+    #[ignore]
+    fn lava_meets_flowing_water() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
+        let data = GameData::load(&dir).unwrap();
+        let mut l = Liquids::new(&data).unwrap();
+        let mut w = World::new();
+        let (water, lava) = (l.source(Fluid::Water), l.source(Fluid::Lava));
+        w.set(0, -60, 0, lava);
+        l.block_changed(&w, 0, (0, -60, 0));
+        for t in 0..300 { l.tick(&mut w, t, &|_| false); }
+        w.set(6, -60, 0, water);
+        l.block_changed(&w, 300, (6, -60, 0));
+        for t in 300..900 { l.tick(&mut w, t, &|_| false); }
+        for z in -5..6 {
+            let mut s = String::new();
+            for x in -5..12 {
+                let b = w.get(x, -60, z);
+                s.push(match (l.fluid(b), data.block_name(b)) {
+                    (Some((Fluid::Lava, d)), _) => if d == 0 { 'L' } else { 'l' },
+                    (Some((Fluid::Water, d)), _) => if d == 0 { 'W' } else { 'w' },
+                    (_, Some("minecraft:cobblestone")) => 'c',
+                    (_, Some("minecraft:obsidian")) => 'o',
+                    (_, Some("minecraft:stone")) => 's',
+                    _ => '.',
+                });
+            }
+            eprintln!("{}", s);
+        }
     }
 }
