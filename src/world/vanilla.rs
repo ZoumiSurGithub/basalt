@@ -854,38 +854,116 @@ impl Vanilla {
                 }
             }
         }
-        // Plantes basses de ce chunk (herbes, fleurs, champignons…)
+        // Plantes basses de ce chunk (herbes, fleurs, champignons…) et fonds marins
         let mut plants = Rng::new(mix(self.seed, cx as i64, cz as i64, 600));
+        let corals = ["tube", "brain", "bubble", "fire", "horn"];
         for x in 0..16usize {
             for z in 0..16usize {
                 let top = tops[x][z];
                 if top + 2 > MAX_Y {
                     continue;
                 }
+                let biome = biomes[x][z];
                 let ground = blocks[at(x, z, top)];
-                if blocks[at(x, z, top + 1)] != p.air {
+                if top < SEA_LEVEL {
                     // Nénuphars à la surface des marais
+                    let surface = at(x, z, SEA_LEVEL + 1);
+                    if matches!(biome, B::Swamp | B::MangroveSwamp) && plants.below(10) == 0 && blocks[surface] == p.air {
+                        blocks[surface] = named("waterlily");
+                    }
+                    if blocks[at(x, z, top + 1)] != p.water {
+                        continue;
+                    }
+                    let depth = SEA_LEVEL - top;
+                    let (wx, wz) = (bx + x as i32, bz + z as i32);
+                    let roll = plants.below(1000);
+                    let warm = biome == B::WarmOcean;
+                    // Récifs de corail des océans chauds : buttes de blocs de corail, coraux et
+                    // gorgones au sommet, cornichons de mer
+                    let reef = warm && depth >= 4 && self.patches.sample(wx as f64 * 0.8, 50.0, wz as f64 * 0.8) > 0.05;
+                    if reef {
+                        let kind = corals[(mix(self.seed, wx as i64 / 3, wz as i64 / 3, 800) % 5) as usize];
+                        let height = 1 + plants.below(3) as i32;
+                        for dy in 1..=height {
+                            blocks[at(x, z, top + dy)] = named(&format!("{}_coral_block", kind));
+                        }
+                        let crown = top + height + 1;
+                        if crown < SEA_LEVEL {
+                            let r = plants.below(10);
+                            let deco = if r < 4 {
+                                Some(format!("{}_coral", corals[plants.below(5) as usize]))
+                            } else if r < 7 {
+                                Some(format!("{}_coral_fan", corals[plants.below(5) as usize]))
+                            } else if r < 8 {
+                                Some("sea_pickle[cluster_count=3]".to_string())
+                            } else {
+                                None
+                            };
+                            if let Some(d) = deco {
+                                blocks[at(x, z, crown)] = named(&d);
+                            }
+                        }
+                        continue;
+                    }
+                    let kelp_ok = matches!(biome, B::Ocean | B::DeepOcean | B::ColdOcean | B::DeepColdOcean | B::LukewarmOcean | B::DeepLukewarmOcean);
+                    if kelp_ok && depth >= 4 && roll < 90 {
+                        // Laminaires : une colonne qui monte presque jusqu'à la surface
+                        let height = (2 + plants.below((depth - 2) as u32) as i32).min(depth - 1);
+                        for dy in 1..=height {
+                            blocks[at(x, z, top + dy)] = named("kelp");
+                        }
+                    } else if roll < if warm { 450 } else { 300 } {
+                        // Herbes marines, parfois hautes (deux blocs)
+                        if depth >= 3 && plants.below(4) == 0 {
+                            blocks[at(x, z, top + 1)] = named("seagrass[sea_grass_type=double_bot]");
+                            blocks[at(x, z, top + 2)] = named("seagrass[sea_grass_type=double_top]");
+                        } else {
+                            blocks[at(x, z, top + 1)] = named("seagrass");
+                        }
+                    } else if (warm || biome == B::LukewarmOcean) && roll < 320 {
+                        blocks[at(x, z, top + 1)] = named("sea_pickle[cluster_count=1]");
+                    } else if matches!(biome, B::DeepOcean | B::DeepColdOcean | B::DeepLukewarmOcean) && roll < 304 && (ground == p.gravel || ground == p.sand) {
+                        blocks[at(x, z, top)] = named("magma");
+                    }
                     continue;
                 }
-                let biome = biomes[x][z];
+                if blocks[at(x, z, top + 1)] != p.air {
+                    continue;
+                }
                 let roll = plants.below(1000);
                 if let Some(block) = self.ground_plant(p, biome, ground, roll, &mut plants) {
                     blocks[at(x, z, top + 1)] = block;
                     if block == p.cactus || block == named("reeds") {
-                        for dy in 2..=(1 + plants.below(3) as i32) {
+                        let tall = 1 + plants.below(3) as i32;
+                        for dy in 2..=tall {
                             if top + dy <= MAX_Y && blocks[at(x, z, top + dy)] == p.air {
                                 blocks[at(x, z, top + dy)] = block;
                             }
                         }
+                        // Fleur de cactus, parfois, au sommet
+                        if block == p.cactus && plants.below(6) == 0 && top + tall + 1 <= MAX_Y && blocks[at(x, z, top + tall + 1)] == p.air {
+                            blocks[at(x, z, top + tall + 1)] = named("cactus_flower");
+                        }
                     }
                 }
-                // Nénuphars et algues
-                if top < SEA_LEVEL {
-                    let surface = at(x, z, SEA_LEVEL + 1);
-                    if matches!(biome, B::Swamp | B::MangroveSwamp) && plants.below(12) == 0 && blocks[surface] == p.air {
-                        blocks[surface] = named("waterlily");
-                    } else if top < SEA_LEVEL - 2 && plants.below(5) == 0 && blocks[at(x, z, top + 1)] == p.water {
-                        blocks[at(x, z, top + 1)] = named("seagrass");
+            }
+        }
+        // Icebergs des océans gelés
+        if matches!(biomes[8][8], B::FrozenOcean | B::DeepFrozenOcean) && plants.below(6) == 0 {
+            let (packed, blue) = (named("packed_ice"), named("blue_ice"));
+            let up = 4 + plants.below(10) as i32;
+            for dy in -6..=up {
+                let r = if dy <= 0 { 6 + dy / 2 } else { (6 * (up - dy) / up).max(0) };
+                for dx in -r..=r {
+                    for dz in -r..=r {
+                        if dx * dx + dz * dz > r * r {
+                            continue;
+                        }
+                        let (x, z, y) = ((8 + dx) as usize, (8 + dz) as usize, SEA_LEVEL + dy);
+                        let i = at(x, z, y);
+                        if blocks[i] == p.water || blocks[i] == p.air || blocks[i] == p.ice {
+                            blocks[i] = if dx * dx + dz * dz < 2 && dy < 2 && plants.below(3) == 0 { blue } else { packed };
+                        }
                     }
                 }
             }
@@ -1051,13 +1129,32 @@ impl Vanilla {
             let n = FLOWERS[rng.below(FLOWERS.len() as u32) as usize];
             p.named.get(n).copied().or(Some(p.dandelion))
         };
+        // Tapis à quatre orientations (pétales de cerisier, feuilles mortes, fleurs sauvages)
+        let carpet = |kind: &str, rng: &mut Rng| {
+            let variants: Vec<&&str> = super::generator::EXTRA_BLOCKS.iter().filter(|n| n.starts_with(kind)).collect();
+            named(variants[rng.below(variants.len() as u32) as usize])
+        };
         let on_grass = ground == p.grass;
+        let red_sand = p.named.get("red_sand").copied().unwrap_or(0);
         match biome {
-            B::Desert | B::Badlands | B::ErodedBadlands | B::WoodedBadlands if ground == p.sand || ground == p.named.get("red_sand").copied().unwrap_or(0) => {
+            B::Desert | B::Badlands | B::ErodedBadlands | B::WoodedBadlands if ground == p.sand || ground == red_sand => {
                 if roll < 6 {
                     Some(p.cactus)
-                } else if roll < 16 {
+                } else if roll < 14 {
                     named("deadbush")
+                } else if roll < 40 {
+                    named("short_dry_grass")
+                } else if roll < 48 {
+                    named("tall_dry_grass")
+                } else {
+                    None
+                }
+            }
+            B::CherryGrove if on_grass => {
+                if roll < 300 {
+                    carpet("pink_petals", rng)
+                } else if roll < 360 {
+                    Some(p.short_grass)
                 } else {
                     None
                 }
@@ -1067,11 +1164,15 @@ impl Vanilla {
                     Some(p.short_grass)
                 } else if roll < if biome == B::Meadow { 300 } else { 240 } {
                     flowers(rng)
+                } else if biome == B::Meadow && roll < 340 {
+                    carpet("wildflowers", rng)
+                } else if roll < 250 {
+                    named("bush")
                 } else {
                     None
                 }
             }
-            B::FlowerForest | B::CherryGrove if on_grass => {
+            B::FlowerForest if on_grass => {
                 if roll < 200 {
                     flowers(rng)
                 } else if roll < 260 {
@@ -1081,12 +1182,28 @@ impl Vanilla {
                 }
             }
             B::Forest | B::BirchForest | B::OldGrowthBirchForest | B::DarkForest | B::WindsweptForest | B::PaleGarden if on_grass => {
-                if roll < 90 {
+                let litter = if biome == B::DarkForest { 160 } else { 80 };
+                if roll < litter {
+                    carpet("leaf_litter", rng)
+                } else if roll < litter + 90 {
                     Some(p.short_grass)
-                } else if roll < 100 {
+                } else if roll < litter + 100 {
                     flowers(rng)
-                } else if roll < 104 && biome == B::DarkForest {
+                } else if roll < litter + 140 && matches!(biome, B::BirchForest | B::OldGrowthBirchForest) {
+                    carpet("wildflowers", rng)
+                } else if roll < litter + 108 {
+                    named("bush")
+                } else if roll < litter + 112 && biome == B::DarkForest {
                     named(if rng.below(2) == 0 { "red_mushroom" } else { "brown_mushroom" })
+                } else {
+                    None
+                }
+            }
+            B::WoodedBadlands if on_grass || ground == p.named.get("coarse_dirt").copied().unwrap_or(0) => {
+                if roll < 100 {
+                    carpet("leaf_litter", rng)
+                } else if roll < 160 {
+                    named("short_dry_grass")
                 } else {
                     None
                 }
@@ -1105,8 +1222,10 @@ impl Vanilla {
             B::Jungle | B::SparseJungle | B::BambooJungle if on_grass => {
                 if roll < 250 {
                     named(if rng.below(4) == 0 { "fern" } else { "short_grass" }).or(Some(p.short_grass))
-                } else if roll < 260 && biome == B::BambooJungle {
+                } else if roll < 270 && biome == B::BambooJungle {
                     named("bamboo")
+                } else if roll < 255 {
+                    named("bush")
                 } else {
                     None
                 }
@@ -1118,11 +1237,13 @@ impl Vanilla {
                     None
                 }
             }
-            B::Swamp if on_grass => {
-                if roll < 60 {
+            B::Swamp | B::MangroveSwamp if on_grass || ground == p.named.get("mud").copied().unwrap_or(0) => {
+                if roll < 60 && on_grass {
                     Some(p.short_grass)
-                } else if roll < 70 {
+                } else if roll < 70 && on_grass {
                     named("blue_orchid")
+                } else if roll < 85 {
+                    named("firefly_bush")
                 } else {
                     None
                 }
@@ -1134,7 +1255,7 @@ impl Vanilla {
                     None
                 }
             }
-            B::WindsweptHills | B::WindsweptGravellyHills | B::Forest | B::SnowyPlains if on_grass && roll < 60 => Some(p.short_grass),
+            B::WindsweptHills | B::WindsweptGravellyHills | B::SnowyPlains if on_grass && roll < 60 => Some(p.short_grass),
             _ if on_grass && roll < 2 => named("pumpkin"),
             _ => None,
         }
@@ -1184,7 +1305,7 @@ impl Vanilla {
                 B::Forest | B::WindsweptForest => {
                     if roll % 5 == 0 {
                         Tree::Birch
-                    } else if roll % 13 == 1 {
+                    } else if roll % 10 == 1 {
                         Tree::FancyOak
                     } else {
                         Tree::Oak
@@ -1244,7 +1365,8 @@ impl Vanilla {
                 B::IceSpikes => Tree::IceSpike,
                 _ => Tree::Oak,
             };
-            out.push(Plant { x, z, ground: top, kind, seed: roll });
+            let bees = matches!(biome, B::Plains | B::SunflowerPlains | B::FlowerForest | B::Meadow | B::Forest | B::BirchForest);
+            out.push(Plant { x, z, ground: top, kind, seed: roll, bees });
         }
         out
     }
@@ -1277,6 +1399,8 @@ struct Plant {
     ground: i32,
     kind: Tree,
     seed: u64,
+    /// Biome à abeilles (plaines, forêts fleuries) : nid possible sous les feuilles
+    bees: bool,
 }
 
 impl Plant {
@@ -1324,19 +1448,28 @@ impl Plant {
                     }
                 }
             }
-            Tree::Oak | Tree::SwampOak | Tree::Birch | Tree::TallBirch | Tree::FancyOak => {
+            Tree::Oak | Tree::SwampOak | Tree::Birch | Tree::TallBirch => {
+                // Forme du jeu (« blob ») : tronc de h blocs ; quatre couches de feuilles, les
+                // deux du bas de rayon 2 (3 pour le chêne des marais), les deux du haut de
+                // rayon 1 ; coins retirés en haut, et au hasard en dessous
                 let (log, leaves, trunk) = match self.kind {
                     Tree::Birch => (p.birch_log, p.birch_leaves, 5 + rng.below(3) as i32),
-                    Tree::TallBirch => (p.birch_log, p.birch_leaves, 9 + rng.below(5) as i32),
-                    Tree::FancyOak => (p.oak_log, p.oak_leaves, 8 + rng.below(4) as i32),
+                    Tree::TallBirch => (p.birch_log, p.birch_leaves, 10 + rng.below(4) as i32),
                     _ => (p.oak_log, p.oak_leaves, 4 + rng.below(3) as i32),
                 };
-                let top = base + trunk;
-                let r = if self.kind == Tree::SwampOak { 3 } else { 2 };
-                blob(&mut put, x, top - 3, z, r, 3, leaves, &mut rng);
-                blob(&mut put, x, top, z, 2, 2, leaves, &mut rng);
-                if self.kind == Tree::FancyOak {
-                    blob(&mut put, x, top - 6, z, 2, 2, leaves, &mut rng);
+                let wide = if self.kind == Tree::SwampOak { 3 } else { 2 };
+                let top = base + trunk; // couche de feuilles la plus haute (au-dessus du tronc)
+                for layer in 0..4 {
+                    let y = top - 3 + layer;
+                    let r: i32 = if layer < 2 { wide } else { 1 };
+                    for dx in -r..=r {
+                        for dz in -r..=r {
+                            if dx.abs() == r && dz.abs() == r && (layer == 3 || rng.below(2) == 0) {
+                                continue;
+                            }
+                            put(x + dx, y, z + dz, leaves, false);
+                        }
+                    }
                 }
                 for y in base..top {
                     put(x, y, z, log, true);
@@ -1344,13 +1477,49 @@ impl Plant {
                 put(x, base - 1, z, p.dirt, true);
                 if self.kind == Tree::SwampOak {
                     let vine = named("vine");
-                    for _ in 0..6 {
-                        let (dx, dz) = (rng.below(7) as i32 - 3, rng.below(7) as i32 - 3);
-                        for dy in 1..=(1 + rng.below(3) as i32) {
-                            put(x + dx, top - 3 - dy, z + dz, vine, false);
+                    for _ in 0..8 {
+                        let (dx, dz) = (rng.below(9) as i32 - 4, rng.below(9) as i32 - 4);
+                        if dx.abs() == 4 || dz.abs() == 4 {
+                            for dy in 0..(1 + rng.below(4) as i32) {
+                                put(x + dx, top - 3 - dy, z + dz, vine, false);
+                            }
                         }
                     }
                 }
+                // Nid d'abeilles, parfois, sous les feuilles
+                if self.bees && rng.below(20) == 0 {
+                    put(x, top - 4, z + 1, named("bee_nest"), false);
+                }
+            }
+            Tree::FancyOak => {
+                // Grand chêne : tronc haut, branches en diagonale, boules de feuilles au bout
+                let trunk = 8 + rng.below(5) as i32;
+                let top = base + trunk;
+                let ball = |put: &mut dyn FnMut(i32, i32, i32, u32, bool), cx: i32, cy: i32, cz: i32| {
+                    for dy in 0..4i32 {
+                        let r: i32 = if dy == 0 || dy == 3 { 2 } else { 3 };
+                        for dx in -r..=r {
+                            for dz in -r..=r {
+                                if dx * dx + dz * dz <= r * r - (dy == 0 || dy == 3) as i32 {
+                                    put(cx + dx, cy + dy, cz + dz, p.oak_leaves, false);
+                                }
+                            }
+                        }
+                    }
+                };
+                ball(&mut put, x, top - 2, z);
+                for i in 0..(2 + rng.below(2) as i32) {
+                    let (dx, dz) = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1)][rng.below(6) as usize];
+                    let y0 = base + trunk / 2 + i;
+                    for k in 1..=3 {
+                        put(x + dx * k, y0 + k, z + dz * k, p.oak_log, true);
+                    }
+                    ball(&mut put, x + dx * 3, y0 + 2, z + dz * 3);
+                }
+                for y in base..top {
+                    put(x, y, z, p.oak_log, true);
+                }
+                put(x, base - 1, z, p.dirt, true);
             }
             Tree::Spruce => {
                 let trunk = 6 + rng.below(5) as i32;
@@ -1488,21 +1657,54 @@ impl Plant {
                 }
             }
             Tree::Cherry => {
+                // Cerisier : tronc qui se divise en deux branches obliques ; chacune porte une
+                // large couronne aplatie dont le bord retombe en feuilles pendantes
                 let (log, leaves) = (named("cherry_log"), named("cherry_leaves"));
-                let trunk = 5 + rng.below(3) as i32;
-                let top = base + trunk;
-                for dy in -1i32..=1 {
-                    let r = if dy == 1 { 2 } else { 4 - dy.abs() };
-                    for dx in -r..=r {
-                        for dz in -r..=r {
-                            if dx * dx + dz * dz <= r * r + 1 {
-                                put(x + dx, top + dy, z + dz, leaves, false);
+                let trunk = 3 + rng.below(2) as i32;
+                for y in base..(base + trunk) {
+                    put(x, y, z, log, true);
+                }
+                let branches: &[(i32, i32)] = if rng.below(3) == 0 { &[(1, 0)] } else { &[(1, 0), (-1, 0)] };
+                let flip = rng.below(2) == 0;
+                for (bx2, bz2) in branches {
+                    let (dx, dz) = if flip { (*bz2, *bx2) } else { (*bx2, *bz2) };
+                    let len = 3 + rng.below(2) as i32;
+                    let (mut cx, mut cy, mut cz) = (x, base + trunk - 1, z);
+                    for k in 0..len {
+                        cx += dx;
+                        cz += dz;
+                        if k > 0 {
+                            cy += 1;
+                        }
+                        put(cx, cy, cz, log, true);
+                    }
+                    cy += 1;
+                    put(cx, cy, cz, log, true);
+                    // Couronne : ellipse de rayon 4, sur 4 couches
+                    for dy in -1..=2i32 {
+                        let r: i32 = match dy {
+                            -1 => 3,
+                            0 | 1 => 4,
+                            _ => 2,
+                        };
+                        for ox in -r..=r {
+                            for oz in -r..=r {
+                                let d = ox * ox + oz * oz;
+                                if d <= r * r && !(d > (r - 1) * (r - 1) && rng.below(3) == 0) {
+                                    put(cx + ox, cy + dy, cz + oz, leaves, false);
+                                }
                             }
                         }
                     }
-                }
-                for y in base..top {
-                    put(x, y, z, log, true);
+                    // Feuilles pendantes sous le bord
+                    for _ in 0..10 {
+                        let (ox, oz) = (rng.below(7) as i32 - 3, rng.below(7) as i32 - 3);
+                        if ox * ox + oz * oz >= 7 {
+                            for dy in 1..=(1 + rng.below(2) as i32) {
+                                put(cx + ox, cy - 1 - dy, cz + oz, leaves, false);
+                            }
+                        }
+                    }
                 }
             }
             Tree::Mangrove => {
@@ -1650,7 +1852,7 @@ mod pictures {
     #[ignore]
     fn dump_top() {
         let data = crate::data::GameData::load(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data")).unwrap();
-        let p = Palette::new(&|n| data.default_state(n));
+        let p = Palette::new(&|n| data.state_from_spec(n));
         let v = Vanilla::new(std::env::var("SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(12345));
         let (ox, oz) = (std::env::var("CUTX").ok().and_then(|s| s.parse().ok()).unwrap_or(0i32) >> 4, std::env::var("CUTZ").ok().and_then(|s| s.parse().ok()).unwrap_or(0i32) >> 4);
         let mut out = String::new();
@@ -1705,5 +1907,41 @@ mod pictures {
             }
         }
         std::fs::write("/tmp/cut.txt", cut).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod decorations {
+    use super::*;
+
+    /// Chaque bloc de décoration existe dans la palette du jeu, et sur une grande zone on
+    /// trouve pétales, feuilles mortes, laminaires, herbes marines, coraux et nids d'abeilles.
+    #[test]
+    fn decorations_exist_and_appear() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
+        let Ok(data) = crate::data::GameData::load(&dir) else { return };
+        for n in super::super::generator::EXTRA_BLOCKS {
+            assert!(data.state_from_spec(&format!("minecraft:{}", n)).is_some(), "bloc absent du jeu : {}", n);
+        }
+        let p = Palette::new(&|n| data.state_from_spec(n));
+        let v = Vanilla::new(12345);
+        let mut seen = std::collections::HashSet::new();
+        for cx in -40..40 {
+            for cz in -40..40 {
+                let col = v.generate(&p, cx * 4, cz * 4);
+                for s in &col.sections {
+                    match s {
+                        super::super::generator::Section::Uniform(b) => {
+                            seen.insert(*b);
+                        }
+                        super::super::generator::Section::Mixed { palette, .. } => seen.extend(palette.iter().copied()),
+                    }
+                }
+            }
+        }
+        let names: std::collections::HashSet<String> = seen.iter().filter_map(|s| data.block_names.get(s).cloned()).collect();
+        for want in ["pink_petals", "leaf_litter", "kelp", "seagrass", "tube_coral_block", "sea_pickle", "packed_ice"] {
+            assert!(names.iter().any(|n| n.ends_with(want)), "aucun bloc {} généré", want);
+        }
     }
 }

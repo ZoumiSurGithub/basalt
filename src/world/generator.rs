@@ -220,6 +220,16 @@ pub const EXTRA_BLOCKS: &[&str] = &[
     "deadbush", "reeds", "sweet_berry_bush", "pumpkin", "blue_orchid", "allium", "azure_bluet", "red_tulip", "oxeye_daisy",
     "cornflower", "lily_of_the_valley", "waterlily", "seagrass", "emerald_ore", "deepslate_emerald_ore", "brown_mushroom",
     "red_mushroom", "bamboo", "moss_carpet", "azalea", "glow_lichen", "smooth_basalt", "dripstone_block", "sculk",
+    "bush", "firefly_bush", "short_dry_grass", "tall_dry_grass", "cactus_flower", "kelp", "sea_pickle[cluster_count=1]",
+    "sea_pickle[cluster_count=3]", "seagrass[sea_grass_type=double_bot]", "seagrass[sea_grass_type=double_top]",
+    "tube_coral_block", "brain_coral_block", "bubble_coral_block", "fire_coral_block", "horn_coral_block", "tube_coral",
+    "brain_coral", "bubble_coral", "fire_coral", "horn_coral", "tube_coral_fan", "brain_coral_fan", "bubble_coral_fan",
+    "fire_coral_fan", "horn_coral_fan", "magma", "bee_nest", "vine",
+    "pink_petals[growth=1,minecraft:cardinal_direction=north]", "pink_petals[growth=2,minecraft:cardinal_direction=east]",
+    "pink_petals[growth=3,minecraft:cardinal_direction=south]", "pink_petals[growth=3,minecraft:cardinal_direction=west]",
+    "leaf_litter[growth=1,minecraft:cardinal_direction=north]", "leaf_litter[growth=2,minecraft:cardinal_direction=east]",
+    "leaf_litter[growth=3,minecraft:cardinal_direction=south]", "leaf_litter[growth=3,minecraft:cardinal_direction=west]",
+    "wildflowers[growth=1,minecraft:cardinal_direction=north]", "wildflowers[growth=3,minecraft:cardinal_direction=south]",
 ];
 
 impl Palette {
@@ -268,7 +278,7 @@ impl Palette {
             redstone: ore("redstone"),
             lapis: ore("lapis"),
             diamond: ore("diamond"),
-            named: EXTRA_BLOCKS.iter().map(|n| (*n, or(n, "air"))).collect(),
+            named: EXTRA_BLOCKS.iter().map(|n| (*n, or(n, n.split('[').next().unwrap_or(n)))).collect(),
         }
     }
 }

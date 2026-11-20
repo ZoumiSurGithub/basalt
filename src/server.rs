@@ -2629,7 +2629,7 @@ impl Server {
         };
         let palette = {
             let data = &self.data;
-            Palette::new(&|name: &str| data.as_ref().and_then(|d| d.default_state(name)))
+            Palette::new(&|name: &str| data.as_ref().and_then(|d| d.state_from_spec(name)))
         };
         let tiles = std::mem::take(&mut self.world.tiles);
         self.world = crate::world::World::with_generator(Generator::new(kind, seed, palette));

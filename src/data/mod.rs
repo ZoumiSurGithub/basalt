@@ -54,7 +54,7 @@ pub struct GameData {
     /// Identifiant réseau -> propriétés de cet état (`open_bit`, `pillar_axis`…)
     state_props: HashMap<u32, Vec<(String, Prop)>>,
     /// Identifiant réseau -> nom de bloc
-    block_names: HashMap<u32, String>,
+    pub(crate) block_names: HashMap<u32, String>,
     /// Nom de bloc -> nom de l'objet correspondant
     block_to_item: HashMap<String, String>,
     /// Nom d'objet -> nom du bloc qu'il pose
@@ -282,6 +282,27 @@ impl GameData {
             wanted.iter_mut().find(|(k, _)| k == key)?.1 = value.clone();
         }
         self.block_states.get(name)?.iter().copied().find(|s| self.state_props.get(s) == Some(&wanted))
+    }
+
+    /// État d'un bloc décrit par un texte : `minecraft:pink_petals[growth=3,direction=north]`
+    /// (sans crochets : l'état par défaut). Une propriété inconnue donne `None`.
+    pub fn state_from_spec(&self, spec: &str) -> Option<u32> {
+        let (name, props) = match spec.find('[') {
+            Some(i) => (&spec[..i], spec[i + 1..].trim_end_matches(']')),
+            None => (spec, ""),
+        };
+        let base = self.default_state(name)?;
+        if props.is_empty() {
+            return Some(base);
+        }
+        let changes: Vec<(&str, Prop)> = props
+            .split(',')
+            .filter_map(|kv| {
+                let (k, v) = kv.split_once('=')?;
+                Some((k.trim(), v.trim().parse::<i32>().map(Prop::Int).unwrap_or_else(|_| Prop::Str(v.trim().to_string()))))
+            })
+            .collect();
+        self.with_props(base, &changes)
     }
 
     /// Copie des noms de blocs pour les plugins.
