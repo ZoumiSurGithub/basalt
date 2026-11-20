@@ -3354,9 +3354,18 @@ impl Server {
     /// Touche « lâcher » (Q) : l'objet doit être dans la case indiquée (ou en main), en
     /// quantité suffisante ; sinon le joueur retrouve l'inventaire exact du serveur.
     fn on_key_drop(&mut self, addr: &SocketAddr, d: bedrock::WorldDrop) {
+        let debug = self.cfg.debug;
         let taken = match self.clients.get_mut(addr) {
             Some(c) if c.stage == Stage::InGame && c.dead.is_none() && !c.mode.is_spectator() => {
-                let slot = d.slot.unwrap_or(c.inv.selected as usize);
+                // Q jette l'objet en main : la case tenue d'abord, puis celle lue dans le paquet
+                // (sa place exacte dans le paquet n'est pas certaine), puis toute case qui porte
+                // cet objet en quantité suffisante
+                let fits = |s: usize| c.inv.get((Target::Player, s)).map(|st| !st.is_empty() && st.id == d.id && d.count >= 1 && d.count <= st.count as u16).unwrap_or(false);
+                let held = c.inv.selected as usize;
+                let slot = [Some(held), d.slot].into_iter().flatten().find(|s| fits(*s)).or_else(|| (0..36).find(|s| fits(*s))).unwrap_or(held);
+                if debug {
+                    info!("[objets] Q : objet n°{} ×{}, case lue {:?}, case tenue {}, case retenue {}", d.id, d.count, d.slot, held, slot);
+                }
                 match c.inv.get((Target::Player, slot)) {
                     Some(stack) if !stack.is_empty() && stack.id == d.id && d.count >= 1 && d.count as u8 <= stack.count && d.count <= 255 => {
                         let ok = c.inv.apply(inventory::Action::Remove { count: d.count as u8, from: (Target::Player, slot) }).is_some();
