@@ -30,6 +30,8 @@ use crate::raknet::{RakEvent, RakServer};
 use crate::signaling::{json_string, sdp_fingerprints, sdp_identity, sdp_without_identity, Request, Signaling};
 
 const TICK: Duration = Duration::from_millis(50);
+/// Retard rattrapé au plus (ticks enchaînés sans pause) ; au-delà, il est abandonné.
+const MAX_CATCH_UP: Duration = Duration::from_secs(1);
 
 /// Couleur d'un joueur dans la liste (AARRGGBB), choisie d'après son identifiant.
 fn list_colour(id: i64) -> u32 {
@@ -1116,8 +1118,11 @@ impl Server {
                     let center = ((pos.0.floor() as i32) >> 4, (pos.2.floor() as i32) >> 4);
                     if c.chunks_sent && center != c.center {
                         c.center = center;
-                        let keep = c.radius + 2;
-                        c.loaded.retain(|(x, z)| (x - center.0).abs() <= keep && (z - center.1).abs() <= keep);
+                        // Le jeu oublie les chunks qui sortent de sa zone : le serveur aussi, pour
+                        // les renvoyer si le joueur revient. (La zone annoncée au jeu dépasse d'un
+                        // chunk celle-ci : il ne jette jamais un chunk que le serveur croit chargé.)
+                        let r = c.radius;
+                        c.loaded.retain(|(x, z)| (x - center.0) * (x - center.0) + (z - center.1) * (z - center.1) <= r * r);
                         let wanted = Self::chunks_around(center, c.radius);
                         c.queue = wanted.into_iter().filter(|xz| !c.loaded.contains(xz)).collect();
                         publish = Some((pos, c.radius));
@@ -1136,7 +1141,7 @@ impl Server {
             self.send(
                 addr,
                 bedrock::ID_CHUNK_PUBLISHER_UPDATE,
-                &bedrock::chunk_publisher_update(pos.0.floor() as i32, pos.1.floor() as i32, pos.2.floor() as i32, radius as u32 * 16),
+                &bedrock::chunk_publisher_update(pos.0.floor() as i32, pos.1.floor() as i32, pos.2.floor() as i32, (radius as u32 + 1) * 16),
             );
         }
     }
@@ -4572,7 +4577,7 @@ impl Server {
                         self.send(
                             &addr,
                             bedrock::ID_CHUNK_PUBLISHER_UPDATE,
-                            &bedrock::chunk_publisher_update(at.0.floor() as i32, at.1.floor() as i32, at.2.floor() as i32, radius as u32 * 16),
+                            &bedrock::chunk_publisher_update(at.0.floor() as i32, at.1.floor() as i32, at.2.floor() as i32, (radius as u32 + 1) * 16),
                         );
                         // Du centre vers l'extérieur, pour que le sol sous le joueur arrive d'abord.
                         // Les chunks partent au fil de leur génération (voir send_queued_chunks).
@@ -5653,8 +5658,11 @@ impl Server {
                     self.save_world();
                     self.save_players();
                 }
-                if next_tick < now {
-                    next_tick = now + TICK; // retard trop important : on repart de maintenant
+                // Retard de quelques ticks (pause du système, pic de travail) : les ticks manqués
+                // sont rattrapés aussitôt, l'un après l'autre, comme dans le jeu. Au-delà d'une
+                // seconde de retard, on repart de maintenant plutôt que d'enchaîner les ticks.
+                if next_tick + MAX_CATCH_UP < now {
+                    next_tick = now + TICK;
                 }
                 let info = self.info();
                 self.plugins.set_info(&info, self.tick);

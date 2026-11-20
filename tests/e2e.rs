@@ -1589,3 +1589,51 @@ fn generated_world_spawns_players_on_dry_land() {
     assert_eq!(world, Some((basalt::world::generator::Kind::Normal, 42)));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Le jeu oublie les chunks qui sortent de sa zone : quand le joueur revient, le serveur
+/// doit les renvoyer (sinon le joueur se retrouve devant un trou, bloqué).
+#[test]
+fn chunks_are_sent_again_when_a_player_comes_back() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-return-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(300));
+    let mut c = Client::join(addr, "Steve");
+    // Aller jusqu'au chunk 2, par petits pas : les chunks à gauche sortent de la zone (rayon 3)
+    let mut x = 0.5f32;
+    // (au rythme d'un joueur en créatif, pour ne pas être replacé par le contrôle des déplacements)
+    while x < 40.5 {
+        x += 0.5;
+        c.walk_to(x, 0.5);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    c.drain_games(Duration::from_millis(300));
+    // Retour au départ
+    let mut back = std::collections::HashSet::new();
+    let unzig = |b: u8| ((b >> 1) as i32) ^ -((b & 1) as i32);
+    while x > 0.5 {
+        x -= 0.5;
+        c.walk_to(x, 0.5);
+        for (id, body) in c.drain_games(Duration::from_millis(20)) {
+            if id == 58 && body[0] < 0x80 && body[1] < 0x80 {
+                back.insert((unzig(body[0]), unzig(body[1])));
+            }
+        }
+    }
+    for (id, body) in c.drain_games(Duration::from_millis(1500)) {
+        // x et z en entiers zigzag sur un octet près de l'origine
+        if id == 58 && body[0] < 0x80 && body[1] < 0x80 {
+            back.insert((unzig(body[0]), unzig(body[1])));
+        }
+    }
+    // Sortis de la zone (oubliés par le jeu), puis de nouveau dedans au retour
+    for chunk in [(-1, 2), (-1, -2), (-2, 1), (-3, 0)] {
+        assert!(back.contains(&chunk), "chunk {:?} renvoyé au retour (reçus : {:?})", chunk, back);
+    }
+    drop(c);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
