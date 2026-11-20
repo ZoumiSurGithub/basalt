@@ -3300,7 +3300,7 @@ impl Server {
             };
             if !dropped.is_empty() {
                 // Lancé depuis les yeux du joueur, dans la direction de son regard
-                let at = self.clients.get(addr).map(|c| ((c.pos.0, c.pos.1 - 0.3, c.pos.2), item_physics::throw_velocity(c.yaw, c.pitch)));
+                let at = self.throw_from(addr);
                 if let Some((at, vel)) = at {
                     for (id, count) in dropped {
                         // Écouteurs : un objet dont le lâcher est annulé revient dans l'inventaire
@@ -3335,6 +3335,22 @@ impl Server {
         }
     }
 
+    /// Point de départ et élan d'un objet lancé par un joueur : juste devant ses yeux, un peu
+    /// plus bas, dans la direction du regard. Si ce point est dans un bloc (joueur collé à un
+    /// mur), l'objet part de sa tête.
+    fn throw_from(&self, addr: &SocketAddr) -> Option<((f32, f32, f32), (f32, f32, f32))> {
+        let c = self.clients.get(addr)?;
+        let (y, p) = (c.yaw.to_radians(), c.pitch.to_radians());
+        let look = (-y.sin() * p.cos(), -p.sin(), y.cos() * p.cos());
+        let ahead = (c.pos.0 + look.0 * 0.4, c.pos.1 - 0.3 + look.1 * 0.4, c.pos.2 + look.2 * 0.4);
+        let free = |q: (f32, f32, f32)| matches!(self.cell(q.0.floor() as i32, q.1.floor() as i32, q.2.floor() as i32), item_physics::Cell::Empty | item_physics::Cell::Water);
+        let at = if free(ahead) { ahead } else { (c.pos.0, c.pos.1 - 0.3, c.pos.2) };
+        if self.cfg.debug {
+            info!("[objets] lancer : yeux {:.2} {:.2} {:.2}, regard {:.0}° / {:.0}°, départ {:.2} {:.2} {:.2}", c.pos.0, c.pos.1, c.pos.2, c.yaw, c.pitch, at.0, at.1, at.2);
+        }
+        Some((at, item_physics::throw_velocity(c.yaw, c.pitch)))
+    }
+
     /// Touche « lâcher » (Q) : l'objet doit être dans la case indiquée (ou en main), en
     /// quantité suffisante ; sinon le joueur retrouve l'inventaire exact du serveur.
     fn on_key_drop(&mut self, addr: &SocketAddr, d: bedrock::WorldDrop) {
@@ -3367,7 +3383,7 @@ impl Server {
             self.add_item(addr, d.id, d.count);
             return;
         }
-        let at = self.clients.get(addr).map(|c| ((c.pos.0, c.pos.1 - 0.3, c.pos.2), item_physics::throw_velocity(c.yaw, c.pitch)));
+        let at = self.throw_from(addr);
         if let Some((at, vel)) = at {
             self.drop_item(at, vel, d.id, d.count as u8, 40);
         }
