@@ -1386,3 +1386,57 @@ server.registerEvents(Ecouteur)
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Deux objets identiques jetés au même endroit avec la touche Q (paquet du jeu 1.26.63) ne
+/// font plus qu'un tas une fois au sol.
+#[test]
+fn identical_items_on_the_ground_merge() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-merge-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    steve.walk_to(0.5, 0.5);
+    let give = b"/give Steve stone 5";
+    let mut body = vec![give.len() as u8];
+    body.extend_from_slice(give);
+    body.extend_from_slice(&[0, 0, 0]);
+    steve.game(77, &body, Some(0xff));
+    std::thread::sleep(Duration::from_millis(300));
+    let stone = basalt::bedrock::GIVABLE_BLOCKS.iter().find(|(n, _)| *n == "stone").unwrap().1;
+    let item = |count: u16| {
+        let mut v = stone.to_le_bytes().to_vec();
+        v.extend_from_slice(&count.to_le_bytes());
+        v.extend_from_slice(&[0, 0, 0, 0]);
+        v
+    };
+    let air = [0u8; 8];
+    for left in [4u16, 3] {
+        // Disposition relevée : demande ancienne, transaction normale, l'objet qui apparaît
+        // dans le monde puis la case 0 de la barre qui perd un objet
+        let mut q = vec![0x02, 0x01, 0x01, 0x1d, 0x01, 0x00, 0x00, 0x02];
+        q.extend_from_slice(&[0x00, 0x01, 0x00, 0x00, 0x00]);
+        q.extend(item(left + 1));
+        q.extend(item(left));
+        q.extend_from_slice(&[0x02, 0x00, 0x01, 0x00, 0x00]);
+        q.extend_from_slice(&air);
+        q.extend(item(1));
+        steve.game(30, &q, Some(0xff));
+        let shown = steve.wait_for(15);
+        assert!(shown.len() > 30, "objet jeté visible");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // Une fois au sol, l'un des deux disparaît et l'autre réapparaît avec 2 objets
+    steve.wait_for(14);
+    let merged = steve.wait_for(15);
+    let at = merged.iter().position(|b| b & 0x80 == 0).unwrap() + 1; // fin de l'identifiant unique
+    let at = at + merged[at..].iter().position(|b| b & 0x80 == 0).unwrap() + 1; // identifiant d'exécution
+    assert_eq!(&merged[at..at + 4], &item(2)[..4], "un seul tas de 2 pierres");
+
+    drop(steve);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

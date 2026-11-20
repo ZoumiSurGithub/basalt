@@ -2828,9 +2828,9 @@ impl Server {
                 self.remove_ground_item(id, None);
             }
         }
-        // Fusion (toutes les demi-secondes) : deux tas du même objet, au repos, à moins de
-        // 0,75 bloc l'un de l'autre ne font plus qu'un, dans la limite de 64
-        if tick % 10 == 5 {
+        // Fusion (quatre fois par seconde) : deux tas du même objet posés au sol, à moins d'un
+        // bloc l'un de l'autre, ne font plus qu'un, dans la limite de 64
+        if tick % 5 == 0 {
             self.merge_ground_items();
         }
         // Ramassage : objet dans la zone du joueur élargie d'un bloc (et d'un demi en hauteur)
@@ -2894,12 +2894,14 @@ impl Server {
         self.show_ground_items();
     }
 
-    /// Fusionne les tas identiques et proches, au repos. Le plus ancien absorbe les autres.
+    /// Fusionne les tas identiques et proches, posés au sol. Le plus ancien absorbe les autres.
     fn merge_ground_items(&mut self) {
+        /// Écart maximal sur x et sur z entre deux tas qui fusionnent
+        const MERGE_RADIUS: f32 = 1.0;
         // Rangés par bloc : seuls les tas d'un même bloc ou de blocs voisins sont comparés
         let mut cells: HashMap<(i32, i32, i32), Vec<i64>> = HashMap::new();
         for (id, g) in &self.ground {
-            if g.resting && g.count < 64 {
+            if g.body.on_ground && g.count < 64 {
                 let p = g.body.pos;
                 cells.entry((p.0.floor() as i32, p.1.floor() as i32, p.2.floor() as i32)).or_default().push(*id);
             }
@@ -2918,9 +2920,9 @@ impl Server {
             };
             let base = (pa.0.floor() as i32, pa.1.floor() as i32, pa.2.floor() as i32);
             let mut absorbed = false;
-            for dx in -1..=1 {
-                for dz in -1..=1 {
-                    for b in cells.get(&(base.0 + dx, base.1, base.2 + dz)).into_iter().flatten() {
+            for (dx, dy, dz) in (-1..=1).flat_map(|dx| (-1..=1).flat_map(move |dy| (-1..=1).map(move |dz| (dx, dy, dz)))) {
+                {
+                    for b in cells.get(&(base.0 + dx, base.1 + dy, base.2 + dz)).into_iter().flatten() {
                         if *b <= a || gone.contains(b) {
                             continue;
                         }
@@ -2929,7 +2931,7 @@ impl Server {
                             None => continue,
                         };
                         let (ex, ey, ez) = (g.body.pos.0 - pa.0, g.body.pos.1 - pa.1, g.body.pos.2 - pa.2);
-                        if g.item == item && ex * ex + ez * ez <= 0.75 * 0.75 && ey.abs() <= 0.5 && count as u16 + g.count as u16 <= 64 {
+                        if g.item == item && ex.abs() <= MERGE_RADIUS && ez.abs() <= MERGE_RADIUS && ey.abs() <= 0.5 && count as u16 + g.count as u16 <= 64 {
                             count += g.count;
                             gone.insert(*b);
                             absorbed = true;
