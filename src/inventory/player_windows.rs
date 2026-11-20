@@ -133,6 +133,30 @@ impl PlayerWindows {
         }
     }
 
+    /// Remet un objet sauvegardé dans l'armure ou la seconde main. Si la place est prise (ou
+    /// le numéro invalide), l'objet va dans le sac, pour ne jamais être perdu.
+    pub fn restore_worn(&mut self, container: &str, slot: usize, id: i16, count: u8) {
+        let count = count.min(MAX_STACK);
+        if count == 0 {
+            return;
+        }
+        let free = |inv: &dyn Inventory| inv.get_item(slot).map(|s| s.is_empty()).unwrap_or(false);
+        let placed = match container {
+            "armor" if slot < self.armor.size() && free(&self.armor) => {
+                let net_id = self.fresh_net_id();
+                self.armor.set_item(slot, ItemStack { id, count, net_id })
+            }
+            "offhand" if slot < self.offhand.size() && free(&self.offhand) => {
+                let net_id = self.fresh_net_id();
+                self.offhand.set_item(slot, ItemStack { id, count, net_id })
+            }
+            _ => false,
+        };
+        if !placed {
+            self.add(id, count as u32);
+        }
+    }
+
     /// Place un objet tout neuf dans l'emplacement de création (menu créatif, fabrication).
     pub fn create(&mut self, id: i16, count: u8) {
         let net_id = self.fresh_net_id();
@@ -209,5 +233,25 @@ impl PlayerWindows {
                 Some(vec![from])
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worn_items_come_back_on_the_player() {
+        let mut w = PlayerWindows::new();
+        w.restore_worn("armor", 1, 300, 1);
+        w.restore_worn("offhand", 0, 355, 1);
+        assert_eq!(w.armor.get_item(1).map(|s| s.id), Some(300));
+        assert_eq!(w.offhand.get_item(0).map(|s| s.id), Some(355));
+        // Place déjà prise ou numéro invalide : l'objet va dans le sac, il n'est pas perdu
+        w.restore_worn("armor", 1, 301, 1);
+        w.restore_worn("armor", 9, 302, 1);
+        w.restore_worn("autre", 0, 303, 1);
+        let in_bag: Vec<i16> = w.main.slots.iter().filter(|s| !s.is_empty()).map(|s| s.id).collect();
+        assert_eq!(in_bag, vec![301, 302, 303]);
     }
 }

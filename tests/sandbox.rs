@@ -72,7 +72,7 @@ server.set_motd(table.concat(out, ";"))
         "io=nil", "os=nil", "debug=nil", "package=nil", "load=nil", "loadfile=nil", "dofile=nil", "collectgarbage=nil",
         "dump=nil", "time=number", "connect=true", "outside=nil", "parent=nil", "drive=false", "require=false",
         "written=true", "appended=true", "inside=bonjour", "module=42",
-        "globals=_G,_VERSION,assert,coroutine,error,getmetatable,ipairs,math,next,pairs,pcall,print,rawequal,rawget,rawlen,rawset,require,select,server,setmetatable,string,table,tonumber,tostring,type,utf8,xpcall",
+        "globals=EntityDamageEvent,EventPriority,PlayerInteractEvent,_G,_VERSION,assert,coroutine,error,getmetatable,ipairs,math,next,pairs,pcall,print,rawequal,rawget,rawlen,rawset,require,select,server,setmetatable,string,table,tonumber,tostring,type,utf8,xpcall",
     ] {
         assert!(text.contains(expected), "attendu « {} » dans : {}", expected, text);
     }
@@ -421,4 +421,72 @@ fn easyedit_turns_commands_into_world_edits() {
     info.pdata[0].held = "minecraft:stone".into();
     m.set_info(&info, 2);
     assert_eq!(m.dispatch("block_break", &[LVal::Player("Enzo".into()), LVal::Int(0), LVal::Int(0), LVal::Int(0), s("minecraft:stone")]), vec![LVal::Nil]);
+}
+
+#[test]
+fn listeners_run_by_priority_across_plugins_like_pocketmine() {
+    let d = dir("events");
+    // Deux plugins : l'ordre de priorité passe avant l'ordre de chargement
+    std::fs::write(
+        d.join("a.lua"),
+        r#"
+local Ecouteur = {}
+function Ecouteur:onBlockBreak(event)
+  event:setDrops({ { name = "minecraft:dirt", count = 2 } })
+end
+Ecouteur.priorities = { onBlockBreak = EventPriority.LOW }
+server.getPluginManager():registerEvents(Ecouteur)
+server.registerEvent("BlockBreakEvent", function(event)
+  if event:getPlayer():getName() == "Enzo" then event:cancel() end
+end, EventPriority.HIGH)
+-- Après l'annulation : n'est pas appelé (handleCancelled absent)
+server.registerEvent("BlockBreakEvent", function(event) event:setDrops({}) end, EventPriority.HIGHEST)
+server.registerEvent("BlockBreakEvent", function(event)
+  local b = event:getBlock()
+  server.set_motd(table.concat({ tostring(event:isCancelled()), event:getDrops()[1].name, b:getName(), b:getX(), event:getEventName() }, "|"))
+end, EventPriority.MONITOR, true)
+-- Dégâts : un écouteur de EntityDamageByEntityEvent n'entend que les coups entre joueurs
+server.registerEvent("EntityDamageByEntityEvent", function(event)
+  event:setBaseDamage(event:getBaseDamage() * 2)
+end)
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("b.lua"),
+        r#"
+server.registerEvent("BlockBreakEvent", function(event)
+  event:setDrops({ { name = "minecraft:stone", count = 1 } })
+end, EventPriority.LOWEST)
+local ok, err = pcall(function() server.registerEvent("EvenementInconnu", function() end) end)
+server.set_motd("inconnu refusé : " .. tostring(not ok))
+"#,
+    )
+    .unwrap();
+    let mut m = PluginManager::new(&d);
+    if !m.available() {
+        return;
+    }
+    m.set_sandbox(true, "", 16);
+    m.load_all(&Info::default(), &[]);
+    let said: Vec<String> = m.take_actions().into_iter().filter_map(|a| if let Action::SetMotd(s) = a { Some(s) } else { None }).collect();
+    assert!(said.contains(&"inconnu refusé : true".to_string()), "{:?}", said);
+    assert!(m.listening().iter().any(|k| k == "BlockBreakEvent#LOW"));
+
+    let state = r#"{"player":"Enzo","block":{"name":"minecraft:stone","x":4,"y":-60,"z":7},"drops":[{"name":"minecraft:cobblestone","count":1}]}"#;
+    let out = m.fire("BlockBreakEvent", state).expect("écouté");
+    let v = basalt::json::parse(&out).unwrap();
+    assert_eq!(v.get("cancelled").and_then(|c| c.as_bool()), Some(true));
+    assert_eq!(v.get("drops").and_then(|d| d.as_arr()).and_then(|d| d[0].get("name")).and_then(|n| n.as_str()), Some("minecraft:dirt"));
+    let said: Vec<String> = m.take_actions().into_iter().filter_map(|a| if let Action::SetMotd(s) = a { Some(s) } else { None }).collect();
+    assert_eq!(said, vec!["true|minecraft:dirt|minecraft:stone|4|BlockBreakEvent".to_string()]);
+
+    // Chute : pas d'auteur, la règle « par une entité » ne s'applique pas
+    let fall = m.fire("EntityDamageEvent", r#"{"entity":"Enzo","cause":"FALL","baseDamage":3}"#).expect("écouté");
+    assert_eq!(basalt::json::parse(&fall).unwrap().get("baseDamage").and_then(|n| n.as_f64()), Some(3.0));
+    let hit = m.fire("EntityDamageEvent", r#"{"entity":"Enzo","cause":"ENTITY_ATTACK","baseDamage":3,"damager":"Alex"}"#).expect("écouté");
+    assert_eq!(basalt::json::parse(&hit).unwrap().get("baseDamage").and_then(|n| n.as_f64()), Some(6.0));
+    // Personne n'écoute : rien n'est appelé
+    assert_eq!(m.fire("PlayerJoinEvent", r#"{"player":"Enzo"}"#), None);
+    let _ = std::fs::remove_dir_all(&d);
 }

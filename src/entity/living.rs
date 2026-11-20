@@ -10,8 +10,8 @@ pub struct Living {
 }
 extends!(Living, entity, Entity);
 
-/// La mort et la réapparition ne sont pas encore gérées : la vie ne descend pas plus bas.
-const MIN_HEALTH: f32 = 1.0;
+/// À zéro, l'entité est morte.
+const MIN_HEALTH: f32 = 0.0;
 
 impl Living {
     pub fn new(name_tag: &str, max_health: f32) -> Living {
@@ -33,6 +33,10 @@ impl Living {
         }
     }
 
+    pub fn is_dead(&self) -> bool {
+        self.health <= 0.0
+    }
+
     pub fn damage(&mut self, amount: f32) {
         if amount.is_finite() && amount > 0.0 {
             self.set_health(self.health - amount);
@@ -46,7 +50,7 @@ impl Living {
         let health = self.health;
         self.set_health(health);
         if !health.is_finite() {
-            self.health = MIN_HEALTH.max(self.health.min(MIN_HEALTH));
+            self.health = self.max_health;
         }
     }
 }

@@ -281,7 +281,28 @@ pub enum LVal {
     Player(String),
     List(Vec<LVal>),
     Map(Vec<(&'static str, LVal)>),
+    /// Table aux clés quelconques (état d'un événement)
+    Obj(Vec<(String, LVal)>),
 }
+
+impl LVal {
+    /// Valeur Lua d'une valeur JSON.
+    pub fn from_json(v: &crate::json::Value) -> LVal {
+        use crate::json::Value;
+        match v {
+            Value::Null => LVal::Nil,
+            Value::Bool(b) => LVal::Bool(*b),
+            Value::Num(n) if n.fract() == 0.0 && n.abs() < 9.0e15 => LVal::Int(*n as i64),
+            Value::Num(n) => LVal::Num(*n),
+            Value::Str(s) => LVal::Str(s.clone()),
+            Value::Arr(items) => LVal::List(items.iter().map(LVal::from_json).collect()),
+            Value::Obj(items) => LVal::Obj(items.iter().map(|(k, v)| (k.clone(), LVal::from_json(v))).collect()),
+        }
+    }
+}
+
+/// Priorités des écouteurs, dans l'ordre d'appel (comme PocketMine).
+pub const PRIORITIES: [&str; 6] = ["LOWEST", "LOW", "NORMAL", "HIGH", "HIGHEST", "MONITOR"];
 
 /// Action demandée par un plugin, appliquée par le serveur après l'appel.
 #[derive(Debug, Clone, PartialEq)]
@@ -791,6 +812,14 @@ impl Plugin {
                     (a.setfield)(self.state, -2, key.as_ptr());
                 }
             }
+            LVal::Obj(items) => {
+                (a.createtable)(self.state, 0, items.len() as c_int);
+                for (k, it) in items {
+                    self.push(it);
+                    let key = CString::new(k.as_str()).unwrap_or_default();
+                    (a.setfield)(self.state, -2, key.as_ptr());
+                }
+            }
         }
     }
 
@@ -1131,6 +1160,50 @@ impl PluginManager {
         for p in &self.plugins {
             for f in p.handlers(event) {
                 out.push(p.call(f, args));
+            }
+        }
+        out
+    }
+
+    /// Événement à la manière de PocketMine : chaque écouteur, par ordre de priorité puis de
+    /// chargement des plugins, reçoit l'état laissé par le précédent (JSON) et renvoie l'état
+    /// modifié. Renvoie l'état final, ou None si personne n'écoute.
+    pub fn fire(&mut self, event: &str, state: &str) -> Option<String> {
+        let mut current = state.to_string();
+        let mut heard = false;
+        for prio in PRIORITIES {
+            let key = format!("{}#{}", event, prio);
+            for p in &self.plugins {
+                for f in p.handlers(&key) {
+                    heard = true;
+                    let arg = match crate::json::parse(&current) {
+                        Ok(v) => LVal::from_json(&v),
+                        Err(_) => return Some(current),
+                    };
+                    // L'écouteur renvoie le nouvel état ; nil (MONITOR, erreur) le laisse tel quel
+                    if let LVal::Str(next) = p.call(f, &[arg]) {
+                        if next.len() <= 1 << 20 && crate::json::parse(&next).is_ok() {
+                            current = next;
+                        }
+                    }
+                }
+            }
+        }
+        if heard {
+            Some(current)
+        } else {
+            None
+        }
+    }
+
+    /// Événements écoutés (sans la priorité), pour ne pas déranger les plugins pour rien.
+    pub fn listening(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for p in &self.plugins {
+            for k in unsafe { (*p.ctx).handlers.keys() } {
+                if !out.contains(k) {
+                    out.push(k.clone());
+                }
             }
         }
         out

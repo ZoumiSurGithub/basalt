@@ -135,6 +135,211 @@ function server.getOnlinePlayers()
   return list
 end
 
+
+-- ---------------------------------------------------------------------------------------
+-- Événements à la manière de PocketMine : écouteurs, priorités, annulation.
+--
+--   local Ecouteur = {}
+--   function Ecouteur:onBlockBreak(event)           -- BlockBreakEvent
+--     if event:getBlock():getName() == "minecraft:diamond_ore" then event:cancel() end
+--   end
+--   Ecouteur.priorities = { onBlockBreak = EventPriority.HIGH }   -- @priority
+--   Ecouteur.handleCancelled = { onBlockBreak = true }            -- @handleCancelled
+--   server.getPluginManager():registerEvents(Ecouteur)
+--
+-- Le serveur fait passer l'événement d'écouteur en écouteur (priorité LOWEST à MONITOR) ;
+-- chacun peut le modifier ou l'annuler, et le serveur applique le résultat final.
+-- ---------------------------------------------------------------------------------------
+
+EventPriority = { LOWEST = "LOWEST", LOW = "LOW", NORMAL = "NORMAL", HIGH = "HIGH", HIGHEST = "HIGHEST", MONITOR = "MONITOR" }
+
+-- Champs de chaque événement : nom, type ("player", "block", "position", "drops", "item",
+-- "string", "number", "boolean"), modifiable ou non. `cancellable` : peut être annulé.
+local EVENTS = {
+  PlayerLoginEvent = { cancellable = true, fields = { { "player", "player" }, { "kickMessage", "string", true } } },
+  PlayerJoinEvent = { fields = { { "player", "player" }, { "joinMessage", "string", true } } },
+  PlayerQuitEvent = { fields = { { "player", "player" }, { "quitMessage", "string", true }, { "quitReason", "string" } } },
+  PlayerChatEvent = { cancellable = true, fields = { { "player", "player" }, { "message", "string", true } } },
+  PlayerCommandPreprocessEvent = { cancellable = true, fields = { { "player", "player" }, { "message", "string", true } } },
+  ServerCommandEvent = { cancellable = true, fields = { { "command", "string", true } } },
+  BlockBreakEvent = { cancellable = true, fields = { { "player", "player" }, { "block", "block" }, { "drops", "drops", true } } },
+  BlockPlaceEvent = { cancellable = true, fields = { { "player", "player" }, { "block", "block" } } },
+  PlayerInteractEvent = { cancellable = true, fields = { { "player", "player" }, { "block", "block" }, { "action", "number" } } },
+  EntityDamageEvent = { cancellable = true, fields = { { "entity", "player" }, { "cause", "string" }, { "baseDamage", "number", true }, { "damager", "player" } } },
+  PlayerDeathEvent = { fields = { { "player", "player" }, { "deathMessage", "string", true }, { "keepInventory", "boolean", true } } },
+  PlayerRespawnEvent = { fields = { { "player", "player" }, { "respawnPosition", "position", true } } },
+  PlayerDropItemEvent = { cancellable = true, fields = { { "player", "player" }, { "item", "item" } } },
+  EntityItemPickupEvent = { cancellable = true, fields = { { "entity", "player" }, { "item", "item" } } },
+  PlayerGameModeChangeEvent = { cancellable = true, fields = { { "player", "player" }, { "newGamemode", "number" } } },
+}
+-- Événements « enfants » : un écouteur de EntityDamageByEntityEvent ne reçoit que les dégâts
+-- causés par un autre joueur (et un écouteur de EntityDamageEvent reçoit tout).
+local CHILDREN = { EntityDamageByEntityEvent = { parent = "EntityDamageEvent", when = function(d) return d.damager ~= nil end } }
+EntityDamageEvent = { CAUSE_FALL = "FALL", CAUSE_VOID = "VOID", CAUSE_ENTITY_ATTACK = "ENTITY_ATTACK", CAUSE_SUICIDE = "SUICIDE", CAUSE_CUSTOM = "CUSTOM" }
+PlayerInteractEvent = { LEFT_CLICK_BLOCK = 0, RIGHT_CLICK_BLOCK = 1 }
+
+-- Petit encodeur JSON pour rendre l'état modifié au serveur
+local function encode(v, depth)
+  depth = (depth or 0) + 1
+  if depth > 16 then return "null" end
+  local t = type(v)
+  if t == "nil" then return "null" end
+  if t == "boolean" then return v and "true" or "false" end
+  if t == "number" then
+    if v ~= v or v == math.huge or v == -math.huge then return "null" end
+    return string.format("%.17g", v)
+  end
+  if t == "string" then
+    return '"' .. v:gsub('[%c"\\]', function(c)
+      if c == '"' then return '\\"' elseif c == "\\" then return "\\\\" end
+      return string.format("\\u%04x", c:byte())
+    end) .. '"'
+  end
+  if t == "table" then
+    local parts = {}
+    if v[1] ~= nil or next(v) == nil then
+      for i = 1, #v do parts[i] = encode(v[i], depth) end
+      return "[" .. table.concat(parts, ",") .. "]"
+    end
+    for k, x in pairs(v) do
+      if type(k) == "string" and type(x) ~= "function" then parts[#parts + 1] = encode(k, depth) .. ":" .. encode(x, depth) end
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+  end
+  return "null"
+end
+
+local function capital(s) return s:sub(1, 1):upper() .. s:sub(2) end
+
+-- Bloc vu par un écouteur
+local Block = {}
+Block.__index = Block
+Block.__name = "Block"
+function Block:getName() return self.name end
+function Block:getPosition() return self.x, self.y, self.z end
+function Block:getX() return self.x end
+function Block:getY() return self.y end
+function Block:getZ() return self.z end
+
+local Event = {}
+Event.__index = Event
+Event.__name = "Event"
+function Event:getEventName() return self._name end
+function Event:isCancellable() return self._spec.cancellable == true end
+function Event:isCancelled() return self._data.cancelled == true end
+function Event:cancel()
+  if not self._spec.cancellable then error(self._name .. " ne peut pas être annulé", 2) end
+  self._data.cancelled = true
+end
+function Event:uncancel() self._data.cancelled = false end
+function Event:setCancelled(value)
+  if value == false then self:uncancel() else self:cancel() end
+end
+
+-- Méthodes get/set de chaque événement, d'après la liste des champs
+local CLASSES = {}
+for name, spec in pairs(EVENTS) do
+  local class = setmetatable({}, { __index = Event })
+  class.__index = class
+  class.__name = name
+  for _, f in ipairs(spec.fields) do
+    local field, kind, writable = f[1], f[2], f[3]
+    class["get" .. capital(field)] = function(self)
+      local v = self._data[field]
+      if v == nil then return nil end
+      if kind == "player" then return wrap(v) end
+      if kind == "block" then return setmetatable({ name = v.name, x = v.x, y = v.y, z = v.z }, Block) end
+      if kind == "position" then return v.x, v.y, v.z end
+      if kind == "drops" or kind == "item" then
+        -- copie : la modifier ne change rien tant qu'elle n'est pas rendue par set…
+        local copy = {}
+        if kind == "item" then return { name = v.name, count = v.count } end
+        for i, d in ipairs(v) do copy[i] = { name = d.name, count = d.count } end
+        return copy
+      end
+      return v
+    end
+    if writable then
+      class["set" .. capital(field)] = function(self, a, b, c)
+        if self._priority == "MONITOR" then error("un écouteur MONITOR ne doit rien modifier", 2) end
+        if kind == "string" then self._data[field] = tostring(a)
+        elseif kind == "number" then
+          a = tonumber(a)
+          if not a or a ~= a then error("nombre attendu", 2) end
+          self._data[field] = a
+        elseif kind == "boolean" then self._data[field] = (a == true)
+        elseif kind == "position" then
+          a, b, c = tonumber(a), tonumber(b), tonumber(c)
+          if not (a and b and c) then error("position attendue : x, y, z", 2) end
+          self._data[field] = { x = a, y = b, z = c }
+        elseif kind == "drops" then
+          local list = {}
+          for i, d in ipairs(a or {}) do
+            if i > 64 then break end
+            list[i] = { name = tostring(d.name or d[1]), count = math.max(1, math.min(64, math.floor(tonumber(d.count or d[2]) or 1))) }
+          end
+          self._data[field] = list
+        end
+      end
+    end
+  end
+  -- Noms à la PocketMine pour les plus courants
+  if spec.fields[1][1] == "entity" then class.getPlayer = class.getEntity end
+  if name == "EntityDamageEvent" then
+    class.getDamage = class.getBaseDamage
+    class.setDamage = class.setBaseDamage
+    class.getFinalDamage = class.getBaseDamage
+  end
+  CLASSES[name] = class
+end
+
+-- Enregistre une fonction pour un événement. `priority` : EventPriority (NORMAL par défaut) ;
+-- `handleCancelled` : reçoit aussi les événements déjà annulés (non par défaut).
+function server.registerEvent(name, fn, priority, handleCancelled)
+  name = tostring(name)
+  local target, when = name, nil
+  if CHILDREN[name] then target, when = CHILDREN[name].parent, CHILDREN[name].when end
+  local spec = EVENTS[target]
+  if not spec then error("événement inconnu : " .. name, 2) end
+  if type(fn) ~= "function" then error("fonction attendue pour " .. name, 2) end
+  priority = priority or "NORMAL"
+  if not EventPriority[priority] then error("priorité inconnue : " .. tostring(priority), 2) end
+  server.on(target .. "#" .. priority, function(data)
+    if type(data) ~= "table" then return nil end
+    if data.cancelled and not handleCancelled then return nil end
+    if when and not when(data) then return nil end
+    local event = setmetatable({ _name = name, _spec = spec, _data = data, _priority = priority }, CLASSES[target])
+    fn(event)
+    if priority == "MONITOR" then return nil end
+    return encode(data)
+  end)
+end
+
+-- Enregistre toutes les méthodes d'un écouteur : `onPlayerJoin` (ou `PlayerJoinEvent`) reçoit
+-- PlayerJoinEvent, etc. `listener.priorities` et `listener.handleCancelled` règlent chaque
+-- méthode, comme les annotations @priority et @handleCancelled de PocketMine.
+function server.registerEvents(listener)
+  if type(listener) ~= "table" then error("écouteur attendu (une table de méthodes)", 2) end
+  local count = 0
+  for key, fn in pairs(listener) do
+    if type(key) == "string" and type(fn) == "function" then
+      local name = key
+      if key:match("^on%u") then name = key:sub(3) .. "Event" end
+      if EVENTS[name] or CHILDREN[name] then
+        local prio = listener.priorities and listener.priorities[key]
+        local cancelled = listener.handleCancelled and listener.handleCancelled[key]
+        server.registerEvent(name, function(event) return fn(listener, event) end, prio, cancelled)
+        count = count + 1
+      end
+    end
+  end
+  return count
+end
+
+local PluginManager = { registerEvents = function(_, listener) return server.registerEvents(listener) end,
+  registerEvent = function(_, ...) return server.registerEvent(...) end }
+function server.getPluginManager() return PluginManager end
+
 if not protected then return end
 
 -- À partir d'ici : plugin protégé.
@@ -194,6 +399,7 @@ local keep = {
   setmetatable = true, getmetatable = true,
   rawget = true, rawset = true, rawequal = true, rawlen = true,
   _G = true, _VERSION = true,
+  EventPriority = true, EntityDamageEvent = true, PlayerInteractEvent = true,
 }
 local names = {}
 for k in pairs(_G) do names[#names + 1] = k end

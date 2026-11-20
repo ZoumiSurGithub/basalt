@@ -164,11 +164,84 @@ le même événement.
 | `save` | `joueur` | les données du joueur vont être enregistrées (toutes les minutes et à l'arrêt) |
 | `block_break` | `joueur`, `x`, `y`, `z`, `bloc` | un joueur casse un bloc ; répondre `false` l'en empêche |
 | `block_click` | `joueur`, `x`, `y`, `z`, `bloc` | un joueur clique sur un bloc (pour poser, ouvrir…) ; répondre `false` annule le geste |
+| `death` | `joueur` | le joueur vient de mourir (chute, coup, `/kill`, vie mise à 0 par un plugin) |
+| `respawn` | `joueur` | le joueur a cliqué sur « Réapparaître » ; il est de retour au point de réapparition, en pleine santé |
 | `disconnect` | `adresse`, `nom` | la connexion est fermée ; `nom` vaut `nil` si le client n'avait pas atteint le login |
+
+## Écouteurs d'événements (comme PocketMine)
+
+En plus de `server.on`, Basalt reprend le système d'écouteurs de PocketMine : un
+**écouteur** est une table de méthodes, chaque méthode reçoit un **objet événement** qu'elle
+peut lire, modifier ou annuler. Le serveur applique le résultat final.
+
+```lua
+local Protection = {}
+
+-- « on » + nom de l'événement sans « Event » : reçoit BlockBreakEvent
+function Protection:onBlockBreak(event)
+  local bloc = event:getBlock()
+  if bloc:getY() < -60 and not event:getPlayer():isOp() then
+    event:cancel()
+    event:getPlayer():sendMessage("§cZone protégée")
+  end
+end
+
+function Protection:onPlayerJoin(event)
+  event:setJoinMessage("§a+ " .. event:getPlayer():getName())
+end
+
+-- Équivalents des annotations @priority et @handleCancelled
+Protection.priorities = { onBlockBreak = EventPriority.HIGH }
+Protection.handleCancelled = { onBlockBreak = false }
+
+server.getPluginManager():registerEvents(Protection)   -- ou server.registerEvents(Protection)
+```
+
+Une méthode peut aussi porter le nom exact de l'événement (`function Protection:BlockBreakEvent(event)`).
+Pour une seule fonction : `server.registerEvent("PlayerChatEvent", fonction, EventPriority.LOW, false)`.
+
+**Ordre d'appel.** Les écouteurs sont appelés par priorité, `LOWEST`, `LOW`, `NORMAL` (par
+défaut), `HIGH`, `HIGHEST`, puis `MONITOR`, tous plugins confondus : un écouteur `HIGH` d'un
+plugin passe après un écouteur `LOW` d'un autre, et voit ce qu'il a changé. Un écouteur
+`MONITOR` observe le résultat final sans rien modifier. Comme dans PocketMine, un événement
+annulé n'est plus transmis aux écouteurs suivants, sauf à ceux qui demandent `handleCancelled`.
+
+**Méthodes communes.** `event:getEventName()`, `event:isCancelled()`, `event:cancel()`,
+`event:uncancel()`, `event:setCancelled(vrai ou faux)`, `event:isCancellable()`.
+
+| Événement | Annulable | Lecture | Modification |
+|---|---|---|---|
+| `PlayerLoginEvent` | oui (le joueur est refusé) | `getPlayer()` | `setKickMessage(texte)` |
+| `PlayerJoinEvent` | non | `getPlayer()`, `getJoinMessage()` | `setJoinMessage(texte)` (`""` : aucun message) |
+| `PlayerQuitEvent` | non | `getPlayer()`, `getQuitMessage()`, `getQuitReason()` | `setQuitMessage(texte)` |
+| `PlayerChatEvent` | oui | `getPlayer()`, `getMessage()` | `setMessage(texte)` |
+| `PlayerCommandPreprocessEvent` | oui | `getPlayer()`, `getMessage()` (`"/commande arguments"`) | `setMessage(texte)` |
+| `ServerCommandEvent` | oui | `getCommand()` (commande tapée dans la console) | `setCommand(texte)` |
+| `BlockBreakEvent` | oui | `getPlayer()`, `getBlock()`, `getDrops()` | `setDrops({ { name = "minecraft:dirt", count = 2 } })` |
+| `BlockPlaceEvent` | oui | `getPlayer()`, `getBlock()` (bloc qui va être posé) | — |
+| `PlayerInteractEvent` | oui | `getPlayer()`, `getBlock()`, `getAction()` | — |
+| `EntityDamageEvent` | oui | `getEntity()` (ou `getPlayer()`), `getCause()`, `getBaseDamage()` (ou `getDamage()`), `getDamager()` | `setBaseDamage(n)` |
+| `EntityDamageByEntityEvent` | oui | comme `EntityDamageEvent`, seulement pour les coups entre joueurs | `setBaseDamage(n)` |
+| `PlayerDeathEvent` | non | `getPlayer()`, `getDeathMessage()`, `getKeepInventory()` | `setDeathMessage(texte)`, `setKeepInventory(vrai)` |
+| `PlayerRespawnEvent` | non | `getPlayer()`, `getRespawnPosition()` (x, y, z aux pieds) | `setRespawnPosition(x, y, z)` |
+| `PlayerDropItemEvent` | oui (l'objet revient dans l'inventaire) | `getPlayer()`, `getItem()` | — |
+| `EntityItemPickupEvent` | oui (l'objet reste au sol) | `getEntity()` (ou `getPlayer()`), `getItem()` | — |
+| `PlayerGameModeChangeEvent` | oui | `getPlayer()`, `getNewGamemode()` (0 survie, 1 créatif) | — |
+
+`getBlock()` renvoie un bloc : `bloc:getName()` (`"minecraft:stone"`), `bloc:getX()`,
+`getY()`, `getZ()`, `getPosition()`. `getItem()` et `getDrops()` renvoient des tables
+`{ name = "minecraft:stone", count = 3 }`. Les causes de dégâts sont dans
+`EntityDamageEvent.CAUSE_FALL`, `CAUSE_VOID`, `CAUSE_ENTITY_ATTACK`, `CAUSE_SUICIDE`
+(`/kill`) et `CAUSE_CUSTOM` (vie changée par un plugin).
+
+Un événement que personne n'écoute ne coûte rien au serveur. Les plugins tournent sur leur
+propre fil : si tous les écouteurs d'un événement n'ont pas répondu en 150 ms, le serveur
+continue comme si personne n'écoutait (il ne reste jamais bloqué). Le déplacement (`PlayerMoveEvent`) n'existe pas encore, il serait trop fréquent
+pour ce mécanisme.
 
 ## L'objet joueur
 
-Les événements `load`, `join`, `chat` et `save` reçoivent un objet `joueur`. On peut aussi
+Les événements `load`, `join`, `chat`, `save`, `death` et `respawn` reçoivent un objet `joueur`. On peut aussi
 l'obtenir avec `server.getPlayer(pseudo)` (ou `nil` s'il n'est pas en jeu) et
 `server.getOnlinePlayers()` (la liste de tous les joueurs en jeu).
 
@@ -177,7 +250,7 @@ l'obtenir avec `server.getPlayer(pseudo)` (ou `nil` s'il n'est pas en jeu) et
 | `joueur:getName()` ou `joueur.name` | — | pseudo du compte |
 | `joueur:getDisplayName()` | `joueur:setDisplayName(texte)` | nom montré dans le chat et les messages |
 | `joueur:getNameTag()` | `joueur:setNameTag(texte)` | texte au-dessus de la tête |
-| `joueur:getHealth()` | `joueur:setHealth(n)` | vie (de 1 à la vie maximale) |
+| `joueur:getHealth()` | `joueur:setHealth(n)` | vie (de 0 à la vie maximale ; à 0, le joueur meurt) |
 | `joueur:getMaxHealth()` | `joueur:setMaxHealth(n)` | vie maximale (20 par défaut) |
 | `joueur:getFood()` | `joueur:setFood(n)` | faim, de 0 à 20 |
 | `joueur:getXpLevel()` | `joueur:setXpLevel(n)` | niveau d'expérience |

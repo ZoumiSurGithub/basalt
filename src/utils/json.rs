@@ -29,6 +29,105 @@ impl Value {
             _ => None,
         }
     }
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Value::Num(n) if n.is_finite() => Some(*n),
+            _ => None,
+        }
+    }
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Value::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+    /// Remplace (ou ajoute) un champ d'un objet.
+    pub fn set(&mut self, key: &str, value: Value) {
+        if let Value::Obj(items) = self {
+            match items.iter_mut().find(|(k, _)| k == key) {
+                Some(slot) => slot.1 = value,
+                None => items.push((key.to_string(), value)),
+            }
+        }
+    }
+    /// Texte JSON de la valeur.
+    pub fn to_json(&self) -> String {
+        let mut out = String::new();
+        self.write(&mut out);
+        out
+    }
+    fn write(&self, out: &mut String) {
+        match self {
+            Value::Null => out.push_str("null"),
+            Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            Value::Num(n) if n.is_finite() => {
+                if n.fract() == 0.0 && n.abs() < 1e15 {
+                    out.push_str(&format!("{}", *n as i64));
+                } else {
+                    out.push_str(&format!("{}", n));
+                }
+            }
+            Value::Num(_) => out.push_str("null"),
+            Value::Str(s) => write_str(s, out),
+            Value::Arr(items) => {
+                out.push('[');
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    v.write(out);
+                }
+                out.push(']');
+            }
+            Value::Obj(items) => {
+                out.push('{');
+                for (i, (k, v)) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    write_str(k, out);
+                    out.push(':');
+                    v.write(out);
+                }
+                out.push('}');
+            }
+        }
+    }
+}
+
+fn write_str(s: &str, out: &mut String) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+#[cfg(test)]
+mod writer_tests {
+    use super::*;
+
+    #[test]
+    fn values_survive_a_round_trip() {
+        let v = Value::Obj(vec![
+            ("name".into(), Value::Str("a \"b\"\n\u{1}é".into())),
+            ("n".into(), Value::Num(3.0)),
+            ("x".into(), Value::Num(-0.5)),
+            ("ok".into(), Value::Bool(true)),
+            ("list".into(), Value::Arr(vec![Value::Null, Value::Arr(vec![])])),
+        ]);
+        let text = v.to_json();
+        assert!(text.contains("\"n\":3,"));
+        assert_eq!(parse(&text).unwrap(), v);
+    }
 }
 
 struct Parser<'a> {

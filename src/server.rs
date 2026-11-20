@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use crate::auth::{self, AuthError, KeyFetcher, KeySet};
 use crate::bedrock;
 use crate::timings;
+use crate::json::Value as Json;
 use crate::command::VanillaCommands;
 use crate::block::{placement, Block, BlockRegistry, Interaction};
 use crate::data::Prop;
@@ -291,6 +292,12 @@ struct Client {
     inv_touched: bool,
     /// Mode de jeu du joueur (celui du serveur à son arrivée, puis /gamemode)
     creative: bool,
+    /// Mort, en attente de réapparition (tick de la mort)
+    dead: Option<u64>,
+    /// Tick du dernier coup reçu : un joueur ne peut pas être frappé plus de 2 fois par seconde
+    hurt_at: u64,
+    /// Hauteur des pieds la plus haute depuis qu'il a quitté le sol (dégâts de chute)
+    fall_peak: Option<f32>,
     /// Tick du dernier bloc actionné (porte, levier), pour ignorer les clics répétés
     last_toggle: u64,
     /// Tick de la dernière interaction avec un bloc (porte, coffre…)
@@ -326,6 +333,8 @@ struct Client {
     visible: HashSet<i64>,
     /// Joueurs inscrits dans sa liste des joueurs : identifiant d'entité → identifiant universel
     listed: HashMap<i64, [u8; 16]>,
+    /// Objets au sol que son jeu affiche
+    items_seen: HashSet<i64>,
     /// Données du joueur (vie, expérience, noms…), chargées à son entrée
     data: Option<PlayerData>,
     /// Vrai si le joueur vient pour la première fois (aucune sauvegarde trouvée)
@@ -343,6 +352,10 @@ pub struct Server {
     tick: u64,
     running: bool,
     next_id: i64,
+    /// Objets posés au sol
+    ground: HashMap<i64, GroundItem>,
+    /// Le jeu refuse les objets au sol : le butin retourne directement dans l'inventaire
+    drops_refused: bool,
     chunk: Vec<u8>,
     #[allow(dead_code)]
     chunk_no_biomes: Vec<u8>,
@@ -447,6 +460,64 @@ fn experiment_skips_state(exp: u8) -> bool {
     exp == 2 || exp == 4
 }
 
+/// Objet posé au sol.
+struct GroundItem {
+    item: i16,
+    /// Bloc correspondant à l'objet (pour son affichage)
+    block: u32,
+    count: u8,
+    /// Position de l'objet, posé sur le sol
+    pos: (f32, f32, f32),
+    /// Tick d'apparition (disparition au bout de 5 minutes, comme dans le jeu)
+    born: u64,
+    /// Ramassable à partir de ce tick
+    pickup_at: u64,
+}
+
+/// Durée de vie d'un objet au sol : 5 minutes.
+const ITEM_LIFETIME: u64 = 6000;
+/// Objets au sol au plus : au-delà, les plus anciens disparaissent.
+const MAX_GROUND_ITEMS: usize = 2000;
+
+/// Ce qui se trouve sous les pieds d'un joueur.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Footing {
+    Air,
+    Solid,
+    Liquid,
+}
+
+/// Cause d'un dégât ou d'une mort.
+#[derive(Clone, PartialEq, Debug)]
+enum Cause {
+    Fall,
+    Void,
+    /// Frappé par ce joueur (nom affiché)
+    Player(String),
+    Command,
+    Plugin,
+}
+
+/// L'événement a-t-il été annulé par un écouteur ?
+fn cancelled(out: &Option<Json>) -> bool {
+    out.as_ref().and_then(|v| v.get("cancelled")).and_then(|c| c.as_bool()).unwrap_or(false)
+}
+
+/// Texte rendu par les écouteurs (sans caractères de contrôle, longueur bornée).
+fn text_of(out: &Option<Json>, key: &str, max: usize) -> Option<String> {
+    let s = out.as_ref()?.get(key)?.as_str()?;
+    Some(s.chars().filter(|c| !c.is_control()).take(max).collect())
+}
+
+fn player_eye_height() -> f32 {
+    crate::player::EYE_HEIGHT
+}
+
+/// Dégâts d'une chute de `distance` blocs : un demi-cœur par bloc au-delà de 3.
+fn fall_damage(distance: f32) -> f32 {
+    (distance - 3.0).ceil().max(0.0)
+}
+
 fn build_chunk(
     exp: u8,
     x: i32,
@@ -504,6 +575,8 @@ impl Server {
             tick: 0,
             running: true,
             next_id: 1,
+            ground: HashMap::new(),
+            drops_refused: false,
             global_window: Instant::now(),
             global_bytes: 0,
             chunk: bedrock::flat_chunk_payload(),
@@ -801,20 +874,28 @@ impl Server {
         };
         data.name = name.clone();
         data.last_played = now;
+        // Parti mort (fichier d'une version précédente, ou arrêt brutal) : il revient en pleine santé
+        if data.is_dead() {
+            data.health = data.max_health;
+        }
         // Le joueur retrouve le mode de jeu qu'il avait en partant
         let saved_mode = data.game_type;
         // Inventaire : les objets sont retrouvés par leur nom
-        let items: Vec<(usize, i16, u8)> = data
+        let items: Vec<(String, usize, i16, u8)> = data
             .items
             .iter()
             .filter_map(|(container, slot, item, count)| {
                 let id = self.item_id(item)?;
-                Some((if container == "main" { *slot as usize } else { usize::MAX }, id, *count))
+                Some((container.clone(), *slot as usize, id, *count))
             })
             .collect();
         if let Some(c) = self.clients.get_mut(addr) {
-            for (slot, id, count) in items {
-                c.inv.restore(slot, id, count);
+            for (container, slot, id, count) in items {
+                // Sac et barre à leur place, armure et seconde main sur le joueur
+                match container.as_str() {
+                    "main" => c.inv.restore(slot, id, count),
+                    other => c.inv.restore_worn(other, slot, id, count),
+                }
                 c.inv_touched = true;
             }
             if let (Some(mode), false) = (saved_mode, fresh) {
@@ -829,7 +910,12 @@ impl Server {
     /// État à jour d'un joueur, prêt à être enregistré.
     fn snapshot_player(&self, c: &Client) -> Option<PlayerData> {
         let mut d = c.data.clone()?;
-        if c.joined {
+        if c.joined && c.dead.is_some() {
+            // Parti pendant l'écran de mort : il revient au point de réapparition, en pleine santé
+            d.pos = self.spawn_point();
+            d.health = d.max_health;
+            d.has_pos = true;
+        } else if c.joined {
             d.pos = c.pos;
             d.rotation = (c.yaw.rem_euclid(360.0), c.pitch.clamp(-90.0, 90.0));
             d.has_pos = true;
@@ -939,6 +1025,13 @@ impl Server {
     /// Le joueur annonce une nouvelle position. Un déplacement impossible est
     /// refusé et le joueur est replacé ; sinon le terrain manquant est préparé.
     fn on_move(&mut self, addr: &SocketAddr, input: bedrock::Input) {
+        // Mort : il attend sur l'écran de mort, ses mouvements sont ignorés
+        if self.clients.get(addr).map(|c| c.dead.is_some()).unwrap_or(true) {
+            return;
+        }
+        let footing = self.footing(input.pos);
+        let mut fall: Option<Cause> = None;
+        let mut fall_amount = 0.0;
         let max_speed = self.max_speed(self.clients.get(addr).map(|c| c.creative).unwrap_or(false));
         let check = self.cfg.movement_check;
         // Le déplacement sera diffusé au prochain tick
@@ -988,6 +1081,21 @@ impl Server {
                     if horizontal > 0.0 || dy != 0.0 {
                         c.moved_tick = tick;
                     }
+                    // Chute : hauteur la plus haute en l'air, dégâts à l'arrivée au sol
+                    let feet = pos.1 - player_eye_height();
+                    if feet < -128.0 {
+                        fall = Some(Cause::Void);
+                    } else if c.creative || footing == Footing::Liquid {
+                        c.fall_peak = None;
+                    } else if footing == Footing::Air {
+                        c.fall_peak = Some(c.fall_peak.map(|p| p.max(feet)).unwrap_or(feet));
+                    } else if let Some(peak) = c.fall_peak.take() {
+                        let damage = fall_damage(peak - feet);
+                        if damage > 0.0 {
+                            fall = Some(Cause::Fall);
+                            fall_amount = damage;
+                        }
+                    }
                     c.pos = pos;
                     let center = ((pos.0.floor() as i32) >> 4, (pos.2.floor() as i32) >> 4);
                     if c.chunks_sent && center != c.center {
@@ -1004,6 +1112,9 @@ impl Server {
         }
         if let Some(packet) = correction {
             self.send(addr, bedrock::ID_MOVE_PLAYER, &packet);
+        }
+        if let Some(cause) = fall {
+            self.hurt(addr, fall_amount, cause);
         }
         if let Some((pos, radius)) = publish {
             self.send(
@@ -1036,8 +1147,13 @@ impl Server {
         }
         let refresh = self.tick % VISIBILITY_EVERY == 0;
         let mut players: Vec<Seen> = Vec::new();
+        // Joueurs connectés, même morts : seuls ceux qui ont quitté le serveur sortent de la liste
+        let online: HashSet<i64> = self.clients.values().filter(|c| c.joined && c.stage == Stage::InGame).map(|c| c.id).collect();
+        let now_tick = self.tick;
         for c in self.clients.values() {
-            if c.joined && c.stage == Stage::InGame {
+            // Un mort reste visible le temps de sa chute (1 seconde), puis disparaît
+            let shown = c.dead.map(|t| now_tick.saturating_sub(t) <= 20).unwrap_or(true);
+            if c.joined && c.stage == Stage::InGame && shown {
                 players.push(Seen {
                     id: c.id,
                     chunk: ((c.pos.0.floor() as i32) >> 4, (c.pos.2.floor() as i32) >> 4),
@@ -1101,7 +1217,7 @@ impl Server {
                     packets.push((bedrock::ID_REMOVE_ACTOR, bedrock::remove_actor(id)));
                 }
                 // Ceux qui ont quitté le serveur sortent aussi de la liste des joueurs
-                let departed: Vec<i64> = c.listed.keys().copied().filter(|id| !by_id.contains_key(id)).collect();
+                let departed: Vec<i64> = c.listed.keys().copied().filter(|id| !online.contains(id)).collect();
                 if !departed.is_empty() {
                     let uuids: Vec<[u8; 16]> = departed.iter().filter_map(|id| c.listed.remove(id)).collect();
                     packets.push((bedrock::ID_PLAYER_LIST, bedrock::player_list_remove(&uuids)));
@@ -1302,6 +1418,11 @@ impl Server {
                     }
                     if attributes {
                         self.sync_attributes(&addr);
+                        // Vie mise à zéro par un plugin : le joueur meurt
+                        let dead = self.clients.get(&addr).and_then(|c| c.data.as_ref()).map(|d| d.is_dead()).unwrap_or(false);
+                        if dead {
+                            self.die(&addr, Cause::Plugin);
+                        }
                     }
                 }
                 Action::PlayerMessage(name, text) => {
@@ -1524,6 +1645,10 @@ impl Server {
 
     /// Change le mode de jeu d'un joueur et l'en informe.
     fn set_gamemode(&mut self, addr: &SocketAddr, creative: bool) {
+        let out = self.fire("PlayerGameModeChangeEvent", vec![("player", self.name_json(addr)), ("newGamemode", Json::Num(if creative { 1.0 } else { 0.0 }))]);
+        if cancelled(&out) {
+            return;
+        }
         let id = match self.clients.get_mut(addr) {
             Some(c) => {
                 c.creative = creative;
@@ -1768,7 +1893,17 @@ impl Server {
                 }
             }
             "kill" => {
-                self.reply(sender, "§cLa mort et la réapparition ne sont pas encore gérées par le serveur.");
+                let targets = if args.is_empty() { sender.into_iter().collect() } else { self.targets(sender, arg(0)) };
+                if targets.is_empty() {
+                    return self.reply(sender, NO_TARGET);
+                }
+                for t in targets {
+                    let name = self.name_at(&t);
+                    self.hurt(&t, 0.0, Cause::Command);
+                    if Some(t) != sender {
+                        self.reply(sender, &format!("{} a été tué", name));
+                    }
+                }
             }
             "kick" => {
                 let targets = self.targets(sender, arg(0));
@@ -2011,6 +2146,11 @@ impl Server {
             _ => return,
         };
         let line: String = line.chars().filter(|c| !c.is_control()).collect();
+        let out = self.fire("PlayerCommandPreprocessEvent", vec![("player", self.name_json(addr)), ("message", Json::Str(line.clone()))]);
+        if cancelled(&out) {
+            return;
+        }
+        let line = text_of(&out, "message", 256).unwrap_or(line);
         self.run_player_command(addr, &line);
     }
 
@@ -2028,6 +2168,54 @@ impl Server {
         let block = self.data.as_ref().and_then(|d| d.block_name(state)).unwrap_or("").to_string();
         let answers = self.emit(event, &[LVal::Player(name), LVal::Int(pos.0 as i64), LVal::Int(pos.1 as i64), LVal::Int(pos.2 as i64), LVal::Str(block)]);
         !answers.iter().any(|a| *a == LVal::Bool(false))
+    }
+
+    /// Événement à la PocketMine (écouteurs des plugins, voir docs/PLUGINS.md). Renvoie l'état
+    /// final, ou None si aucun plugin n'écoute cet événement (rien n'est alors calculé).
+    fn fire(&mut self, event: &str, fields: Vec<(&str, Json)>) -> Option<Json> {
+        if !self.plugins.listens(event) {
+            return None;
+        }
+        let _t = timings::scope_with(|| format!("Plugins — {}", event));
+        let info = self.info();
+        self.plugins.set_info(&info, self.tick);
+        let state = Json::Obj(fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
+        let out = self.plugins.fire(event, &state);
+        self.apply_actions();
+        out
+    }
+
+    /// Objet tel que les écouteurs le voient : { name, count }.
+    fn item_json(&self, id: i16, count: u8) -> Json {
+        let name = self.data.as_ref().and_then(|d| d.item_by_id(id)).map(|i| i.name.clone()).unwrap_or_default();
+        Json::Obj(vec![("name".into(), Json::Str(name)), ("count".into(), Json::Num(count as f64))])
+    }
+
+    /// Bloc tel que les écouteurs le voient : { name, x, y, z }.
+    fn block_json(&self, state: u32, pos: (i32, i32, i32)) -> Json {
+        let name = self.data.as_ref().and_then(|d| d.block_name(state)).unwrap_or("").to_string();
+        Json::Obj(vec![
+            ("name".into(), Json::Str(name)),
+            ("x".into(), Json::Num(pos.0 as f64)),
+            ("y".into(), Json::Num(pos.1 as f64)),
+            ("z".into(), Json::Num(pos.2 as f64)),
+        ])
+    }
+
+    /// Pseudo d'un joueur, pour les écouteurs.
+    fn name_json(&self, addr: &SocketAddr) -> Json {
+        Json::Str(self.clients.get(addr).and_then(|c| c.name.clone()).unwrap_or_default())
+    }
+
+    /// PlayerInteractEvent (clic droit sur un bloc) : vrai si un écouteur l'annule.
+    fn interact_cancelled(&mut self, addr: &SocketAddr, pos: (i32, i32, i32)) -> bool {
+        if !self.plugins.listens("PlayerInteractEvent") {
+            return false;
+        }
+        let state = self.world.get(pos.0, pos.1, pos.2);
+        let fields = vec![("player", self.name_json(addr)), ("block", self.block_json(state, pos)), ("action", Json::Num(1.0))];
+        let out = self.fire("PlayerInteractEvent", fields);
+        cancelled(&out)
     }
 
     fn emit(&mut self, event: &str, args: &[LVal]) -> Vec<LVal> {
@@ -2149,6 +2337,15 @@ impl Server {
         if clean.is_empty() {
             return;
         }
+        let out = self.fire("PlayerChatEvent", vec![("player", Json::Str(name.clone())), ("message", Json::Str(clean.clone()))]);
+        if cancelled(&out) {
+            return;
+        }
+        let clean = match text_of(&out, "message", 256) {
+            Some(m) if !m.trim().is_empty() => m,
+            Some(_) => return,
+            None => clean,
+        };
         info!("<{}> {}", name, clean);
         self.emit("chat", &[LVal::Player(name.clone()), LVal::Str(clean.clone())]);
         // Le nom affiché a pu être changé par un plugin (y compris pendant cet événement)
@@ -2156,11 +2353,449 @@ impl Server {
         self.broadcast(bedrock::ID_TEXT, &bedrock::text_chat(&shown, &clean), None);
     }
 
+    /// Sous les pieds d'un joueur (position à hauteur des yeux) : sol, liquide ou vide.
+    fn footing(&self, eye: (f32, f32, f32)) -> Footing {
+        let feet = eye.1 - player_eye_height();
+        let air = self.world.air;
+        let mut found = Footing::Air;
+        // Les quatre coins du joueur (0,3 bloc autour de son centre), juste sous ses pieds et à
+        // hauteur de ses pieds (liquide)
+        for (dx, dz) in [(-0.3, -0.3), (0.3, -0.3), (-0.3, 0.3), (0.3, 0.3)] {
+            let (x, z) = ((eye.0 + dx).floor() as i32, (eye.2 + dz).floor() as i32);
+            for (y, below) in [((feet + 0.01).floor() as i32, false), ((feet - 0.05).floor() as i32, true)] {
+                let state = self.world.get(x, y, z);
+                if state == air {
+                    continue;
+                }
+                let liquid = self.data.as_ref().and_then(|d| d.block_name(state)).map(|n| n.contains("water") || n.contains("lava")).unwrap_or(false);
+                if liquid {
+                    return Footing::Liquid;
+                }
+                if below {
+                    found = Footing::Solid;
+                }
+            }
+        }
+        found
+    }
+
+    /// Un joueur perd de la vie. Sans effet en créatif (sauf chute hors du monde et /kill),
+    /// sur un joueur déjà mort, ou sur un joueur frappé il y a moins d'une demi-seconde.
+    fn hurt(&mut self, addr: &SocketAddr, amount: f32, cause: Cause) {
+        let tick = self.tick;
+        let unstoppable = matches!(cause, Cause::Void | Cause::Command);
+        match self.clients.get(addr) {
+            Some(c) if c.joined && c.dead.is_none() => {
+                if c.creative && !unstoppable {
+                    return;
+                }
+                if matches!(cause, Cause::Player(_)) && c.hurt_at > 0 && tick.saturating_sub(c.hurt_at) < 10 {
+                    return;
+                }
+            }
+            _ => return,
+        }
+        // Écouteurs : annulation, dégâts modifiés
+        let mut amount = amount;
+        if self.plugins.listens("EntityDamageEvent") {
+            let (label, damager) = match &cause {
+                Cause::Fall => ("FALL", None),
+                Cause::Void => ("VOID", None),
+                Cause::Player(by) => ("ENTITY_ATTACK", Some(by.clone())),
+                Cause::Command => ("SUICIDE", None),
+                Cause::Plugin => ("CUSTOM", None),
+            };
+            let mut fields = vec![("entity", self.name_json(addr)), ("cause", Json::Str(label.into())), ("baseDamage", Json::Num(amount as f64))];
+            if let Some(by) = damager {
+                fields.push(("damager", Json::Str(by)));
+            }
+            let out = self.fire("EntityDamageEvent", fields);
+            if cancelled(&out) {
+                return;
+            }
+            if let Some(n) = out.as_ref().and_then(|v| v.get("baseDamage")).and_then(|n| n.as_f64()) {
+                amount = n.clamp(0.0, 1.0e6) as f32;
+            }
+        }
+        let (id, dead) = match self.clients.get_mut(addr) {
+            Some(c) if c.joined && c.dead.is_none() => {
+                c.hurt_at = tick;
+                let d = match c.data.as_mut() {
+                    Some(d) => d,
+                    None => return,
+                };
+                if unstoppable {
+                    d.health = 0.0;
+                } else {
+                    d.damage(amount);
+                }
+                (c.id, d.is_dead())
+            }
+            _ => return,
+        };
+        // Le joueur rougit, chez lui et chez ceux qui le voient
+        self.actor_event_around(addr, id, bedrock::EVENT_HURT);
+        self.sync_attributes(addr);
+        if dead {
+            self.die(addr, cause);
+        }
+    }
+
+    /// Événement d'un joueur (dégât, mort…) envoyé à lui-même et à ceux qui le voient.
+    fn actor_event_around(&mut self, addr: &SocketAddr, id: i64, event: u8) {
+        if self.refused_extras.contains(&bedrock::ID_ACTOR_EVENT) {
+            return;
+        }
+        let packet = bedrock::actor_event(id, event, 0);
+        let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(a, c)| *a == addr || c.visible.contains(&id)).map(|(a, _)| *a).collect();
+        for v in viewers {
+            self.send(&v, bedrock::ID_ACTOR_EVENT, &packet);
+        }
+    }
+
+    /// Mort d'un joueur : écran de mort chez lui, chute du personnage chez les autres, message
+    /// à tous. Son inventaire tombe au sol, comme dans le jeu.
+    fn die(&mut self, addr: &SocketAddr, cause: Cause) {
+        let tick = self.tick;
+        let (id, name) = match self.clients.get_mut(addr) {
+            Some(c) if c.dead.is_none() => {
+                c.dead = Some(tick);
+                c.fall_peak = None;
+                if let Some(d) = c.data.as_mut() {
+                    d.health = 0.0;
+                }
+                let shown = c.data.as_ref().map(|d| d.display_name.clone()).or_else(|| c.name.clone()).unwrap_or_default();
+                (c.id, shown)
+            }
+            _ => return,
+        };
+        let message = match &cause {
+            Cause::Fall => format!("{} s'est écrasé au sol", name),
+            Cause::Void => format!("{} est tombé hors du monde", name),
+            Cause::Player(by) => {
+                let shown = self.addr_of(by).and_then(|a| self.clients.get(&a)).and_then(|c| c.data.as_ref()).map(|d| d.display_name.clone()).unwrap_or_else(|| by.clone());
+                format!("{} a été tué par {}", name, shown)
+            }
+            Cause::Command | Cause::Plugin => format!("{} est mort", name),
+        };
+        // Écouteurs : message de mort, inventaire gardé
+        let out = self.fire(
+            "PlayerDeathEvent",
+            vec![("player", self.name_json(addr)), ("deathMessage", Json::Str(message.clone())), ("keepInventory", Json::Bool(self.cfg.keep_inventory))],
+        );
+        let message = text_of(&out, "deathMessage", 512).unwrap_or(message);
+        let keep = out.as_ref().and_then(|v| v.get("keepInventory")).and_then(|k| k.as_bool()).unwrap_or(self.cfg.keep_inventory);
+        self.actor_event_around(addr, id, bedrock::EVENT_DEATH);
+        // Son inventaire tombe au sol autour de lui, sauf avec keep-inventory=true. Si le jeu
+        // refuse les objets au sol, il est perdu (comme un objet tombé dans la lave).
+        if !keep {
+            let mut stuff: Vec<(i16, u8)> = Vec::new();
+            let at = match self.clients.get_mut(addr) {
+                Some(c) => {
+                    for slots in [&mut c.inv.main.slots, &mut c.inv.armor.slots, &mut c.inv.offhand.slots] {
+                        for s in slots.iter_mut() {
+                            if !s.is_empty() {
+                                stuff.push((s.id, s.count));
+                                *s = inventory::ItemStack::EMPTY;
+                            }
+                        }
+                    }
+                    c.inv_touched = true;
+                    c.pos
+                }
+                None => return,
+            };
+            if !stuff.is_empty() {
+                for (n, (item, count)) in stuff.into_iter().enumerate() {
+                    // Éparpillés en cercle autour du corps
+                    let angle = n as f32 * 2.4;
+                    let spot = (at.0 + angle.cos() * 0.8, at.1, at.2 + angle.sin() * 0.8);
+                    self.drop_item(spot, item, count, 40);
+                }
+                self.send_inventory_with(addr, true);
+            }
+        }
+        if !self.refused_extras.contains(&bedrock::ID_DEATH_INFO) {
+            self.send(addr, bedrock::ID_DEATH_INFO, &bedrock::death_info(&message));
+        }
+        if !self.refused_extras.contains(&bedrock::ID_RESPAWN) {
+            let spawn = self.spawn_point();
+            self.send(addr, bedrock::ID_RESPAWN, &bedrock::respawn(spawn, bedrock::RESPAWN_SEARCHING, id));
+        }
+        if !message.is_empty() {
+            info!("{}", crate::log::clean(&message, 128));
+            self.broadcast(bedrock::ID_TEXT, &bedrock::text_raw(&message), None);
+        }
+        let player = self.clients.get(addr).and_then(|c| c.name.clone()).unwrap_or_default();
+        self.emit("death", &[LVal::Player(player)]);
+    }
+
+    /// Point de réapparition (à hauteur des yeux).
+    fn spawn_point(&self) -> (f32, f32, f32) {
+        (0.5, bedrock::GROUND_Y as f32 + player_eye_height(), 0.5)
+    }
+
+    /// Le joueur a cliqué sur « Réapparaître » : il revient au point de réapparition, en pleine
+    /// santé. Ceux qui le voyaient le voient disparaître, puis réapparaître là-bas.
+    fn respawn(&mut self, addr: &SocketAddr) {
+        let mut spawn = self.spawn_point();
+        if self.clients.get(addr).map(|c| c.dead.is_none()).unwrap_or(true) {
+            return;
+        }
+        // Écouteurs : point de réapparition (aux pieds du joueur, comme dans PocketMine)
+        if self.plugins.listens("PlayerRespawnEvent") {
+            let feet = Json::Obj(vec![
+                ("x".into(), Json::Num(spawn.0 as f64)),
+                ("y".into(), Json::Num((spawn.1 - player_eye_height()) as f64)),
+                ("z".into(), Json::Num(spawn.2 as f64)),
+            ]);
+            let out = self.fire("PlayerRespawnEvent", vec![("player", self.name_json(addr)), ("respawnPosition", feet)]);
+            let at = out.as_ref().and_then(|v| v.get("respawnPosition"));
+            let coord = |k: &str| at.and_then(|p| p.get(k)).and_then(|n| n.as_f64()).filter(|n| n.abs() < 3.0e7);
+            if let (Some(x), Some(y), Some(z)) = (coord("x"), coord("y"), coord("z")) {
+                spawn = (x as f32, (y as f32).clamp(-64.0, 320.0) + player_eye_height(), z as f32);
+            }
+        }
+        let id = match self.clients.get_mut(addr) {
+            Some(c) if c.dead.is_some() => {
+                c.dead = None;
+                c.fall_peak = None;
+                c.pos = spawn;
+                c.moved_tick = self.tick + 1;
+                if let Some(d) = c.data.as_mut() {
+                    d.health = d.max_health;
+                }
+                c.id
+            }
+            _ => return,
+        };
+        if !self.refused_extras.contains(&bedrock::ID_RESPAWN) {
+            self.send(addr, bedrock::ID_RESPAWN, &bedrock::respawn(spawn, bedrock::RESPAWN_READY, id));
+        }
+        self.sync_attributes(addr);
+        let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.visible.contains(&id)).map(|(a, _)| *a).collect();
+        for v in viewers {
+            if let Some(c) = self.clients.get_mut(&v) {
+                c.visible.remove(&id);
+            }
+            self.send(&v, bedrock::ID_REMOVE_ACTOR, &bedrock::remove_actor(id));
+        }
+        let player = self.clients.get(addr).and_then(|c| c.name.clone()).unwrap_or_default();
+        self.emit("respawn", &[LVal::Player(player)]);
+    }
+
+    /// Un joueur en frappe un autre.
+    fn on_attack(&mut self, addr: &SocketAddr, target: u64) {
+        let (from, eye, name, damage) = match self.clients.get(addr) {
+            Some(c) if c.joined && c.dead.is_none() => {
+                let held = c.inv.held();
+                let tool = match (held.is_empty(), self.data.as_ref().and_then(|d| d.item_by_id(held.id))) {
+                    (false, Some(def)) => VanillaItems::get(&def.name),
+                    _ => VanillaItems::hand(),
+                };
+                let damage = tool.attack_damage().max(1.0);
+                (c.id, c.pos, c.name.clone().unwrap_or_default(), damage)
+            }
+            _ => return,
+        };
+        let victim = self.clients.iter().find(|(_, c)| c.id as u64 == target && c.id != from && c.joined).map(|(a, c)| (*a, c.pos, c.creative, c.id));
+        let (victim, pos, creative, victim_id) = match victim {
+            Some(v) => v,
+            None => return,
+        };
+        // Portée d'un coup : 6 blocs au plus entre les deux joueurs (marge pour le décalage réseau)
+        let (dx, dy, dz) = (pos.0 - eye.0, pos.1 - eye.1, pos.2 - eye.2);
+        if dx * dx + dy * dy + dz * dz > 6.0 * 6.0 || creative {
+            return;
+        }
+        let before = self.clients.get(&victim).map(|c| c.hurt_at).unwrap_or(0);
+        self.hurt(&victim, damage, Cause::Player(name));
+        let hit = self.clients.get(&victim).map(|c| c.hurt_at != before).unwrap_or(false);
+        // Recul : poussé dans le sens du coup, et un peu vers le haut
+        let flat = (dx * dx + dz * dz).sqrt();
+        if hit && flat > 0.01 && !self.refused_extras.contains(&bedrock::ID_SET_ACTOR_MOTION) {
+            let motion = (dx / flat * 0.4, 0.4, dz / flat * 0.4);
+            self.send(&victim, bedrock::ID_SET_ACTOR_MOTION, &bedrock::set_actor_motion(victim_id, motion));
+        }
+    }
+
+    /// Vie regagnée peu à peu, comme dans le jeu quand la barre de faim est presque pleine :
+    /// un demi-cœur toutes les 4 secondes.
+    fn regenerate(&mut self) {
+        let ready: Vec<SocketAddr> = self
+            .clients
+            .iter_mut()
+            .filter(|(_, c)| c.joined && c.dead.is_none())
+            .filter_map(|(a, c)| {
+                let d = c.data.as_mut()?;
+                if d.health < d.max_health && d.food >= 18.0 {
+                    d.heal(1.0);
+                    Some(*a)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for a in ready {
+            self.sync_attributes(&a);
+        }
+    }
+
+    /// Hauteur du sol sous un point : le dessus du premier bloc plein en dessous (64 blocs au plus).
+    fn ground_below(&self, x: f32, y: f32, z: f32) -> f32 {
+        let (bx, bz) = (x.floor() as i32, z.floor() as i32);
+        let air = self.world.air;
+        let top = y.floor() as i32;
+        for by in (top - 64..=top).rev() {
+            if !crate::world::World::in_bounds(by) {
+                continue;
+            }
+            let state = self.world.get(bx, by, bz);
+            if state == air {
+                continue;
+            }
+            let passable = self.data.as_ref().and_then(|d| d.block_name(state)).map(|n| n.contains("water") || n.contains("lava")).unwrap_or(false);
+            if !passable {
+                return by as f32 + 1.0;
+            }
+        }
+        y
+    }
+
+    /// Pose un objet au sol. Faux si le jeu refuse les objets au sol (l'appelant le garde
+    /// alors ailleurs). `delay` : ticks avant de pouvoir être ramassé.
+    fn drop_item(&mut self, at: (f32, f32, f32), item: i16, count: u8, delay: u64) -> bool {
+        if self.drops_refused {
+            return false;
+        }
+        if count == 0 {
+            return true;
+        }
+        // Trop d'objets au sol : le plus ancien disparaît
+        if self.ground.len() >= MAX_GROUND_ITEMS {
+            if let Some(oldest) = self.ground.iter().min_by_key(|(_, g)| g.born).map(|(id, _)| *id) {
+                self.remove_ground_item(oldest, None);
+            }
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        let pos = (at.0, self.ground_below(at.0, at.1, at.2), at.2);
+        let block = self.block_for(item).unwrap_or(0);
+        self.ground.insert(id, GroundItem { item, block, count, pos, born: self.tick, pickup_at: self.tick + delay });
+        self.show_ground_items();
+        true
+    }
+
+    /// Retire un objet du sol ; `taker` : le joueur qui l'a ramassé (l'objet vole vers lui).
+    fn remove_ground_item(&mut self, id: i64, taker: Option<i64>) {
+        if self.ground.remove(&id).is_none() {
+            return;
+        }
+        let viewers: Vec<SocketAddr> = self.clients.iter_mut().filter_map(|(a, c)| if c.items_seen.remove(&id) { Some(*a) } else { None }).collect();
+        for v in viewers {
+            if let Some(by) = taker {
+                self.send(&v, bedrock::ID_TAKE_ITEM_ACTOR, &bedrock::take_item_actor(id, by));
+            }
+            self.send(&v, bedrock::ID_REMOVE_ACTOR, &bedrock::remove_actor(id));
+        }
+    }
+
+    /// Montre à chaque joueur les objets au sol proches de lui (64 blocs), retire les lointains.
+    fn show_ground_items(&mut self) {
+        let mut out: Vec<(SocketAddr, u32, Vec<u8>)> = Vec::new();
+        for (addr, c) in self.clients.iter_mut() {
+            if !c.joined || c.stage != Stage::InGame {
+                continue;
+            }
+            for (id, g) in &self.ground {
+                let (dx, dz) = (g.pos.0 - c.pos.0, g.pos.2 - c.pos.2);
+                let far = dx * dx + dz * dz;
+                if far < 64.0 * 64.0 {
+                    if c.items_seen.insert(*id) {
+                        out.push((*addr, bedrock::ID_ADD_ITEM_ACTOR, bedrock::add_item_actor(*id, g.item, g.count, g.block, g.pos, (0.0, 0.0, 0.0))));
+                    }
+                } else if far > 80.0 * 80.0 && c.items_seen.remove(id) {
+                    out.push((*addr, bedrock::ID_REMOVE_ACTOR, bedrock::remove_actor(*id)));
+                }
+            }
+        }
+        for (addr, id, packet) in out {
+            self.send(&addr, id, &packet);
+        }
+    }
+
+    /// Objets au sol : disparition au bout de 5 minutes, ramassage par les joueurs proches.
+    fn update_ground_items(&mut self) {
+        if self.ground.is_empty() {
+            return;
+        }
+        let tick = self.tick;
+        let expired: Vec<i64> = self.ground.iter().filter(|(_, g)| tick.saturating_sub(g.born) > ITEM_LIFETIME).map(|(id, _)| *id).collect();
+        for id in expired {
+            self.remove_ground_item(id, None);
+        }
+        // Ramassage : à moins d'un bloc et demi des pieds du joueur
+        let mut taken: Vec<(SocketAddr, i64, i64)> = Vec::new();
+        for (addr, c) in self.clients.iter() {
+            if !c.joined || c.stage != Stage::InGame || c.dead.is_some() {
+                continue;
+            }
+            let feet = c.pos.1 - player_eye_height();
+            for (id, g) in &self.ground {
+                let (dx, dy, dz) = (g.pos.0 - c.pos.0, g.pos.1 - feet, g.pos.2 - c.pos.2);
+                if tick >= g.pickup_at && dx * dx + dz * dz <= 1.5 * 1.5 && dy.abs() <= 1.5 && !taken.iter().any(|t| t.1 == *id) {
+                    taken.push((*addr, *id, c.id));
+                }
+            }
+        }
+        for (addr, id, by) in taken {
+            let (item, count) = match self.ground.get(&id) {
+                Some(g) => (g.item, g.count),
+                None => continue,
+            };
+            if self.plugins.listens("EntityItemPickupEvent") {
+                let out = self.fire("EntityItemPickupEvent", vec![("entity", self.name_json(&addr)), ("item", self.item_json(item, count))]);
+                if cancelled(&out) {
+                    continue;
+                }
+            }
+            let left = match self.clients.get_mut(&addr) {
+                Some(c) => {
+                    c.inv_touched = true;
+                    c.inv.add(item, count as u32)
+                }
+                None => continue,
+            };
+            if left as u8 == count {
+                continue; // inventaire plein : l'objet reste au sol
+            }
+            self.send_inventory(&addr);
+            self.show_held(&addr);
+            if left == 0 {
+                self.remove_ground_item(id, Some(by));
+            } else if let Some(g) = self.ground.get_mut(&id) {
+                // Ramassé en partie : le reste reste au sol (réaffiché avec sa nouvelle quantité)
+                g.count = left as u8;
+                let viewers: Vec<SocketAddr> = self.clients.iter_mut().filter_map(|(a, c)| if c.items_seen.remove(&id) { Some(*a) } else { None }).collect();
+                for v in viewers {
+                    self.send(&v, bedrock::ID_REMOVE_ACTOR, &bedrock::remove_actor(id));
+                }
+                self.show_ground_items();
+            }
+        }
+    }
+
+    /// Position où tombe un objet jeté par un joueur : un bloc et demi devant lui.
+    fn in_front_of(c: &Client) -> (f32, f32, f32) {
+        let yaw = c.yaw.to_radians();
+        (c.pos.0 - yaw.sin() * 1.5, c.pos.1 - 0.3, c.pos.2 + yaw.cos() * 1.5)
+    }
+
     /// Un joueur casse (ou tente de poser) un bloc.
     fn on_block_use(&mut self, addr: &SocketAddr, block_use: bedrock::BlockUse) {
         let (x, y, z) = block_use.pos;
         let near = match self.clients.get(addr) {
-            Some(c) if c.stage == Stage::InGame => {
+            Some(c) if c.stage == Stage::InGame && c.dead.is_none() => {
                 let (dx, dy, dz) = (c.pos.0 - x as f32 - 0.5, c.pos.1 - y as f32 - 0.5, c.pos.2 - z as f32 - 0.5);
                 dx * dx + dy * dy + dz * dz <= 8.0 * 8.0
             }
@@ -2211,7 +2846,7 @@ impl Server {
             }),
             _ => None,
         }
-        .unwrap_or_else(|| Some(self.drop_for(old).map(|id| vec![(id, 1)]).unwrap_or_default()));
+        .unwrap_or_else(|| Some(if survival { self.drop_for(old).map(|id| vec![(id, 1)]).unwrap_or_default() } else { Vec::new() }));
         let loot = match loot {
             Some(l) => l,
             None => {
@@ -2220,6 +2855,28 @@ impl Server {
                 return;
             }
         };
+        // Écouteurs : annulation, butin modifié
+        let mut loot = loot;
+        if self.plugins.listens("BlockBreakEvent") {
+            let drops = Json::Arr(loot.iter().map(|(id, n)| self.item_json(*id, *n)).collect());
+            let fields = vec![("player", self.name_json(addr)), ("block", self.block_json(old, (x, y, z))), ("drops", drops)];
+            let out = self.fire("BlockBreakEvent", fields);
+            if cancelled(&out) {
+                self.send(addr, bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, old));
+                return;
+            }
+            if let Some(list) = out.as_ref().and_then(|v| v.get("drops")).and_then(|d| d.as_arr()) {
+                loot = list
+                    .iter()
+                    .take(64)
+                    .filter_map(|d| {
+                        let id = self.item_id(d.get("name")?.as_str()?)?;
+                        let n = d.get("count").and_then(|c| c.as_f64()).unwrap_or(1.0).clamp(1.0, 64.0) as u8;
+                        Some((id, n))
+                    })
+                    .collect();
+            }
+        }
         if !self.world.set(x, y, z, air) {
             return;
         }
@@ -2246,13 +2903,16 @@ impl Server {
         // Un coffre ou un four cassé rend ce qu'il contenait
         let mut loot = loot;
         if let Some(tile) = self.world.tiles.remove((x, y, z)) {
-            if let (true, Some(inv)) = (survival, tile.inventory()) {
+            if let Some(inv) = tile.inventory() {
                 loot.extend(inv.contents().into_iter().map(|(_, item)| (item.id, item.count)));
             }
         }
-        // Le butin va dans l'inventaire du joueur
+        // Le butin tombe au sol, au centre du bloc (ou va dans l'inventaire si le jeu refuse
+        // les objets au sol)
         for (id, count) in loot {
-            self.add_item(addr, id, count as u16);
+            if !self.drop_item((x as f32 + 0.5, y as f32, z as f32 + 0.5), id, count, 10) {
+                self.add_item(addr, id, count as u16);
+            }
         }
     }
 
@@ -2297,19 +2957,35 @@ impl Server {
         left == 0
     }
 
-    /// Envoie au joueur le contenu de son sac et de sa barre d'objets.
+    /// Envoie au joueur le contenu de son sac et de sa barre d'objets, de son armure et de sa
+    /// seconde main.
     fn send_inventory(&mut self, addr: &SocketAddr) {
-        let (slots, protocol) = match self.clients.get(addr) {
+        self.send_inventory_with(addr, false);
+    }
+
+    /// Idem ; `worn` : l'armure et la seconde main sont envoyées même vides (après les avoir vidées).
+    fn send_inventory_with(&mut self, addr: &SocketAddr, worn: bool) {
+        let (windows, protocol) = match self.clients.get(addr) {
             Some(c) if c.protocol >= 2225 => {
-                let slots: Vec<(i16, u8, i32)> = c.inv.main.slots.iter().map(|s| (s.id, s.count, s.net_id)).collect();
-                (slots, c.protocol)
+                let of = |slots: &[inventory::ItemStack]| -> Vec<(i16, u8, i32)> { slots.iter().map(|s| (s.id, s.count, s.net_id)).collect() };
+                let mut windows = vec![(0u32, of(&c.inv.main.slots))];
+                // Armure et seconde main : envoyées seulement si elles portent quelque chose
+                if worn || c.inv.armor.slots.iter().any(|s| !s.is_empty()) {
+                    windows.push((120, of(&c.inv.armor.slots)));
+                }
+                if worn || c.inv.offhand.slots.iter().any(|s| !s.is_empty()) {
+                    windows.push((119, of(&c.inv.offhand.slots)));
+                }
+                (windows, c.protocol)
             }
             _ => return,
         };
-        let slots: Vec<(i16, u8, i32, u32)> =
-            slots.iter().map(|(id, count, net)| (*id, *count, *net, self.block_for(*id).unwrap_or(0))).collect();
-        let pk = bedrock::container_items(0, &slots, self.item_net_ids, crate::versions::features(protocol));
-        self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
+        for (window, slots) in windows {
+            let slots: Vec<(i16, u8, i32, u32)> =
+                slots.iter().map(|(id, count, net)| (*id, *count, *net, self.block_for(*id).unwrap_or(0))).collect();
+            let pk = bedrock::container_items(window, &slots, self.item_net_ids, crate::versions::features(protocol));
+            self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
+        }
     }
 
     /// Le joueur ouvre son inventaire : le serveur confirme l'ouverture de l'écran.
@@ -2395,10 +3071,26 @@ impl Server {
             if !self.load_block_view(addr) {
                 return;
             }
+            let mut dropped: Vec<(i16, u8)> = Vec::new();
             let outcome = match self.clients.get_mut(addr) {
-                Some(c) if c.stage == Stage::InGame => Self::run_stack_request(&mut c.inv, &request, created),
+                Some(c) if c.stage == Stage::InGame => Self::run_stack_request(&mut c.inv, &request, created, &mut dropped),
                 _ => return,
             };
+            if !dropped.is_empty() {
+                let at = self.clients.get(addr).map(Self::in_front_of);
+                if let Some(at) = at {
+                    for (id, count) in dropped {
+                        // Écouteurs : un objet dont le lâcher est annulé revient dans l'inventaire
+                        let out = self.fire("PlayerDropItemEvent", vec![("player", self.name_json(addr)), ("item", self.item_json(id, count))]);
+                        if cancelled(&out) {
+                            self.add_item(addr, id, count as u16);
+                            continue;
+                        }
+                        // Jeu qui refuse les objets au sol : l'objet est perdu, comme avant
+                        self.drop_item(at, id, count, 40);
+                    }
+                }
+            }
             if outcome.is_some() {
                 self.store_block_view(addr);
                 // L'objet en main a pu changer (pile déplacée dans la barre)
@@ -2421,8 +3113,9 @@ impl Server {
     }
 
     /// Applique une demande sur une copie de l'inventaire ; rien n'est gardé si une action échoue.
-    fn run_stack_request(inv: &mut PlayerWindows, request: &bedrock::StackRequest, created: Option<i16>) -> Option<Vec<(u8, u8, u8, i32)>> {
+    fn run_stack_request(inv: &mut PlayerWindows, request: &bedrock::StackRequest, created: Option<i16>, dropped: &mut Vec<(i16, u8)>) -> Option<Vec<(u8, u8, u8, i32)>> {
         let mut work = inv.clone();
+        let mut thrown: Vec<(i16, u8)> = Vec::new();
         let mut touched: Vec<(Target, usize)> = Vec::new();
         let at = |r: &bedrock::SlotRef| inventory::resolve(r.container, r.slot);
         for action in &request.actions {
@@ -2431,10 +3124,16 @@ impl Server {
                     inventory::Action::Move { count: *count, from: at(from)?, to: at(to)? }
                 }
                 bedrock::StackAction::Swap { a, b } => inventory::Action::Swap { a: at(a)?, b: at(b)? },
-                // Les objets jetés disparaissent pour l'instant (pas encore d'objets au sol)
-                bedrock::StackAction::Drop { count, from } | bedrock::StackAction::Destroy { count, from } => {
-                    inventory::Action::Remove { count: *count, from: at(from)? }
+                // Objets jetés : ils tomberont au sol devant le joueur
+                bedrock::StackAction::Drop { count, from } => {
+                    let slot = at(from)?;
+                    let stack = work.get(slot)?;
+                    if !stack.is_empty() {
+                        thrown.push((stack.id, (*count).min(stack.count)));
+                    }
+                    inventory::Action::Remove { count: *count, from: slot }
                 }
+                bedrock::StackAction::Destroy { count, from } => inventory::Action::Remove { count: *count, from: at(from)? },
                 bedrock::StackAction::CraftCreative { .. } => {
                     work.create(created?, inventory::MAX_STACK);
                     continue;
@@ -2472,6 +3171,7 @@ impl Server {
             })
             .collect();
         *inv = work;
+        dropped.extend(thrown);
         Some(changed)
     }
 
@@ -2683,7 +3383,7 @@ impl Server {
     fn on_place(&mut self, addr: &SocketAddr, target: (i32, i32, i32), face: u8, click: (f32, f32, f32)) {
         let (x, y, z) = target;
         let (near, item, looks, yaw) = match self.clients.get(addr) {
-            Some(c) if c.stage == Stage::InGame => {
+            Some(c) if c.stage == Stage::InGame && c.dead.is_none() => {
                 let (dx, dy, dz) = (c.pos.0 - x as f32 - 0.5, c.pos.1 - y as f32 - 0.5, c.pos.2 - z as f32 - 0.5);
                 // Sens du regard : l'angle annoncé par le jeu, comme en vanilla. C'est ce qui permet
                 // de poser un escalier de biais par rapport au bloc visé, pour former un coin.
@@ -2735,7 +3435,12 @@ impl Server {
             return;
         }
         let room_above = upper.is_none() || (y < 319 && self.world.get(x, y + 1, z) == air);
-        if !near || !room_above || self.world.get(x, y, z) != air || !self.world.set(x, y, z, block) {
+        let refused = near && room_above && self.plugins.listens("BlockPlaceEvent") && {
+            let fields = vec![("player", self.name_json(addr)), ("block", self.block_json(block, (x, y, z)))];
+            let out = self.fire("BlockPlaceEvent", fields);
+            cancelled(&out)
+        };
+        if refused || !near || !room_above || self.world.get(x, y, z) != air || !self.world.set(x, y, z, block) {
             // Pose refusée : le joueur retrouve son inventaire exact et le bloc d'origine
             self.send_inventory(addr);
             let current = self.world.get(x, y, z);
@@ -2990,6 +3695,12 @@ impl Server {
             }
             break;
         }
+        if refusal.is_none() {
+            let out = self.fire("PlayerLoginEvent", vec![("player", Json::Str(login.name.clone())), ("kickMessage", Json::Str("Connexion refusée.".into()))]);
+            if cancelled(&out) {
+                refusal = Some(text_of(&out, "kickMessage", 256).unwrap_or_else(|| "Connexion refusée.".into()));
+            }
+        }
         let names = self.players();
         if refusal.is_none() && names.len() >= self.cfg.max_players as usize {
             refusal = Some("Le serveur est plein.".to_string());
@@ -3175,6 +3886,17 @@ impl Server {
                     warn!("Liste d'objets refusée : retour à la liste vide pour les prochaines connexions.");
                 } else if packet >= 0 && bedrock_extra(packet as u32) && self.refused_extras.insert(packet as u32) {
                     warn!("Le paquet {} ne sera plus envoyé aux prochaines connexions. Reconnectez-vous.", packet);
+                } else if (packet as u32 == bedrock::ID_ADD_ITEM_ACTOR || packet as u32 == bedrock::ID_TAKE_ITEM_ACTOR) && !self.drops_refused {
+                    self.drops_refused = true;
+                    self.ground.clear();
+                    for c in self.clients.values_mut() {
+                        c.items_seen.clear();
+                    }
+                    warn!("Les objets au sol sont refusés par le jeu : le butin ira de nouveau directement dans l'inventaire.");
+                } else if [bedrock::ID_ACTOR_EVENT, bedrock::ID_SET_ACTOR_MOTION, bedrock::ID_RESPAWN, bedrock::ID_DEATH_INFO].contains(&(packet as u32))
+                    && self.refused_extras.insert(packet as u32)
+                {
+                    warn!("Le paquet {} (vie et mort) est refusé par le jeu : il n'est plus envoyé.", packet);
                 }
                 if packet == 122 && self.cfg.debug && !self.experiment_locked {
                     self.experiment = 0;
@@ -3507,6 +4229,23 @@ impl Server {
                 }
                 (Stage::InGame, bedrock::ID_CONTAINER_CLOSE) => self.on_close_container(&addr, &body),
                 (Stage::InGame, bedrock::ID_ITEM_STACK_REQUEST) => self.on_stack_request(&addr, &body),
+                (Stage::InGame, bedrock::ID_INVENTORY_TRANSACTION) if bedrock::read_attack(&body).is_some() => {
+                    // Coup porté à un autre joueur
+                    if let Some((target, 1)) = bedrock::read_attack(&body) {
+                        self.on_attack(&addr, target);
+                    }
+                }
+                (Stage::InGame, bedrock::ID_PLAYER_ACTION) => {
+                    if let Some((_, bedrock::ACTION_RESPAWN)) = bedrock::read_player_action(&body) {
+                        self.respawn(&addr);
+                    }
+                }
+                (Stage::InGame, bedrock::ID_RESPAWN) => {
+                    // Le joueur a cliqué sur « Réapparaître »
+                    if bedrock::read_respawn_state(&body) == Some(bedrock::RESPAWN_CLIENT_READY) {
+                        self.respawn(&addr);
+                    }
+                }
                 (Stage::InGame, bedrock::ID_INVENTORY_TRANSACTION) => {
                     // Une transaction par bloc posé, y compris quand le clic droit reste appuyé
                     let player = self.clients.get(&addr).map(|c| c.pos).unwrap_or((0.0, 0.0, 0.0));
@@ -3524,7 +4263,7 @@ impl Server {
                     if let Some(u) = block_use {
                         if u.action == 0 {
                             let target = bedrock::place_target(u.pos, u.face);
-                            if !self.block_event("block_click", &addr, u.pos) {
+                            if !self.block_event("block_click", &addr, u.pos) || self.interact_cancelled(&addr, u.pos) {
                                 // Refusé par un plugin : le joueur retrouve son inventaire et le bloc d'origine
                                 self.send_inventory(&addr);
                                 if let Some((x, y, z)) = target {
@@ -3590,7 +4329,14 @@ impl Server {
                     }
                     let shown = self.clients.get(&addr).and_then(|c| c.data.as_ref()).map(|d| d.display_name.clone()).unwrap_or_else(|| name.clone());
                     info!("{} a rejoint la partie", name);
-                    self.broadcast(bedrock::ID_TEXT, &bedrock::text_raw(&format!("§e{} a rejoint la partie", shown)), None);
+                    let mut message = format!("§e{} a rejoint la partie", shown);
+                    let out = self.fire("PlayerJoinEvent", vec![("player", Json::Str(name.clone())), ("joinMessage", Json::Str(message.clone()))]);
+                    if let Some(m) = text_of(&out, "joinMessage", 512) {
+                        message = m;
+                    }
+                    if !message.is_empty() {
+                        self.broadcast(bedrock::ID_TEXT, &bedrock::text_raw(&message), None);
+                    }
                     self.send_commands(&addr);
                     // Le jeu s'inscrit lui-même dans sa liste des joueurs (« Vous ») : lui envoyer sa
                     // propre entrée l'y ferait figurer deux fois
@@ -3635,6 +4381,9 @@ impl Server {
                         inv: PlayerWindows::new(),
                         inv_touched: false,
                         creative: self.cfg.gamemode.eq_ignore_ascii_case("creative"),
+                        dead: None,
+                        hurt_at: 0,
+                        fall_peak: None,
                         last_toggle: 0,
                         last_interact: 0,
                         sneaking: false,
@@ -3657,6 +4406,7 @@ impl Server {
                         corrections: 0,
                         visible: HashSet::new(),
                         listed: HashMap::new(),
+                        items_seen: HashSet::new(),
                         data: None,
                         first_visit: false,
                         reported_error: false,
@@ -3727,7 +4477,18 @@ impl Server {
                         self.store_player(&c);
                         let shown = c.data.as_ref().map(|d| d.display_name.clone()).unwrap_or_else(|| n.clone());
                         info!("{} a quitté la partie", n);
-                        self.broadcast(bedrock::ID_TEXT, &bedrock::text_raw(&format!("§e{} a quitté la partie", shown)), None);
+                        let mut message = format!("§e{} a quitté la partie", shown);
+                        let reason = fault.map(|f| f.to_string()).unwrap_or_else(|| "Déconnexion".into());
+                        let out = self.fire(
+                            "PlayerQuitEvent",
+                            vec![("player", Json::Str(n.clone())), ("quitMessage", Json::Str(message.clone())), ("quitReason", Json::Str(reason))],
+                        );
+                        if let Some(m) = text_of(&out, "quitMessage", 512) {
+                            message = m;
+                        }
+                        if !message.is_empty() {
+                            self.broadcast(bedrock::ID_TEXT, &bedrock::text_raw(&message), None);
+                        }
                     }
                     let name = c.name.map(LVal::Str).unwrap_or(LVal::Nil);
                     self.update_pong();
@@ -3738,6 +4499,12 @@ impl Server {
     }
 
     pub fn command(&mut self, line: &str) {
+        let out = self.fire("ServerCommandEvent", vec![("command", Json::Str(line.trim().trim_start_matches('/').to_string()))]);
+        if cancelled(&out) {
+            return;
+        }
+        let changed = text_of(&out, "command", 1024);
+        let line = changed.as_deref().unwrap_or(line);
         let line = line.trim().trim_start_matches('/');
         // « /op Enzo » est accepté comme « op Enzo » : l'habitude du jeu
         let mut parts = line.trim().trim_start_matches('/').split_whitespace();
@@ -4373,6 +5140,18 @@ impl Server {
                     let mut ctx = ItemCatalog { data: d, next: &mut self.tile_net_id };
                     self.world.tiles.tick(&mut ctx);
                 }
+                if self.tick % 2 == 0 {
+                    let _t = timings::scope("Tick — objets au sol (ramassage)");
+                    self.update_ground_items();
+                }
+                if self.tick % 10 == 0 && !self.ground.is_empty() {
+                    let _t = timings::scope("Tick — objets au sol (affichage)");
+                    self.show_ground_items();
+                }
+                if self.tick % 80 == 0 {
+                    let _t = timings::scope("Tick — vie regagnée");
+                    self.regenerate();
+                }
                 if self.tick % 4 == 0 {
                     let _t = timings::scope("Tick — écrans ouverts (coffres, fours)");
                     self.watch_containers();
@@ -4441,5 +5220,20 @@ impl Server {
             n.shutdown();
         }
         info!("Serveur arrêté");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn falls_hurt_like_in_the_game() {
+        // Un demi-cœur par bloc au-delà de 3 blocs
+        assert_eq!(fall_damage(2.0), 0.0);
+        assert_eq!(fall_damage(3.0), 0.0);
+        assert_eq!(fall_damage(3.4), 1.0);
+        assert_eq!(fall_damage(10.0), 7.0);
+        assert_eq!(fall_damage(23.0), 20.0);
     }
 }

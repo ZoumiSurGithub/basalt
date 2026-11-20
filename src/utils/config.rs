@@ -25,6 +25,8 @@ pub struct Config {
     pub xbox_auth: bool,
     /// Liste blanche : seuls les joueurs de `white-list.txt` (et les opérateurs) peuvent entrer
     pub white_list: bool,
+    /// Inventaire gardé à la mort (règle « keepInventory » du jeu). Non : il tombe au sol.
+    pub keep_inventory: bool,
     /// Dossier du serveur : celui de `server.properties`, où vivent `ops.txt` et `white-list.txt`
     pub root: std::path::PathBuf,
     /// Fichier de configuration, quand elle en vient (pour y enregistrer un changement)
@@ -74,6 +76,7 @@ impl Default for Config {
             max_per_ip: 5,
             xbox_auth: true,
             white_list: false,
+            keep_inventory: false,
             root: std::path::PathBuf::from("."),
             file: None,
             http_signaling: true,
@@ -126,6 +129,9 @@ min-protocol=2168
 max-protocol=2259
 # Survival ou Creative
 gamemode=Survival
+# true : un joueur qui meurt garde son inventaire. false (comme dans le jeu) : son
+# inventaire et son armure tombent au sol là où il est mort.
+keep-inventory=false
 world-name=Monde plat
 # Rayon (en chunks) du terrain envoyé autour du point d'apparition
 view-distance=6
@@ -180,6 +186,15 @@ impl Config {
             }
         };
         let mut c = Config::parse(&text);
+        // Fichier d'une version précédente : la nouvelle option y est ajoutée, avec son explication
+        if !text.is_empty() && !text.lines().any(|l| l.trim_start().starts_with("keep-inventory")) {
+            let mut more = text.clone();
+            if !more.ends_with('\n') {
+                more.push('\n');
+            }
+            more.push_str("# true : un joueur qui meurt garde son inventaire. false (comme dans le jeu) : son\n# inventaire et son armure tombent au sol là où il est mort.\nkeep-inventory=false\n");
+            let _ = std::fs::write(path, more);
+        }
         c.root = path.parent().filter(|p| !p.as_os_str().is_empty()).map(|p| p.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."));
         c.file = Some(path.to_path_buf());
         c
@@ -236,6 +251,7 @@ impl Config {
         c.http_signaling = map.get("nethernet-signaling").map(|v| v != "false").unwrap_or(true);
         c.xbox_auth = map.get("xbox-auth").map(|v| v != "false").unwrap_or(true);
         c.white_list = map.get("white-list").map(|v| v == "true" || v == "on").unwrap_or(false);
+        c.keep_inventory = map.get("keep-inventory").map(|v| v == "true" || v == "on").unwrap_or(false);
         c.auth_keys_file = text_of("auth-keys-file", "");
         c.debug = map.get("debug-packets").map(|v| v == "true").unwrap_or(false);
         c.probes = map.get("debug-probes").map(|v| v == "true").unwrap_or(false);
@@ -282,5 +298,18 @@ impl Config {
             c.timeout_secs = 10;
         }
         c
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keep_inventory_is_off_unless_asked() {
+        assert!(!Config::parse("").keep_inventory);
+        assert!(!Config::parse("keep-inventory=false").keep_inventory);
+        assert!(Config::parse("keep-inventory=true").keep_inventory);
+        assert!(TEMPLATE.contains("keep-inventory=false"));
     }
 }

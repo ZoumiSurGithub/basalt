@@ -14,6 +14,8 @@ mod state;
 mod chat;
 mod blocks;
 mod items;
+mod combat;
+mod drops;
 
 pub use ids::*;
 pub use codec::*;
@@ -26,6 +28,8 @@ pub use state::*;
 pub use chat::*;
 pub use blocks::*;
 pub use items::*;
+pub use combat::*;
+pub use drops::*;
 
 #[cfg(test)]
 mod tests {

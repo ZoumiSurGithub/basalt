@@ -1236,3 +1236,132 @@ fn easyedit_commands_typed_in_game_change_the_world() {
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn players_get_hurt_die_and_respawn() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-death-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let mut alex = Client::join(addr, "Alex");
+    steve.walk_to(0.5, 0.5);
+    alex.walk_to(1.5, 0.5);
+    // Alex voit Steve apparaître : son identifiant suit l'UUID et le pseudo
+    let seen = alex.wait_for(12);
+    let steve_id = seen[16 + 1 + 5];
+
+    // Steve passe en survie (en créatif, on ne prend pas de coups)
+    let mut body = vec![18u8];
+    body.extend_from_slice(b"/gamemode survival");
+    body.extend_from_slice(&[0, 0, 0]);
+    steve.game(77, &body, Some(0xff));
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Alex frappe Steve : Steve rougit (événement 2) et perd de la vie
+    let mut attack = vec![0x00, 0x03, 0x00, steve_id, 0x01];
+    attack.extend_from_slice(&[0x00, 0, 0, 0, 0, 0, 0, 0, 0]);
+    alex.game(30, &attack, Some(0xff));
+    loop {
+        let event = steve.wait_for(27);
+        if event[1] == 2 {
+            break;
+        }
+    }
+
+    // Steve reçoit des pierres : elles tomberont au sol à sa mort
+    let give = b"/give Steve stone 5";
+    let mut body = vec![give.len() as u8];
+    body.extend_from_slice(give);
+    body.extend_from_slice(&[0, 0, 0]);
+    steve.game(77, &body, Some(0xff));
+    std::thread::sleep(Duration::from_millis(300));
+
+    // /kill : écran de mort (Respawn, état « recherche »), puis réapparition sur demande
+    let mut body = vec![5u8];
+    body.extend_from_slice(b"/kill");
+    body.extend_from_slice(&[0, 0, 0]);
+    steve.game(77, &body, Some(0xff));
+    // Ses pierres apparaissent au sol
+    let dropped = steve.wait_for(15);
+    assert!(dropped.len() > 30, "objet au sol");
+    let searching = steve.wait_for(45);
+    assert_eq!(searching[12], 0, "état « recherche du point de réapparition »");
+    let mut ready = searching.clone();
+    ready[12] = 2; // le joueur clique sur « Réapparaître »
+    steve.game(45, &ready, Some(0xff));
+    let back = steve.wait_for(45);
+    assert_eq!(back[12], 1, "état « prêt à réapparaître »");
+    // Sa vie est remise au maximum
+    let attributes = steve.wait_for(29);
+    let health_max = 20.0f32.to_le_bytes();
+    assert!(attributes.windows(4).filter(|w| *w == health_max).count() >= 2, "vie pleine après la réapparition");
+    // Réapparu à l'endroit de sa mort (le point de départ), il ramasse ses pierres
+    let taken = steve.wait_for(17);
+    assert_eq!(taken[0], dropped[1], "c'est bien l'objet tombé qui est ramassé");
+
+    drop(steve);
+    drop(alex);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn plugin_listeners_change_and_cancel_what_happens() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-listeners-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("ecouteur.lua"),
+        r#"
+local Ecouteur = {}
+function Ecouteur:onPlayerJoin(event)
+  event:setJoinMessage("Salut " .. event:getPlayer():getName() .. " !")
+end
+function Ecouteur:onPlayerChat(event)
+  if event:getMessage():find("interdit") then event:cancel() return end
+  event:setMessage(event:getMessage():upper())
+end
+server.registerEvents(Ecouteur)
+"#,
+    )
+    .unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let expect_text = |c: &mut Client, needle: &str| {
+        for _ in 0..200 {
+            let body = c.wait_for(9);
+            if body.windows(needle.len()).any(|w| w == needle.as_bytes()) {
+                return;
+            }
+        }
+        panic!("message « {} » jamais reçu", needle);
+    };
+    expect_text(&mut steve, "Salut Steve !");
+    let chat = |c: &mut Client, text: &str| {
+        let mut body = vec![0u8, 1, 1];
+        body.push(5);
+        body.extend_from_slice(b"Steve");
+        body.push(text.len() as u8);
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(9, &body, Some(0xff));
+    };
+    // Le message annulé n'arrive jamais ; le suivant arrive en majuscules
+    chat(&mut steve, "mot interdit");
+    chat(&mut steve, "bonjour");
+    for _ in 0..200 {
+        let body = steve.wait_for(9);
+        assert!(!body.windows(8).any(|w| w == b"interdit"), "le message annulé a été diffusé");
+        if body.windows(7).any(|w| w == b"BONJOUR") {
+            break;
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

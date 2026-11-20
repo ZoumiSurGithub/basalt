@@ -41,6 +41,8 @@ pub struct Catalog {
 enum Job {
     Load(Info, Vec<(&'static str, LVal)>),
     Event(String, Vec<LVal>, Info, u64),
+    /// Événement à la PocketMine : nom, état JSON
+    Fire(String, String, Info, u64),
     Timers(Info, u64),
     Command(String, Vec<String>, Option<String>, Info, u64),
     Unload,
@@ -52,6 +54,8 @@ struct Done {
     results: Vec<LVal>,
     actions: Vec<Action>,
     catalog: Option<Catalog>,
+    /// Événements écoutés après ce travail
+    listening: Vec<String>,
 }
 
 pub struct PluginHost {
@@ -68,6 +72,8 @@ pub struct PluginHost {
     actions: Vec<Action>,
     info: Info,
     tick: u64,
+    /// Gestionnaires enregistrés (« nom » ou « nom#PRIORITÉ »)
+    listening: Vec<String>,
 }
 
 fn catalog_of(m: &PluginManager) -> Catalog {
@@ -89,7 +95,7 @@ fn catalog_of(m: &PluginManager) -> Catalog {
 fn worker(dir: PathBuf, sandbox: bool, trusted: String, memory_mb: usize, jobs: Receiver<(u64, Job)>, done: mpsc::Sender<Done>) {
     let mut manager = PluginManager::new(&dir);
     manager.set_sandbox(sandbox, &trusted, memory_mb);
-    let _ = done.send(Done { id: 0, results: Vec::new(), actions: Vec::new(), catalog: Some(catalog_of(&manager)) });
+    let _ = done.send(Done { id: 0, results: Vec::new(), actions: Vec::new(), catalog: Some(catalog_of(&manager)), listening: Vec::new() });
     while let Ok((id, job)) = jobs.recv() {
         let mut results = Vec::new();
         let mut catalog = None;
@@ -101,6 +107,12 @@ fn worker(dir: PathBuf, sandbox: bool, trusted: String, memory_mb: usize, jobs: 
             Job::Event(event, args, info, tick) => {
                 manager.set_info(&info, tick);
                 results = manager.dispatch(&event, &args);
+            }
+            Job::Fire(event, state, info, tick) => {
+                manager.set_info(&info, tick);
+                if let Some(s) = manager.fire(&event, &state) {
+                    results = vec![LVal::Str(s)];
+                }
             }
             Job::Timers(info, tick) => {
                 manager.set_info(&info, tick);
@@ -119,7 +131,8 @@ fn worker(dir: PathBuf, sandbox: bool, trusted: String, memory_mb: usize, jobs: 
             Job::Quit => break,
         }
         let actions = manager.take_actions();
-        if done.send(Done { id, results, actions, catalog }).is_err() {
+        let listening = manager.listening();
+        if done.send(Done { id, results, actions, catalog, listening }).is_err() {
             break;
         }
     }
@@ -146,6 +159,7 @@ impl PluginHost {
             actions: Vec::new(),
             info: Info::default(),
             tick: 0,
+            listening: Vec::new(),
         };
         host.wait_for(0, Duration::from_secs(5));
         host
@@ -156,6 +170,9 @@ impl PluginHost {
         self.actions.extend(d.actions);
         if let Some(c) = d.catalog {
             self.catalog = c;
+        }
+        if d.id != 0 {
+            self.listening = d.listening;
         }
         if self.pending == 0 {
             if let Some(since) = self.late_since.take() {
@@ -285,6 +302,24 @@ impl PluginHost {
     }
 
     /// Minuteries : rien n'est envoyé tant que le fil est occupé (elles se rattrapent ensuite).
+    /// Un plugin écoute-t-il cet événement (à la PocketMine) ?
+    pub fn listens(&self, event: &str) -> bool {
+        self.listening.iter().any(|k| k.len() > event.len() && k.starts_with(event) && k.as_bytes()[event.len()] == b'#')
+    }
+
+    /// Événement à la PocketMine : l'état passe d'écouteur en écouteur, par priorité. Renvoie
+    /// l'état final, ou None si personne n'écoute (ou si les plugins ne répondent pas à temps).
+    pub fn fire(&mut self, event: &str, state: &crate::json::Value) -> Option<crate::json::Value> {
+        if !self.listens(event) {
+            return None;
+        }
+        let results = self.call(Job::Fire(event.to_string(), state.to_json(), self.info.clone(), self.tick), WAIT_ANSWER)?;
+        match results.first() {
+            Some(LVal::Str(s)) => crate::json::parse(s).ok(),
+            _ => None,
+        }
+    }
+
     pub fn run_timers(&mut self, tick: u64) {
         self.drain();
         self.tick = tick;

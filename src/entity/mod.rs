@@ -60,7 +60,7 @@ mod tests {
         h.heal(1000.0);
         assert_eq!(h.health, 40.0);
         h.damage(1000.0);
-        assert!(h.health >= 1.0, "la mort n'est pas encore gérée : la vie reste à 1");
+        assert!(h.is_dead() && h.health == 0.0);
         h.add_xp_levels(5);
         h.set_food(99.0);
         assert_eq!((h.xp_level, h.food), (5, 20.0));
