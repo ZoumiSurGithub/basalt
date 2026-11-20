@@ -2887,11 +2887,13 @@ impl Server {
             Some(g) => g.count = count,
             None => return,
         }
-        let viewers: Vec<SocketAddr> = self.clients.iter_mut().filter_map(|(a, c)| if c.items_seen.remove(&id) { Some(*a) } else { None }).collect();
+        // Comme le jeu officiel : l'objet reste en place, seule la taille de sa pile change
+        // (un objet retiré puis recréé aussitôt clignoterait)
+        let packet = bedrock::actor_event(id, bedrock::EVENT_ITEM_STACK_SIZE, count as i32);
+        let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.items_seen.contains(&id)).map(|(a, _)| *a).collect();
         for v in viewers {
-            self.send(&v, bedrock::ID_REMOVE_ACTOR, &bedrock::remove_actor(bedrock::item_unique_id(id)));
+            self.send(&v, bedrock::ID_ACTOR_EVENT, &packet);
         }
-        self.show_ground_items();
     }
 
     /// Fusionne les tas identiques et proches, posés au sol. Le plus ancien absorbe les autres.

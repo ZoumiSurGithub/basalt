@@ -1428,12 +1428,15 @@ fn identical_items_on_the_ground_merge() {
         assert!(shown.len() > 30, "objet jeté visible");
         std::thread::sleep(Duration::from_millis(100));
     }
-    // Une fois au sol, l'un des deux disparaît et l'autre réapparaît avec 2 objets
+    // Une fois au sol, l'un des deux disparaît et la pile de l'autre passe à 2 (événement 69)
     steve.wait_for(14);
-    let merged = steve.wait_for(15);
-    let at = merged.iter().position(|b| b & 0x80 == 0).unwrap() + 1; // fin de l'identifiant unique
-    let at = at + merged[at..].iter().position(|b| b & 0x80 == 0).unwrap() + 1; // identifiant d'exécution
-    assert_eq!(&merged[at..at + 4], &item(2)[..4], "un seul tas de 2 pierres");
+    loop {
+        let event = steve.wait_for(27);
+        if event.len() >= 3 && event[1] == 69 {
+            assert_eq!(event[2], 4, "nouvelle taille : 2 (entier zigzag)");
+            break;
+        }
+    }
 
     drop(steve);
     stop.store(true, Ordering::Relaxed);

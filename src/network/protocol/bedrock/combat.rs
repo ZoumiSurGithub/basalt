@@ -16,6 +16,8 @@ pub const ID_DEATH_INFO: u32 = 189;
 pub const EVENT_HURT: u8 = 2;
 pub const EVENT_DEATH: u8 = 3;
 pub const EVENT_RESPAWN: u8 = 18;
+/// Objet au sol dont la pile change de taille (fusion) ; donnée : nouvelle quantité.
+pub const EVENT_ITEM_STACK_SIZE: u8 = 69;
 
 /// États de la réapparition (Respawn)
 pub const RESPAWN_SEARCHING: u8 = 0;
