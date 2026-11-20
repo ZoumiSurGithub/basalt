@@ -913,6 +913,20 @@ impl RakServer {
                 if self.debug {
                     info!("[réseau] {} : demande d'ouverture 2 (MTU {})", addr, mtu);
                 }
+                // Demande répétée par le client (notre réponse a tardé ou s'est perdue) pendant la
+                // poignée de main : on répond à nouveau, sans recréer la session. La recréer
+                // enverrait une déconnexion que le client prendrait pour un refus.
+                let repeat = self.sessions.get(&addr).filter(|s| s.state == State::Connecting && s.guid == guid).map(|s| s.mtu);
+                if let Some(mtu) = repeat {
+                    let mut out = vec![0x08];
+                    out.extend_from_slice(&MAGIC);
+                    out.extend_from_slice(&self.guid.to_be_bytes());
+                    put_addr(&mut out, &addr);
+                    out.extend_from_slice(&(mtu as u16).to_be_bytes());
+                    out.push(0);
+                    self.send_raw(&out, addr);
+                    return;
+                }
                 if self.sessions.contains_key(&addr) {
                     self.drop_session(&addr, events);
                 }
@@ -1001,5 +1015,38 @@ impl RakServer {
         for a in addrs {
             self.drop_session(&a, &mut sink);
         }
+    }
+}
+
+#[cfg(test)]
+mod handshake_tests {
+    use super::*;
+
+    /// Un client qui répète sa seconde demande d'ouverture (réponse en retard, machine lente)
+    /// reçoit à nouveau la confirmation, et jamais de déconnexion.
+    #[test]
+    fn repeated_open_request_is_answered_again_without_disconnecting() {
+        let mut server = RakServer::bind("127.0.0.1:0", 10, Duration::from_secs(10)).unwrap();
+        let port = server.socket.local_addr().unwrap().port();
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client.connect(("127.0.0.1", port)).unwrap();
+        client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let mut p = vec![0x07];
+        p.extend_from_slice(&MAGIC);
+        put_addr(&mut p, &server.socket.local_addr().unwrap());
+        p.extend_from_slice(&1400u16.to_be_bytes());
+        p.extend_from_slice(&42i64.to_be_bytes());
+        let mut events = Vec::new();
+        let mut buf = [0u8; 2048];
+        for _ in 0..2 {
+            client.send(&p).unwrap();
+            std::thread::sleep(Duration::from_millis(30));
+            server.poll(&mut events);
+            let n = client.recv(&mut buf).unwrap();
+            assert_eq!(buf[0], 0x08, "confirmation attendue, reçu {:02x?}", &buf[..n.min(8)]);
+        }
+        assert_eq!(server.sessions.len(), 1);
+        client.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        assert!(client.recv(&mut buf).is_err(), "aucune déconnexion ne doit suivre");
     }
 }

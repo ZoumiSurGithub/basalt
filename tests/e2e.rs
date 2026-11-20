@@ -1148,11 +1148,19 @@ fn easyedit_commands_typed_in_game_change_the_world() {
     let dir = std::env::temp_dir().join(format!("basalt-e2e-easyedit-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let plugin = dir.join("EasyEdit");
-    std::fs::create_dir_all(&plugin).unwrap();
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins").join("EasyEdit");
-    for entry in std::fs::read_dir(&source).unwrap().flatten() {
-        std::fs::copy(entry.path(), plugin.join(entry.file_name())).unwrap();
+    fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                copy_tree(&path, &to.join(entry.file_name()));
+            } else {
+                std::fs::copy(&path, to.join(entry.file_name())).unwrap();
+            }
+        }
     }
+    copy_tree(&source, &plugin);
     std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
     if !PluginManager::new(&dir).available() {
         return;

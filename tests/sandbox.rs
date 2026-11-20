@@ -352,9 +352,19 @@ server.on("login", function() return "refusé par le plugin" end)
 fn copy_bundled(plugin: &str, to: &std::path::Path) {
     let from = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins").join(plugin);
     let target = to.join(plugin);
-    std::fs::create_dir_all(&target).unwrap();
-    for entry in std::fs::read_dir(&from).unwrap().flatten() {
-        std::fs::copy(entry.path(), target.join(entry.file_name())).unwrap();
+    copy_tree(&from, &target);
+}
+
+/// Copie un dossier et ses sous-dossiers (les plugins peuvent être répartis en plusieurs fichiers).
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            copy_tree(&path, &to.join(entry.file_name()));
+        } else {
+            std::fs::copy(&path, to.join(entry.file_name())).unwrap();
+        }
     }
 }
 

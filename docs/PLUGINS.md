@@ -493,6 +493,11 @@ return { bannis = { "Griefer123" }, protocole_minimum = 2193 }
 local config = require("config")
 ```
 
+Un point dans le nom désigne un sous-dossier : `require("src.commands.util")` charge
+`src/commands/util.lua`. Chaque fichier n'est exécuté qu'une fois ; les suivants reçoivent la
+même valeur, ce qui permet de partager un état entre fichiers. Le plugin EasyEdit fourni est
+rangé ainsi (`main.lua` puis `src/`), comme les plugins PocketMine.
+
 ## Erreurs et diagnostic
 
 - Une erreur dans un plugin n'arrête pas le serveur. Elle est affichée avec le
