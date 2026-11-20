@@ -199,6 +199,11 @@ Ce qu'elles ne couvrent pas :
 
 ## Montée en charge (1000 joueurs et plus)
 
+La boucle du jeu (20 ticks par seconde) ne fait que la logique du jeu. Le reste tourne sur
+d'autres cœurs : la liaison NetherNet (chiffrement, lecture et envoi), la génération du
+terrain, l'encodage et la compression des chunks, la vérification des connexions Xbox, la
+préparation des liaisons, les plugins, l'écriture sur le disque et du journal.
+
 Le serveur est conçu pour de grandes populations, et un outil de charge permet de
 le vérifier : `cargo run --release --example stress -- 1000` simule des joueurs
 qui se connectent, entrent en jeu, puis envoient chacun 20 paquets par seconde.
@@ -433,7 +438,7 @@ est dans **[docs/PLUGINS.md](docs/PLUGINS.md)**.
 | `src/permission/` | `Permission`, règles par défaut, liste des opérateurs |
 | `src/utils/` | journal (`log.rs`), `server.properties` (`config.rs`), JSON et base64 (`json.rs`), YAML (`yaml.rs`), décompression (`inflate.rs`) |
 | `src/security/` | authentification Xbox (`auth.rs`), SHA-2 et signatures (`crypto.rs`), clé du serveur (`identity.rs`) |
-| `src/network/` | RakNet (`raknet.rs`), signalisation HTTP (`signaling.rs`), liaison WebRTC (`nethernet.rs`), fragments (`framing.rs`) |
+| `src/network/` | RakNet (`raknet.rs`), signalisation HTTP (`signaling.rs`), liaison WebRTC (`nethernet.rs`, sur son propre fil : `nethernet_thread.rs`), fragments (`framing.rs`) |
 | `src/network/protocol/versions.rs` | versions acceptées et différences entre protocoles |
 | `src/network/protocol/bedrock/` | paquets Bedrock, un fichier par thème : `codec`, `login`, `spawn`, `chunk`, `player`, `state`, `chat`, `blocks`, `items` |
 | `src/data/` | chargement des données du jeu : objets, blocs et états, recettes (`recipes.rs`), NBT, gzip |

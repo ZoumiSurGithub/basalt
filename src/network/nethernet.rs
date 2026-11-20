@@ -662,6 +662,11 @@ impl NetherNet {
         self.peers.contains_key(key)
     }
 
+    /// Sessions en cours et la clé publique prouvée par chaque joueur.
+    pub fn peer_list(&self) -> Vec<(SocketAddr, Option<String>)> {
+        self.peers.iter().map(|(k, p)| (*k, p.cpk.clone())).collect()
+    }
+
     /// Clé publique que le joueur a prouvée dans son offre, si elle a été vérifiée.
     pub fn bound_cpk(&self, key: &SocketAddr) -> Option<String> {
         self.peers.get(key).and_then(|p| p.cpk.clone())

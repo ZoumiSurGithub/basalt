@@ -42,6 +42,9 @@ impl NetherNet {
     pub fn bound_cpk(&self, _key: &SocketAddr) -> Option<String> {
         None
     }
+    pub fn peer_list(&self) -> Vec<(SocketAddr, Option<String>)> {
+        Vec::new()
+    }
     pub fn send(&mut self, _key: &SocketAddr, _message: &[u8]) {}
     pub fn close(&mut self, _key: &SocketAddr, _delay: Duration) {}
     pub fn abort(&mut self, _key: &SocketAddr, _reason: &'static str) {}

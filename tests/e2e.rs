@@ -548,17 +548,29 @@ fn full_connection_flow() {
     c.walk_to(f32::NAN, 0.5);
     c.walk_to(1.0e12, 0.5);
     c.walk_to(41.0, 3.0);
-    let (mut zones, mut chunks) = (0, 0);
-    for (id, _) in c.drain_games(Duration::from_millis(500)) {
+    // (sous forte charge, le serveur peut réémettre un datagramme que ce faux client n'a pas
+    // acquitté à temps, et ce client ne filtre pas les doublons : les zones sont comptées
+    // une fois chacune)
+    let (mut zones, mut chunk_set) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+    for (id, body) in c.drain_games(Duration::from_millis(500)) {
         match id {
-            121 => zones += 1,
-            58 => chunks += 1,
+            121 => {
+                zones.insert(body);
+            }
+            58 => {
+                // x et z : entiers variables en tête du paquet
+                let mut pos = 0;
+                let x = basalt::bedrock::read_vari32(&body, &mut pos);
+                let z = basalt::bedrock::read_vari32(&body, &mut pos);
+                chunk_set.insert((x, z));
+            }
             // Le reste (listes volumineuses qui finissent d'arriver, message d'arrivée, mise à
             // jour régulière de la vie…) ne concerne pas le terrain
             _ => {}
         }
     }
-    assert_eq!(zones, 2, "une zone publiée par chunk franchi");
+    assert_eq!(zones.len(), 2, "une zone publiée par chunk franchi : {:?}", zones);
+    let chunks = chunk_set.len();
     assert!(chunks >= at_least && chunks <= at_most, "{} chunks reçus, attendu entre {} et {}", chunks, at_least, at_most);
 
     // 5. Même pseudo une seconde fois : refusé

@@ -132,6 +132,8 @@ const LOGIN_DEADLINE: Duration = Duration::from_secs(10);
 const SPAWN_DEADLINE: Duration = Duration::from_secs(90);
 /// Chunks envoyés par joueur et par tick quand il se déplace (4 = 80 par seconde).
 const CHUNKS_PER_TICK: usize = 4;
+/// Chunks d'un joueur confiés aux fils d'encodage et pas encore envoyés, au plus.
+const MAX_CHUNKS_IN_FLIGHT: u64 = 16;
 /// Vitesses horizontales maximales tolérées, en blocs par seconde (marge comprise).
 const SPEED_SURVIVAL: f32 = 14.0;
 const SPEED_CREATIVE: f32 = 30.0;
@@ -336,6 +338,11 @@ struct Client {
     last_input: Instant,
     /// Le signal d'apparition reste à envoyer, une fois le terrain initial parti
     spawn_pending: bool,
+    /// Chunks confiés aux fils d'encodage : numéro du prochain, du prochain à envoyer, et
+    /// ceux déjà prêts (envoyés dans l'ordre, du centre vers l'extérieur)
+    chunk_next: u64,
+    chunk_sent: u64,
+    chunk_ready: std::collections::BTreeMap<u64, EncodedChunk>,
     probe: u8,
     probe_tick: u64,
     synced_tick: u64,
@@ -434,7 +441,8 @@ pub struct Server {
     /// Signalisation HTTP de NetherNet (port TCP du serveur)
     signaling: Option<Signaling>,
     /// Transport NetherNet (liaison WebRTC), si disponible
-    nether: Option<NetherNet>,
+    nether: Option<crate::network::nethernet_thread::NetherNetHandle>,
+    chunk_pool: ChunkPool,
     /// Demandes d'entrée NetherNet en attente de leur session (préparée sur un fil à part)
     join_waiting: HashMap<SocketAddr, Request>,
 }
@@ -540,13 +548,63 @@ fn fall_damage(distance: f32) -> f32 {
     (distance - 3.0).ceil().max(0.0)
 }
 
-fn build_chunk(
-    exp: u8,
+/// Chunk encodé (contenu, puis paquet compressé) par un fil d'encodage.
+struct EncodedChunk {
     x: i32,
     z: i32,
-    world: &crate::world::World,
+    /// Version du chunk au moment de l'encodage (voir `World::chunk_version`)
+    version: u64,
+    packet: Vec<u8>,
+}
+
+struct ChunkJob {
+    addr: SocketAddr,
+    /// Identifiant du joueur : une nouvelle connexion depuis la même adresse ne reçoit pas
+    /// les chunks encodés pour l'ancienne
+    owner: i64,
+    seq: u64,
+    x: i32,
+    z: i32,
+    version: u64,
+    view: crate::world::WorldView,
+    exp: u8,
     features: crate::versions::Features,
-) -> Vec<u8> {
+    compression: bool,
+}
+
+/// Fils qui encodent et compressent les chunks à envoyer (le terrain y est aussi généré au
+/// besoin), pour que la boucle du jeu n'ait plus qu'à les expédier.
+struct ChunkPool {
+    jobs: Sender<ChunkJob>,
+    done: Receiver<(SocketAddr, i64, u64, EncodedChunk)>,
+}
+
+impl ChunkPool {
+    fn new() -> ChunkPool {
+        let (jobs, inbox) = mpsc::channel::<ChunkJob>();
+        let (outbox, done) = mpsc::channel();
+        let inbox = Arc::new(Mutex::new(inbox));
+        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).saturating_sub(1).clamp(1, 4);
+        for i in 0..threads {
+            let (inbox, outbox): (Arc<Mutex<Receiver<ChunkJob>>>, Sender<(SocketAddr, i64, u64, EncodedChunk)>) = (inbox.clone(), outbox.clone());
+            let _ = std::thread::Builder::new().name(format!("chunks-{}", i)).spawn(move || loop {
+                let job = match inbox.lock().unwrap_or_else(|e| e.into_inner()).recv() {
+                    Ok(j) => j,
+                    Err(_) => return,
+                };
+                let payload = job.view.chunk_payload(job.x, job.z);
+                let pk = build_chunk(job.exp, job.x, job.z, payload, job.features);
+                let packet = bedrock::encode_packet(bedrock::ID_LEVEL_CHUNK, &pk, job.compression);
+                if outbox.send((job.addr, job.owner, job.seq, EncodedChunk { x: job.x, z: job.z, version: job.version, packet })).is_err() {
+                    return;
+                }
+            });
+        }
+        ChunkPool { jobs, done }
+    }
+}
+
+fn build_chunk(exp: u8, x: i32, z: i32, payload: (u32, Vec<u8>), features: crate::versions::Features) -> Vec<u8> {
     if features.chunk_biome_update_flag && (exp == 1 || exp == 4) {
         // Expérience de mise au point : aucun sous-chunk, seulement les biomes et l'octet des
         // blocs de bordure
@@ -557,7 +615,7 @@ fn build_chunk(
         payload.push(0);
         return bedrock::level_chunk_probe(x, z, 0, &payload, false);
     }
-    let (sections, payload) = world.chunk_payload(x, z);
+    let (sections, payload) = payload;
     if features.chunk_biome_update_flag {
         return bedrock::level_chunk_probe(x, z, sections, &payload, false);
     }
@@ -633,6 +691,7 @@ impl Server {
             last_key_error: String::new(),
             signaling: None,
             nether: None,
+            chunk_pool: ChunkPool::new(),
             join_waiting: HashMap::new(),
             perf: Perf {
                 window: Instant::now(),
@@ -1324,36 +1383,68 @@ impl Server {
 
     /// Envoie quelques chunks en attente à chaque joueur, pour étaler la charge.
     fn send_queued_chunks(&mut self) {
-        let mut out: Vec<(SocketAddr, bool, Vec<u8>)> = Vec::new();
-        let mut spawn: Vec<SocketAddr> = Vec::new();
-        for (addr, c) in self.clients.iter_mut() {
-            if c.queue.is_empty() {
-                if c.spawn_pending {
-                    c.spawn_pending = false;
-                    spawn.push(*addr);
-                }
-                continue;
-            }
-            let features = crate::versions::features(c.protocol);
-            // Les prochains chunks de la file sont générés à l'avance, en arrière-plan
-            for (x, z) in c.queue.iter().take(CHUNKS_PER_TICK * 8) {
-                self.world.prepare(*x, *z);
-            }
-            for _ in 0..CHUNKS_PER_TICK {
-                match c.queue.front().copied() {
-                    // Pas encore généré : on attend le tick suivant, dans l'ordre de la file
-                    Some((x, z)) if !self.world.is_ready(x, z) => break,
-                    Some((x, z)) => {
-                        c.queue.pop_front();
-                        c.loaded.insert((x, z));
-                        let pk = build_chunk(self.experiment, x, z, &self.world, features);
-                        out.push((*addr, c.compression, bedrock::encode_packet(bedrock::ID_LEVEL_CHUNK, &pk, c.compression)));
-                    }
-                    None => break,
-                }
+        // 1. Chunks encodés par les fils : rangés par joueur, dans l'ordre de la file
+        while let Ok((addr, owner, seq, chunk)) = self.chunk_pool.done.try_recv() {
+            if let Some(c) = self.clients.get_mut(&addr).filter(|c| c.id == owner) {
+                c.chunk_ready.insert(seq, chunk);
             }
         }
-        for (addr, _, packet) in out {
+        // 2. Nouveaux chunks à encoder (quelques-uns par tick et par joueur, sans trop d'avance)
+        let exp = self.experiment;
+        let mut jobs = Vec::new();
+        for (addr, c) in self.clients.iter_mut() {
+            let features = crate::versions::features(c.protocol);
+            for _ in 0..CHUNKS_PER_TICK {
+                if c.chunk_next - c.chunk_sent >= MAX_CHUNKS_IN_FLIGHT {
+                    break;
+                }
+                let (x, z) = match c.queue.pop_front() {
+                    Some(xz) => xz,
+                    None => break,
+                };
+                c.loaded.insert((x, z));
+                jobs.push(ChunkJob {
+                    addr: *addr,
+                    owner: c.id,
+                    seq: c.chunk_next,
+                    x,
+                    z,
+                    version: self.world.chunk_version(x, z),
+                    view: self.world.view(),
+                    exp,
+                    features,
+                    compression: c.compression,
+                });
+                c.chunk_next += 1;
+            }
+        }
+        for job in jobs {
+            let _ = self.chunk_pool.jobs.send(job);
+        }
+        // 3. Envoi, dans l'ordre, de ceux qui sont prêts. Un chunk modifié pendant son
+        // encodage est réencodé ici, pour ne jamais effacer un bloc déjà envoyé à part.
+        let mut out: Vec<(SocketAddr, Vec<u8>)> = Vec::new();
+        let mut stale: Vec<(SocketAddr, i32, i32, crate::versions::Features, bool)> = Vec::new();
+        let mut spawn: Vec<SocketAddr> = Vec::new();
+        for (addr, c) in self.clients.iter_mut() {
+            while let Some(chunk) = c.chunk_ready.remove(&c.chunk_sent) {
+                c.chunk_sent += 1;
+                if chunk.version != self.world.chunk_version(chunk.x, chunk.z) {
+                    stale.push((*addr, chunk.x, chunk.z, crate::versions::features(c.protocol), c.compression));
+                } else {
+                    out.push((*addr, chunk.packet));
+                }
+            }
+            if c.spawn_pending && c.queue.is_empty() && c.chunk_sent == c.chunk_next {
+                c.spawn_pending = false;
+                spawn.push(*addr);
+            }
+        }
+        for (addr, x, z, features, compression) in stale {
+            let pk = build_chunk(self.experiment, x, z, self.world.chunk_payload(x, z), features);
+            out.push((addr, bedrock::encode_packet(bedrock::ID_LEVEL_CHUNK, &pk, compression)));
+        }
+        for (addr, packet) in out {
             self.net_send(&addr, &packet);
         }
         for addr in spawn {
@@ -4896,6 +4987,9 @@ impl Server {
                         gesture_logged: 0,
                         last_input: Instant::now(),
                         spawn_pending: false,
+                        chunk_next: 0,
+                        chunk_sent: 0,
+                        chunk_ready: std::collections::BTreeMap::new(),
                         probe: 0,
                         probe_tick: 0,
                         synced_tick: 0,
@@ -5179,7 +5273,8 @@ impl Server {
                     c.nethernet_udp_port,
                     n.key_fingerprint()
                 );
-                self.nether = Some(n);
+                // La liaison WebRTC tourne sur son propre fil (voir nethernet_thread)
+                self.nether = Some(crate::network::nethernet_thread::NetherNetHandle::start(n));
             }
             Err(e) => error!("Transport NetherNet indisponible : {}", e),
         }

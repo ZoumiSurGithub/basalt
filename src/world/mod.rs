@@ -162,6 +162,8 @@ pub struct World {
     edits: Arc<HashMap<(i32, i32), Arc<ChunkEdits>>>,
     count: usize,
     terrain: Arc<Terrain>,
+    /// Version de chaque chunk modifié (voir `chunk_version`)
+    versions: HashMap<(i32, i32), u64>,
     /// Modifié depuis le dernier enregistrement
     pub dirty: bool,
     /// Données attachées aux blocs : contenu des coffres, état des fours, texte des panneaux
@@ -191,6 +193,7 @@ impl World {
             edits: Arc::new(HashMap::new()),
             count: 0,
             terrain: Terrain::new(generator),
+            versions: HashMap::new(),
             dirty: false,
             tiles: crate::tile::TileMap::new(),
             air,
@@ -253,6 +256,7 @@ impl World {
                     c.remove(&key);
                     self.count -= 1;
                     self.dirty = true;
+                    *self.versions.entry(chunk).or_insert(0) += 1;
                     if c.is_empty() {
                         all.remove(&chunk);
                     }
@@ -278,6 +282,7 @@ impl World {
         let all = Arc::make_mut(&mut self.edits);
         Arc::make_mut(all.entry(chunk).or_default()).insert(key, block);
         self.dirty = true;
+        self.bump(chunk);
         true
     }
 
@@ -403,13 +408,37 @@ impl World {
     /// Contenu d'un chunk à envoyer : (nombre de sous-chunks, données). Les sous-chunks d'air
     /// au-dessus du dernier bloc ne sont pas envoyés.
     pub fn chunk_payload(&self, cx: i32, cz: i32) -> (u32, Vec<u8>) {
-        let column = self.terrain.column((cx, cz));
-        let edits = self.edits.get(&(cx, cz));
+        encode_chunk(&self.terrain, &self.edits, self.air, cx, cz)
+    }
+
+    /// Numéro de version d'un chunk : il change à chaque bloc modifié dedans. Sert à savoir si
+    /// un chunk encodé ailleurs (sur un autre fil) est encore à jour.
+    pub fn chunk_version(&self, cx: i32, cz: i32) -> u64 {
+        self.versions.get(&(cx, cz)).copied().unwrap_or(0)
+    }
+
+    fn bump(&mut self, chunk: (i32, i32)) {
+        *self.versions.entry(chunk).or_insert(0) += 1;
+    }
+}
+
+impl WorldView {
+    /// Contenu d'un chunk à envoyer, encodé depuis un autre fil (même résultat que `World`).
+    pub fn chunk_payload(&self, cx: i32, cz: i32) -> (u32, Vec<u8>) {
+        encode_chunk(&self.terrain, &self.edits, self.air, cx, cz)
+    }
+}
+
+/// Contenu d'un chunk : terrain généré et blocs modifiés.
+fn encode_chunk(terrain: &Terrain, all_edits: &HashMap<(i32, i32), Arc<ChunkEdits>>, air: u32, cx: i32, cz: i32) -> (u32, Vec<u8>) {
+    {
+        let column = terrain.column((cx, cz));
+        let edits = all_edits.get(&(cx, cz));
         // Sous-chunks à envoyer : jusqu'au plus haut qui n'est pas que de l'air
-        let mut sections = column.sections.iter().rposition(|s| !matches!(s, Section::Uniform(b) if *b == self.air)).map(|i| i + 1).unwrap_or(1);
+        let mut sections = column.sections.iter().rposition(|s| !matches!(s, Section::Uniform(b) if *b == air)).map(|i| i + 1).unwrap_or(1);
         if let Some(edits) = edits {
             for ((_, y, _), block) in edits.iter() {
-                if *block != self.air {
+                if *block != air {
                     sections = sections.max(((*y as i32 - MIN_Y) / 16 + 1) as usize);
                 }
             }
