@@ -109,6 +109,7 @@ const REGISTRY: c_int = -1_001_000;
 const T_BOOLEAN: c_int = 1;
 const T_NUMBER: c_int = 3;
 const T_STRING: c_int = 4;
+const T_TABLE: c_int = 5;
 const T_FUNCTION: c_int = 6;
 
 #[cfg(unix)]
@@ -317,8 +318,8 @@ pub enum Action {
     PlayerSave(String),
     /// Donne des objets à un joueur : (pseudo, nom de l'objet, quantité)
     PlayerGive(String, String, u16),
-    /// Édition du monde en volume pour un joueur : (pseudo, opération, arguments)
-    Edit(String, String, Vec<LVal>),
+    /// Pose des blocs : (x, y, z, état)
+    SetBlocks(Vec<(i32, i32, i32, u32)>),
 }
 
 /// État d'un joueur tel que les plugins le voient pendant un appel.
@@ -358,6 +359,10 @@ pub struct Info {
     pub pdata: Vec<PlayerSnap>,
     /// Permissions déclarées par les plugins, avec leur règle par défaut
     pub perms: Vec<(String, PermDefault)>,
+    /// Vue du monde, le temps d'un appel (lecture des blocs)
+    pub world: Option<crate::world::WorldView>,
+    /// Noms des blocs et de leurs états
+    pub blocks: Option<std::sync::Arc<crate::data::BlockNames>>,
 }
 
 /// Un joueur a-t-il cette permission ? Réglage propre au joueur d'abord, puis règle par
@@ -680,6 +685,140 @@ unsafe extern "C" fn l_pset(l: L) -> c_int {
     0
 }
 
+/// Plus grand volume lu d'un coup par `server._blocks`.
+const MAX_READ: i64 = 1_000_000;
+/// Plus grand nombre de blocs posés d'un coup (`server._setblocks`).
+const MAX_WRITE: usize = 1_000_000;
+
+unsafe fn arg_int(c: &Ctx, l: L, i: c_int) -> Option<i32> {
+    arg_num(c, l, i).filter(|v| v.abs() < 3.0e7).map(|v| v.floor() as i32)
+}
+
+/// `server._block(x, y, z)` : état du bloc (entier), ou nil hors d'un appel.
+unsafe extern "C" fn l_block(l: L) -> c_int {
+    let c = ctx(l);
+    let (x, y, z) = match (arg_int(c, l, 1), arg_int(c, l, 2), arg_int(c, l, 3)) {
+        (Some(x), Some(y), Some(z)) => (x, y, z),
+        _ => return bad_call(c, "world:getBlock(x, y, z)"),
+    };
+    match &c.info.world {
+        Some(w) => {
+            (c.api.pushinteger)(l, w.get(x, y, z) as i64);
+            1
+        }
+        None => 0,
+    }
+}
+
+/// `server._blocks(x1, y1, z1, x2, y2, z2)` : états de tous les blocs du volume, dans une
+/// table plate rangée par y, puis x, puis z (comme on lit les étages d'un bâtiment).
+unsafe extern "C" fn l_blocks(l: L) -> c_int {
+    let c = ctx(l);
+    let mut v = [0i32; 6];
+    for (i, slot) in v.iter_mut().enumerate() {
+        match arg_int(c, l, i as c_int + 1) {
+            Some(n) => *slot = n,
+            None => return bad_call(c, "world:getBlocks(x1, y1, z1, x2, y2, z2)"),
+        }
+    }
+    let (x1, x2) = (v[0].min(v[3]), v[0].max(v[3]));
+    let (y1, y2) = (v[1].min(v[4]), v[1].max(v[4]));
+    let (z1, z2) = (v[2].min(v[5]), v[2].max(v[5]));
+    let volume = (x2 as i64 - x1 as i64 + 1) * (y2 as i64 - y1 as i64 + 1) * (z2 as i64 - z1 as i64 + 1);
+    if volume > MAX_READ {
+        return bad_call(c, "world:getBlocks : volume trop grand (1 000 000 blocs au plus)");
+    }
+    let w = match &c.info.world {
+        Some(w) => w.clone(),
+        None => return 0,
+    };
+    (c.api.createtable)(l, volume as c_int, 0);
+    let mut n = 0i64;
+    for y in y1..=y2 {
+        for x in x1..=x2 {
+            for z in z1..=z2 {
+                n += 1;
+                (c.api.pushinteger)(l, w.get(x, y, z) as i64);
+                (c.api.rawseti)(l, -2, n);
+            }
+        }
+    }
+    1
+}
+
+/// `server._setblocks(t)` : pose des blocs, `t` étant une table plate { x, y, z, état, x, y, z,
+/// état, … }. Appliqué par le serveur à la fin de l'appel.
+unsafe extern "C" fn l_setblocks(l: L) -> c_int {
+    let c = ctx(l);
+    if (c.api.type_)(l, 1) != T_TABLE {
+        return bad_call(c, "world:setBlocks({ x, y, z, état, … })");
+    }
+    let mut list: Vec<(i32, i32, i32, u32)> = Vec::new();
+    let mut i = 1i64;
+    loop {
+        let mut q = [0i64; 4];
+        for (k, slot) in q.iter_mut().enumerate() {
+            (c.api.rawgeti)(l, 1, i + k as i64);
+            let mut ok = 0;
+            *slot = (c.api.tointegerx)(l, -1, &mut ok);
+            (c.api.settop)(l, -2);
+            if ok == 0 {
+                if k == 0 {
+                    // fin de la table
+                    if !list.is_empty() && c.actions.len() < 4096 {
+                        c.actions.push(Action::SetBlocks(list));
+                    }
+                    return 0;
+                }
+                return bad_call(c, "world:setBlocks : entrée incomplète (x, y, z, état)");
+            }
+        }
+        if list.len() >= MAX_WRITE {
+            return bad_call(c, "world:setBlocks : trop de blocs d'un coup (1 000 000 au plus)");
+        }
+        let fits = |v: i64| v.abs() < 30_000_000;
+        if fits(q[0]) && fits(q[1]) && fits(q[2]) && (0..=u32::MAX as i64).contains(&q[3]) {
+            list.push((q[0] as i32, q[1] as i32, q[2] as i32, q[3] as u32));
+        }
+        i += 4;
+    }
+}
+
+/// `server.blockState(nom)` : état par défaut d'un bloc (« stone » ou « minecraft:stone »).
+unsafe extern "C" fn l_block_state(l: L) -> c_int {
+    let c = ctx(l);
+    let name = match arg_str(c, l, 1) {
+        Some(n) => n.trim().to_lowercase(),
+        None => return 0,
+    };
+    let full = if name.contains(':') { name } else { format!("minecraft:{}", name) };
+    match c.info.blocks.as_ref().and_then(|b| b.defaults.get(&full)) {
+        Some(s) => {
+            (c.api.pushinteger)(l, *s as i64);
+            1
+        }
+        None => 0,
+    }
+}
+
+/// `server.blockName(état)` : nom du bloc d'un état (« minecraft:stone »).
+unsafe extern "C" fn l_block_name(l: L) -> c_int {
+    let c = ctx(l);
+    let mut ok = 0;
+    let state = (c.api.tointegerx)(l, 1, &mut ok);
+    if ok == 0 {
+        return 0;
+    }
+    match c.info.blocks.as_ref().and_then(|b| b.names.get(&(state as u32))) {
+        Some(n) => {
+            (c.api.pushlstring)(l, n.as_ptr() as *const c_char, n.len());
+            1
+        }
+        None => 0,
+    }
+}
+
+
 /// `server._pdo(pseudo, action, …)` : message, téléportation, sauvegarde.
 unsafe extern "C" fn l_pdo(l: L) -> c_int {
     let c = ctx(l);
@@ -712,23 +851,6 @@ unsafe extern "C" fn l_pdo(l: L) -> c_int {
             }
             None => return bad_call(c, "joueur:give(objet, quantité)"),
         },
-        "edit" => {
-            // joueur:edit(opération, …) : les arguments sont transmis tels quels au serveur
-            let op = match arg_str(c, l, 3) {
-                Some(o) => o,
-                None => return bad_call(c, "joueur:edit(opération, …)"),
-            };
-            let mut args = Vec::new();
-            for i in 4..20 {
-                match (c.api.type_)(l, i) {
-                    T_NUMBER => args.push(LVal::Num(arg_num(c, l, i).unwrap_or(0.0))),
-                    T_STRING => args.push(LVal::Str(arg_str(c, l, i).unwrap_or_default())),
-                    T_BOOLEAN => args.push(LVal::Bool((c.api.toboolean)(l, i) != 0)),
-                    _ => break,
-                }
-            }
-            c.actions.push(Action::Edit(name, op, args));
-        }
         _ => {}
     }
     0
@@ -1069,8 +1191,13 @@ impl PluginManager {
             }));
             let plugin = Plugin { name: name.to_string(), manifest: found.manifest.clone(), api, state, ctx, mem, strikes: std::cell::Cell::new(0) };
 
-            (api.createtable)(state, 0, 16);
-            let funcs: [(&str, CFn); 16] = [
+            (api.createtable)(state, 0, 24);
+            let funcs: [(&str, CFn); 21] = [
+                ("_block\0", l_block),
+                ("_blocks\0", l_blocks),
+                ("_setblocks\0", l_setblocks),
+                ("blockState\0", l_block_state),
+                ("blockName\0", l_block_name),
                 ("_wrap\0", l_set_wrap),
                 ("_pget\0", l_pget),
                 ("_pset\0", l_pset),
@@ -1154,6 +1281,16 @@ impl PluginManager {
     pub fn unload_all(&mut self) {
         self.dispatch("disable", &[]);
         self.plugins.clear();
+    }
+
+    /// Oublie la vue du monde à la fin d'un appel : le serveur peut alors modifier ses blocs
+    /// sans les recopier.
+    pub fn clear_world(&mut self) {
+        for p in &self.plugins {
+            unsafe {
+                (*p.ctx).info.world = None;
+            }
+        }
     }
 
     pub fn set_info(&mut self, info: &Info, tick: u64) {

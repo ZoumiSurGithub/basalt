@@ -5,11 +5,14 @@
 //! sans modification est envoyé avec le contenu commun précalculé ; un chunk
 //! modifié est encodé à la demande.
 //!
-//! Les modifications sont enregistrées dans `level.nbt` ; `edit` permet de travailler en volume.
-
-pub mod edit;
+//! Les modifications sont enregistrées dans `level.nbt`.
+//!
+//! Les plugins lisent le monde depuis leur propre fil, par une « vue » (`WorldView`) : une
+//! copie instantanée qui ne coûte rien à prendre. Le stockage est partagé, et n'est recopié
+//! (chunk par chunk) que si le serveur modifie un bloc pendant qu'une vue est encore utilisée.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::bedrock::{block_hash, W};
 
@@ -20,10 +23,43 @@ pub const MAX_Y: i32 = 319;
 /// Blocs modifiés tolérés au total : au-delà, les nouvelles modifications sont refusées.
 const MAX_EDITS: usize = 2_000_000;
 
+/// Blocs modifiés d'un chunk : (x local, y, z local) -> identifiant réseau du bloc.
+type ChunkEdits = HashMap<(u8, i16, u8), u32>;
+
+/// Vue du monde pour un autre fil (les plugins) : lecture seule, figée au moment où elle a
+/// été prise.
+#[derive(Clone)]
+pub struct WorldView {
+    edits: Arc<HashMap<(i32, i32), Arc<ChunkEdits>>>,
+    air: u32,
+    stone: u32,
+    dirt: u32,
+    grass: u32,
+}
+
+impl WorldView {
+    /// Bloc présent à une position (identifiant réseau du bloc et de son état).
+    pub fn get(&self, x: i32, y: i32, z: i32) -> u32 {
+        if !World::in_bounds(y) {
+            return self.air;
+        }
+        let key = ((x & 15) as u8, y as i16, (z & 15) as u8);
+        match self.edits.get(&(x >> 4, z >> 4)).and_then(|c| c.get(&key)) {
+            Some(b) => *b,
+            None => match y {
+                -64 => self.stone,
+                -63 | -62 => self.dirt,
+                -61 => self.grass,
+                _ => self.air,
+            },
+        }
+    }
+}
+
 /// Le monde (appelé `Level` dans PocketMine).
 pub struct World {
     /// (chunk x, chunk z) -> (x local, y, z local) -> identifiant réseau du bloc
-    edits: HashMap<(i32, i32), HashMap<(u8, i16, u8), u32>>,
+    edits: Arc<HashMap<(i32, i32), Arc<ChunkEdits>>>,
     count: usize,
     /// Modifié depuis le dernier enregistrement
     pub dirty: bool,
@@ -44,7 +80,7 @@ impl Default for World {
 impl World {
     pub fn new() -> World {
         World {
-            edits: HashMap::new(),
+            edits: Arc::new(HashMap::new()),
             count: 0,
             dirty: false,
             tiles: crate::tile::TileMap::new(),
@@ -90,13 +126,16 @@ impl World {
         let key = ((x & 15) as u8, y as i16, (z & 15) as u8);
         if block == self.base(y) {
             // retour à l'état d'origine : rien à garder
-            if let Some(c) = self.edits.get_mut(&chunk) {
-                if c.remove(&key).is_some() {
+            if self.edits.get(&chunk).map(|c| c.contains_key(&key)).unwrap_or(false) {
+                let all = Arc::make_mut(&mut self.edits);
+                if let Some(c) = all.get_mut(&chunk) {
+                    let c = Arc::make_mut(c);
+                    c.remove(&key);
                     self.count -= 1;
                     self.dirty = true;
-                }
-                if c.is_empty() {
-                    self.edits.remove(&chunk);
+                    if c.is_empty() {
+                        all.remove(&chunk);
+                    }
                 }
             }
             return true;
@@ -108,9 +147,18 @@ impl World {
             }
             self.count += 1;
         }
-        self.edits.entry(chunk).or_default().insert(key, block);
+        if self.edits.get(&chunk).and_then(|c| c.get(&key)) == Some(&block) {
+            return true;
+        }
+        let all = Arc::make_mut(&mut self.edits);
+        Arc::make_mut(all.entry(chunk).or_default()).insert(key, block);
         self.dirty = true;
         true
+    }
+
+    /// Vue du monde pour un autre fil (plugins) : copie instantanée, sans recopie des blocs.
+    pub fn view(&self) -> WorldView {
+        WorldView { edits: self.edits.clone(), air: self.air, stone: self.stone, dirt: self.dirt, grass: self.grass }
     }
 
     /// Nombre de blocs qui diffèrent du terrain d'origine.

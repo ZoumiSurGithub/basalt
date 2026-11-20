@@ -1,14 +1,39 @@
--- EasyEdit pour Basalt.
+-- EasyEdit pour Basalt : édition du monde en volume, sur le modèle du plugin EasyEdit de
+-- PocketMine. Les commandes sont celles du jeu : /wand, /set stone…
 --
--- Les commandes sont celles du jeu : /wand, /set stone…
---
--- Le plugin gère la sélection de chaque joueur et les commandes ; le travail sur les blocs
--- est fait par le serveur (joueur:edit), qui tient aussi l'historique pour annuler.
+-- Tout est fait ici, dans le plugin, avec l'API du monde du serveur (server.getWorld()) :
+-- sélection, motifs, formes, presse-papiers, historique. Les grosses opérations sont
+-- appliquées par tranches, un peu à chaque tick, pour ne jamais bloquer le serveur.
 
 local WAND = "minecraft:wooden_axe"
 local PERMISSION = "easyedit.use"
+-- Blocs touchés par une opération au plus
+local MAX_BLOCKS = 250000
+-- Blocs traités par tick (20 ticks par seconde)
+local PER_TICK = 20000
+-- Opérations que l'on peut annuler, par joueur, et blocs gardés au total dans l'historique
+local HISTORY = 20
+local HISTORY_BLOCKS = 400000
 
+local world = server.getWorld()
+local AIR = server.blockState("minecraft:air")
+
+-- ---------------------------------------------------------------------------------------
+-- Positions : x, y, z rangés dans un seul entier (moins de mémoire pour les gros volumes)
+-- ---------------------------------------------------------------------------------------
+local XZ, YS = 33554432, 2048 -- 2^25 : décalage de x et z ; plage de y
+local function pack(x, y, z)
+  return ((x + XZ) * YS + (y + 1024)) * 67108864 + (z + XZ)
+end
+local function unpack3(k)
+  local z = k % 67108864 - XZ
+  local t = k // 67108864
+  return t // YS - XZ, t % YS - 1024, z
+end
+
+-- ---------------------------------------------------------------------------------------
 -- Sélection de chaque joueur : { p1 = {x, y, z}, p2 = {x, y, z} }
+-- ---------------------------------------------------------------------------------------
 local selections = {}
 
 local function selection(player)
@@ -45,16 +70,168 @@ local function set_corner(player, which, x, y, z)
   player:sendMessage(text)
 end
 
--- Les six coordonnées de la sélection, ou nil (avec un message) s'il manque un coin
-local function corners(player)
+-- La sélection rangée (coins min et max), ou nil (avec un message)
+local function region(player)
   local sel = selection(player)
   if not (sel.p1 and sel.p2) then
     player:sendMessage("§cChoisissez d'abord deux coins : /wand puis casser et cliquer, ou /pos1 et /pos2.")
     return nil
   end
-  return sel.p1[1], sel.p1[2], sel.p1[3], sel.p2[1], sel.p2[2], sel.p2[3]
+  local r = {
+    x1 = math.min(sel.p1[1], sel.p2[1]), y1 = math.min(sel.p1[2], sel.p2[2]), z1 = math.min(sel.p1[3], sel.p2[3]),
+    x2 = math.max(sel.p1[1], sel.p2[1]), y2 = math.max(sel.p1[2], sel.p2[2]), z2 = math.max(sel.p1[3], sel.p2[3]),
+  }
+  r.volume = (r.x2 - r.x1 + 1) * (r.y2 - r.y1 + 1) * (r.z2 - r.z1 + 1)
+  if r.volume > MAX_BLOCKS then
+    player:sendMessage("§cSélection trop grande : " .. r.volume .. " blocs (maximum " .. MAX_BLOCKS .. ").")
+    return nil
+  end
+  return r
 end
 
+-- ---------------------------------------------------------------------------------------
+-- Motifs : « stone », « stone,dirt », « 70%stone,30%cobblestone »
+-- ---------------------------------------------------------------------------------------
+local function pattern(player, text)
+  local choices, total = {}, 0
+  for part in tostring(text):gmatch("[^,]+") do
+    local weight, name = part:match("^%s*(%d+)%%(.-)%s*$")
+    if not weight then weight, name = 1, part:match("^%s*(.-)%s*$") end
+    local state = server.blockState(name)
+    if not state then
+      player:sendMessage("§cBloc inconnu : " .. name)
+      return nil
+    end
+    total = total + tonumber(weight)
+    choices[#choices + 1] = { total, state }
+    if #choices >= 16 then break end
+  end
+  if #choices == 0 then
+    player:sendMessage("§cAucun bloc indiqué.")
+    return nil
+  end
+  if #choices == 1 then
+    local only = choices[1][2]
+    return function() return only end
+  end
+  return function()
+    local r = math.random() * total
+    for _, c in ipairs(choices) do
+      if r < c[1] then return c[2] end
+    end
+    return choices[#choices][2]
+  end
+end
+
+-- ---------------------------------------------------------------------------------------
+-- Opérations : une liste de blocs à poser, appliquée par tranches. Seuls les blocs qui
+-- changent vraiment sont gardés dans l'historique.
+-- ---------------------------------------------------------------------------------------
+local queue = {}
+local histories = {} -- pseudo -> { undo = {…}, redo = {…} }
+
+local function history(name)
+  histories[name] = histories[name] or { undo = {}, redo = {} }
+  return histories[name]
+end
+
+-- Nouvelle opération : `keys` (positions rangées) et `news` (états), ou `new` (le même état
+-- partout). `kind` : "do" (nouvelle), "undo" ou "redo".
+local function enqueue(player, label, keys, news, kind)
+  if #keys == 0 then
+    player:sendMessage("§70 bloc modifié.")
+    return
+  end
+  if #keys > MAX_BLOCKS then
+    player:sendMessage("§cTrop de blocs : " .. #keys .. " (maximum " .. MAX_BLOCKS .. ").")
+    return
+  end
+  queue[#queue + 1] = {
+    player = player:getName(), label = label, kind = kind or "do",
+    keys = keys, news = news, i = 1,
+    done_keys = {}, done_olds = {}, done_news = {},
+  }
+  if #queue > 1 or #keys > PER_TICK then
+    player:sendMessage("§7" .. label .. " : " .. #keys .. " blocs, en cours…")
+  end
+end
+
+local function remember(op)
+  if #op.done_keys == 0 then return end
+  local h = history(op.player)
+  local entry = { keys = op.done_keys, olds = op.done_olds, news = op.done_news, label = op.label }
+  if op.kind == "undo" then
+    -- Refaire, c'est rejouer l'opération d'origine : avant = après l'annulation, et inversement
+    entry.olds, entry.news = entry.news, entry.olds
+    h.redo[#h.redo + 1] = entry
+  else
+    if op.kind == "do" then h.redo = {} end
+    h.undo[#h.undo + 1] = entry
+    if #h.undo > HISTORY then table.remove(h.undo, 1) end
+  end
+  -- Historique borné en nombre de blocs, tous joueurs confondus : les plus anciens partent
+  local total = 0
+  for _, hh in pairs(histories) do
+    for _, e in ipairs(hh.undo) do total = total + #e.keys end
+    for _, e in ipairs(hh.redo) do total = total + #e.keys end
+  end
+  while total > HISTORY_BLOCKS and #h.undo > 1 do
+    total = total - #h.undo[1].keys
+    table.remove(h.undo, 1)
+  end
+end
+
+-- Une tranche de la première opération en attente, à chaque tick
+server.every(1, function()
+  local op = queue[1]
+  if not op then return end
+  local writes, w = {}, 0
+  local last = math.min(op.i + PER_TICK - 1, #op.keys)
+  local news, keys = op.news, op.keys
+  for i = op.i, last do
+    local k = keys[i]
+    local x, y, z = unpack3(k)
+    local new = news[i]
+    local old = world:getBlockState(x, y, z)
+    if old and old ~= new then
+      local n = #op.done_keys + 1
+      op.done_keys[n], op.done_olds[n], op.done_news[n] = k, old, new
+      writes[w + 1], writes[w + 2], writes[w + 3], writes[w + 4] = x, y, z, new
+      w = w + 4
+    end
+  end
+  if w > 0 then world:setBlocks(writes) end
+  op.i = last + 1
+  if op.i > #op.keys then
+    table.remove(queue, 1)
+    remember(op)
+    local who = server.getPlayer(op.player)
+    if who then
+      local verb = op.kind == "undo" and "annulés" or "modifiés"
+      who:sendMessage("§a" .. op.label .. " : " .. #op.done_keys .. " blocs " .. verb .. ".")
+    end
+  end
+end)
+
+-- Liste des positions d'un volume (avec un filtre facultatif) et de leurs nouveaux états
+local function fill(r, keep, choose)
+  local keys, news, n = {}, {}, 0
+  for y = r.y1, r.y2 do
+    for x = r.x1, r.x2 do
+      for z = r.z1, r.z2 do
+        if not keep or keep(x, y, z) then
+          n = n + 1
+          keys[n], news[n] = pack(x, y, z), choose(x, y, z)
+        end
+      end
+    end
+  end
+  return keys, news
+end
+
+-- ---------------------------------------------------------------------------------------
+-- Commandes
+-- ---------------------------------------------------------------------------------------
 local DIRECTIONS = {
   north = { 0, 0, -1 }, n = { 0, 0, -1 }, nord = { 0, 0, -1 },
   south = { 0, 0, 1 }, s = { 0, 0, 1 }, sud = { 0, 0, 1 },
@@ -114,28 +291,61 @@ end)
 
 command("set", "/set <bloc>", function(player, args)
   if not args[1] then return false end
-  local x1, y1, z1, x2, y2, z2 = corners(player)
-  if x1 then player:edit("set", x1, y1, z1, x2, y2, z2, args[1]) end
+  local r, choose = region(player), pattern(player, args[1])
+  if not (r and choose) then return end
+  local keys, news = fill(r, nil, choose)
+  enqueue(player, "Remplissage", keys, news)
 end)
 
 command("replace", "/replace <ancien> <nouveau>", function(player, args)
   if not (args[1] and args[2]) then return false end
-  local x1, y1, z1, x2, y2, z2 = corners(player)
-  if x1 then player:edit("replace", x1, y1, z1, x2, y2, z2, args[1], args[2]) end
+  local r, choose = region(player), pattern(player, args[2])
+  if not (r and choose) then return end
+  local from = server.blockState(args[1])
+  if not from then
+    player:sendMessage("§cBloc inconnu : " .. args[1])
+    return
+  end
+  -- Tous les états de l'ancien bloc (orientation, couleur…) sont remplacés
+  local from_name = server.blockName(from)
+  local states = world:getBlocks(r.x1, r.y1, r.z1, r.x2, r.y2, r.z2)
+  local i = 0
+  local keys, news = fill(r, function()
+    i = i + 1
+    return server.blockName(states[i]) == from_name
+  end, choose)
+  enqueue(player, "Remplacement", keys, news)
 end)
 
 command("walls", "/walls <bloc>", function(player, args)
   if not args[1] then return false end
-  local x1, y1, z1, x2, y2, z2 = corners(player)
-  if x1 then player:edit("walls", x1, y1, z1, x2, y2, z2, args[1]) end
+  local r, choose = region(player), pattern(player, args[1])
+  if not (r and choose) then return end
+  local keys, news = fill(r, function(x, _, z)
+    return x == r.x1 or x == r.x2 or z == r.z1 or z == r.z2
+  end, choose)
+  enqueue(player, "Murs", keys, news)
 end)
 
 local function sphere(hollow)
   return function(player, args)
     local radius = tonumber(args[2])
     if not (args[1] and radius) then return false end
-    local x, y, z = feet(player)
-    player:edit("sphere", x, y, z, radius, args[1], hollow)
+    radius = math.floor(radius)
+    if radius < 1 or radius > 38 then
+      player:sendMessage("§cRayon de 1 à 38.")
+      return
+    end
+    local choose = pattern(player, args[1])
+    if not choose then return end
+    local cx, cy, cz = feet(player)
+    local r = { x1 = cx - radius, y1 = cy - radius, z1 = cz - radius, x2 = cx + radius, y2 = cy + radius, z2 = cz + radius }
+    local outer, inner = (radius + 0.5) ^ 2, (radius - 0.5) ^ 2
+    local keys, news = fill(r, function(x, y, z)
+      local d = (x - cx) ^ 2 + (y - cy) ^ 2 + (z - cz) ^ 2
+      return d <= outer and (not hollow or d >= inner)
+    end, choose)
+    enqueue(player, hollow and "Sphère creuse" or "Sphère", keys, news)
   end
 end
 command("sphere", "/sphere <bloc> <rayon>", sphere(false))
@@ -143,48 +353,165 @@ command("hsphere", "/hsphere <bloc> <rayon>", sphere(true))
 
 local function cylinder(hollow)
   return function(player, args)
-    local radius = tonumber(args[2])
+    local radius, height = tonumber(args[2]), tonumber(args[3]) or 1
     if not (args[1] and radius) then return false end
-    local x, y, z = feet(player)
-    player:edit("cyl", x, y, z, radius, tonumber(args[3]) or 1, args[1], hollow)
+    radius, height = math.floor(radius), math.floor(height)
+    if radius < 1 or radius > 150 or height < 1 or height > 384 then
+      player:sendMessage("§cRayon de 1 à 150, hauteur de 1 à 384.")
+      return
+    end
+    local choose = pattern(player, args[1])
+    if not choose then return end
+    local cx, cy, cz = feet(player)
+    local r = { x1 = cx - radius, y1 = cy, z1 = cz - radius, x2 = cx + radius, y2 = cy + height - 1, z2 = cz + radius }
+    if (2 * radius + 1) ^ 2 * height > MAX_BLOCKS * 2 then
+      player:sendMessage("§cCylindre trop grand.")
+      return
+    end
+    local outer, inner = (radius + 0.5) ^ 2, (radius - 0.5) ^ 2
+    local keys, news = fill(r, function(x, _, z)
+      local d = (x - cx) ^ 2 + (z - cz) ^ 2
+      return d <= outer and (not hollow or d >= inner)
+    end, choose)
+    enqueue(player, hollow and "Cylindre creux" or "Cylindre", keys, news)
   end
 end
 command("cyl", "/cyl <bloc> <rayon> [hauteur]", cylinder(false))
 command("hcyl", "/hcyl <bloc> <rayon> [hauteur]", cylinder(true))
 
-command("copy", "/copy", function(player)
-  local x1, y1, z1, x2, y2, z2 = corners(player)
-  if x1 then
-    local x, y, z = feet(player)
-    player:edit("copy", x1, y1, z1, x2, y2, z2, x, y, z)
+-- Presse-papiers de chaque joueur : positions relatives (rangées) et états
+local clipboards = {}
+local RXZ, RY = 33554432, 2048
+local function pack_rel(dx, dy, dz)
+  return ((dx + RXZ) * RY + (dy + 1024)) * 67108864 + (dz + RXZ)
+end
+local function unpack_rel(k)
+  local dz = k % 67108864 - RXZ
+  local t = k // 67108864
+  return t // RY - RXZ, t % RY - 1024, dz
+end
+
+local function copy(player, r)
+  local px, py, pz = feet(player)
+  local states = world:getBlocks(r.x1, r.y1, r.z1, r.x2, r.y2, r.z2)
+  local rel, sts, n, i = {}, {}, 0, 0
+  for y = r.y1, r.y2 do
+    for x = r.x1, r.x2 do
+      for z = r.z1, r.z2 do
+        i = i + 1
+        n = n + 1
+        rel[n], sts[n] = pack_rel(x - px, y - py, z - pz), states[i]
+      end
+    end
   end
+  clipboards[player:getName()] = { rel = rel, states = sts }
+  return n
+end
+
+command("copy", "/copy", function(player)
+  local r = region(player)
+  if not r then return end
+  player:sendMessage("§a" .. copy(player, r) .. " blocs copiés.")
 end)
 
 command("cut", "/cut", function(player)
-  local x1, y1, z1, x2, y2, z2 = corners(player)
-  if x1 then
-    local x, y, z = feet(player)
-    player:edit("cut", x1, y1, z1, x2, y2, z2, x, y, z)
-  end
+  local r = region(player)
+  if not r then return end
+  copy(player, r)
+  local keys, news = fill(r, nil, function() return AIR end)
+  enqueue(player, "Couper", keys, news)
 end)
 
 command("paste", "/paste [a]   (a : sans les vides)", function(player, args)
-  local x, y, z = feet(player)
-  player:edit("paste", x, y, z, args[1] == "a" or args[1] == "-a")
+  local clip = clipboards[player:getName()]
+  if not clip then
+    player:sendMessage("§cRien n'a été copié : utilisez d'abord /copy ou /cut.")
+    return
+  end
+  local skip_air = args[1] == "a" or args[1] == "-a"
+  local px, py, pz = feet(player)
+  local keys, news, n = {}, {}, 0
+  for i, k in ipairs(clip.rel) do
+    local s = clip.states[i]
+    if not (skip_air and s == AIR) then
+      local dx, dy, dz = unpack_rel(k)
+      n = n + 1
+      keys[n], news[n] = pack(px + dx, py + dy, pz + dz), s
+    end
+  end
+  enqueue(player, "Collage", keys, news)
 end)
 
--- //stack [fois] [direction] et //move [blocs] [direction] : les deux arguments sont libres
+-- /stack [fois] [direction] et /move [blocs] [direction] : les deux arguments sont libres
 local function along(operation)
   return function(player, args)
     local amount, word = tonumber(args[1]), args[2]
     if args[1] and not amount then
-      amount, word = tonumber(args[2]), args[1] -- « //stack up 3 » est accepté aussi
+      amount, word = tonumber(args[2]), args[1] -- « /stack up 3 » est accepté aussi
     end
-    local x1, y1, z1, x2, y2, z2 = corners(player)
-    if not x1 then return end
+    amount = math.floor(amount or 1)
+    if amount < 1 or amount > 64 then
+      player:sendMessage("§cNombre de 1 à 64.")
+      return
+    end
+    local r = region(player)
+    if not r then return end
     local dx, dy, dz = direction(player, word)
-    if dx then
-      player:edit(operation, x1, y1, z1, x2, y2, z2, dx, dy, dz, amount or 1)
+    if not dx then return end
+    local states = world:getBlocks(r.x1, r.y1, r.z1, r.x2, r.y2, r.z2)
+    local keys, news, n = {}, {}, 0
+    if operation == "stack" then
+      -- Copies successives, collées les unes aux autres
+      local sx, sy, sz = (r.x2 - r.x1 + 1) * dx, (r.y2 - r.y1 + 1) * dy, (r.z2 - r.z1 + 1) * dz
+      if r.volume * amount > MAX_BLOCKS then
+        player:sendMessage("§cTrop de blocs : " .. r.volume * amount .. " (maximum " .. MAX_BLOCKS .. ").")
+        return
+      end
+      for t = 1, amount do
+        local i = 0
+        for y = r.y1, r.y2 do
+          for x = r.x1, r.x2 do
+            for z = r.z1, r.z2 do
+              i = i + 1
+              n = n + 1
+              keys[n], news[n] = pack(x + sx * t, y + sy * t, z + sz * t), states[i]
+            end
+          end
+        end
+      end
+      enqueue(player, "Répétition", keys, news)
+    else
+      -- Déplacement : la destination reçoit les blocs, le reste de l'origine devient de l'air
+      local ox, oy, oz = dx * amount, dy * amount, dz * amount
+      local target = {}
+      local i = 0
+      for y = r.y1, r.y2 do
+        for x = r.x1, r.x2 do
+          for z = r.z1, r.z2 do
+            i = i + 1
+            local k = pack(x + ox, y + oy, z + oz)
+            target[k] = true
+            n = n + 1
+            keys[n], news[n] = k, states[i]
+          end
+        end
+      end
+      for y = r.y1, r.y2 do
+        for x = r.x1, r.x2 do
+          for z = r.z1, r.z2 do
+            local k = pack(x, y, z)
+            if not target[k] then
+              n = n + 1
+              keys[n], news[n] = k, AIR
+            end
+          end
+        end
+      end
+      -- La sélection suit les blocs
+      local sel = selection(player)
+      sel.p1 = { sel.p1[1] + ox, sel.p1[2] + oy, sel.p1[3] + oz }
+      sel.p2 = { sel.p2[1] + ox, sel.p2[2] + oy, sel.p2[3] + oz }
+      enqueue(player, "Déplacement", keys, news)
     end
   end
 end
@@ -192,18 +519,52 @@ command("stack", "/stack [fois] [direction]", along("stack"))
 command("move", "/move [blocs] [direction]", along("move"))
 
 command("count", "/count [bloc]", function(player, args)
-  local x1, y1, z1, x2, y2, z2 = corners(player)
-  if x1 then
-    if args[1] then
-      player:edit("count", x1, y1, z1, x2, y2, z2, args[1])
-    else
-      player:edit("count", x1, y1, z1, x2, y2, z2)
+  local r = region(player)
+  if not r then return end
+  local states = world:getBlocks(r.x1, r.y1, r.z1, r.x2, r.y2, r.z2)
+  local count = 0
+  if args[1] then
+    local wanted = server.blockState(args[1])
+    if not wanted then
+      player:sendMessage("§cBloc inconnu : " .. args[1])
+      return
+    end
+    local name = server.blockName(wanted)
+    for _, s in ipairs(states) do
+      if server.blockName(s) == name then count = count + 1 end
+    end
+  else
+    for _, s in ipairs(states) do
+      if s ~= AIR then count = count + 1 end
     end
   end
+  player:sendMessage("§a" .. count .. " blocs.")
 end)
 
-command("undo", "/undo", function(player) player:edit("undo") end)
-command("redo", "/redo", function(player) player:edit("redo") end)
+local function replay(player, from_stack, use_olds, kind, label)
+  local h = history(player:getName())
+  local entry = table.remove(from_stack(h))
+  if not entry then
+    player:sendMessage("§c" .. (kind == "undo" and "Rien à annuler." or "Rien à refaire."))
+    return
+  end
+  local keys, news = {}, {}
+  -- Dans l'ordre inverse pour annuler, comme à l'origine pour refaire
+  local n = #entry.keys
+  for i = 1, n do
+    local j = use_olds and (n - i + 1) or i
+    keys[i], news[i] = entry.keys[j], use_olds and entry.olds[j] or entry.news[j]
+  end
+  enqueue(player, label, keys, news, kind)
+end
+
+command("undo", "/undo", function(player)
+  replay(player, function(h) return h.undo end, true, "undo", "Annulation")
+end)
+
+command("redo", "/redo", function(player)
+  replay(player, function(h) return h.redo end, false, "redo", "Rétablissement")
+end)
 
 command("easyedit", "/easyedit", function(player)
   player:sendMessage("§d— EasyEdit " .. server.plugin.version .. " —")
@@ -214,26 +575,32 @@ command("easyedit", "/easyedit", function(player)
   player:sendMessage("§7Déplacer : §f/stack  /move   §7Historique : §f/undo  /redo")
 end)
 
+-- ---------------------------------------------------------------------------------------
 -- La baguette : casser un bloc choisit le premier coin, cliquer dessus le second.
--- Répondre false empêche le bloc d'être cassé, ou un autre d'être posé.
+-- Annuler l'événement empêche le bloc d'être cassé, ou un autre d'être posé.
+-- ---------------------------------------------------------------------------------------
 local function wand_used(player)
   return player:getItemInHand() == WAND and player:hasPermission(PERMISSION)
 end
 
-server.on("block_break", function(player, x, y, z)
+local Wand = {}
+function Wand:onBlockBreak(event)
+  local player = event:getPlayer()
   if wand_used(player) then
-    set_corner(player, "p1", x, y, z)
-    return false
+    local b = event:getBlock()
+    set_corner(player, "p1", b:getX(), b:getY(), b:getZ())
+    event:cancel()
   end
-end)
-
-server.on("block_click", function(player, x, y, z)
+end
+function Wand:onPlayerInteract(event)
+  local player = event:getPlayer()
   if wand_used(player) then
-    set_corner(player, "p2", x, y, z)
-    return false
+    local b = event:getBlock()
+    set_corner(player, "p2", b:getX(), b:getY(), b:getZ())
+    event:cancel()
   end
-end)
-
-server.on("disconnect", function(_, name)
-  if name then selections[name] = nil end
-end)
+end
+function Wand:onPlayerQuit(event)
+  selections[event:getPlayer():getName()] = nil
+end
+server.getPluginManager():registerEvents(Wand)

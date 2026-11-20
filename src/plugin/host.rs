@@ -130,6 +130,7 @@ fn worker(dir: PathBuf, sandbox: bool, trusted: String, memory_mb: usize, jobs: 
             }
             Job::Quit => break,
         }
+        manager.clear_world();
         let actions = manager.take_actions();
         let listening = manager.listening();
         if done.send(Done { id, results, actions, catalog, listening }).is_err() {
@@ -278,6 +279,14 @@ impl PluginHost {
         self.catalog.permissions.clone()
     }
 
+    /// Informations pour un travail : la vue du monde y part, le serveur n'en garde pas de
+    /// copie (sinon il recopierait des blocs à chaque modification).
+    fn job_info(&mut self) -> Info {
+        let info = self.info.clone();
+        self.info.world = None;
+        info
+    }
+
     pub fn set_info(&mut self, info: &Info, tick: u64) {
         self.info = info.clone();
         self.tick = tick;
@@ -298,7 +307,8 @@ impl PluginHost {
     pub fn dispatch(&mut self, event: &str, args: &[LVal]) -> Vec<LVal> {
         // Événements dont le serveur lit la réponse (refus, annulation)
         let wait = if matches!(event, "login" | "block_break" | "block_click") { WAIT_ANSWER } else { WAIT };
-        self.call(Job::Event(event.to_string(), args.to_vec(), self.info.clone(), self.tick), wait).unwrap_or_default()
+        let info = self.job_info();
+        self.call(Job::Event(event.to_string(), args.to_vec(), info, self.tick), wait).unwrap_or_default()
     }
 
     /// Minuteries : rien n'est envoyé tant que le fil est occupé (elles se rattrapent ensuite).
@@ -313,7 +323,8 @@ impl PluginHost {
         if !self.listens(event) {
             return None;
         }
-        let results = self.call(Job::Fire(event.to_string(), state.to_json(), self.info.clone(), self.tick), WAIT_ANSWER)?;
+        let info = self.job_info();
+        let results = self.call(Job::Fire(event.to_string(), state.to_json(), info, self.tick), WAIT_ANSWER)?;
         match results.first() {
             Some(LVal::Str(s)) => crate::json::parse(s).ok(),
             _ => None,
@@ -324,7 +335,8 @@ impl PluginHost {
         self.drain();
         self.tick = tick;
         if self.pending == 0 {
-            self.submit(Job::Timers(self.info.clone(), tick));
+            let info = self.job_info();
+            self.submit(Job::Timers(info, tick));
         } else {
             self.note_late();
         }
@@ -341,7 +353,8 @@ impl PluginHost {
             return false;
         }
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        self.call(Job::Command(name.to_string(), args, sender.map(|s| s.to_string()), self.info.clone(), self.tick), WAIT_ANSWER);
+        let info = self.job_info();
+        self.call(Job::Command(name.to_string(), args, sender.map(|s| s.to_string()), info, self.tick), WAIT_ANSWER);
         true
     }
 

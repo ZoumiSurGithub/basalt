@@ -1124,7 +1124,7 @@ fn vanilla_commands_work_like_in_the_game() {
     command(&mut steve, "/fill ~ ~5 ~ ~1 ~6 ~1 minecraft:stone");
     expect_text(&mut steve, "8 blocs remplis");
     command(&mut steve, "/setblock ~ ~ ~ pas_un_bloc");
-    expect_text(&mut steve, "bloc inconnu");
+    expect_text(&mut steve, "inconnu : pas_un_bloc");
     command(&mut steve, "/time set night");
     assert_eq!(steve.wait_for(10), vec![0x90, 0xcb, 0x01], "13000 en entier zigzag");
     expect_text(&mut steve, "Heure définie sur 13000");
@@ -1210,11 +1210,11 @@ fn easyedit_commands_typed_in_game_change_the_world() {
     assert!(seen_block, "le bloc changé doit être envoyé au jeu");
     assert!(message.contains("1 blocs modifi"), "{}", message);
     command(&mut steve, "//set pas_un_bloc");
-    expect_text(&mut steve, "bloc inconnu");
+    expect_text(&mut steve, "inconnu : pas_un_bloc");
     command(&mut steve, "//undo");
-    expect_text(&mut steve, "1 blocs modifi");
+    expect_text(&mut steve, "1 blocs annul");
     command(&mut steve, "//undo");
-    expect_text(&mut steve, "rien à annuler");
+    expect_text(&mut steve, "Rien à annuler");
 
     // Même chose tapée dans le chat avec un point : c'est la voie qui marche avec le vrai jeu,
     // qui n'envoie pas les commandes en « / » qu'il ne connaît pas

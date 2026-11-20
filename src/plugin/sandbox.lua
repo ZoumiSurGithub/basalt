@@ -110,7 +110,6 @@ function Player:getDirection()
 end
 -- Édition du monde en volume (voir le plugin EasyEdit) : le serveur exécute l'opération et
 -- répond lui-même au joueur
-function Player:edit(operation, ...) pdo(self.name, "edit", tostring(operation), ...) end
 -- Permissions : réglage propre au joueur, sinon règle par défaut déclarée dans plugin.yml
 function Player:isOp() return pget(self.name, "op") == true end
 function Player:setOp(value) pset(self.name, "op", value == true) end
@@ -224,6 +223,54 @@ function Block:getPosition() return self.x, self.y, self.z end
 function Block:getX() return self.x end
 function Block:getY() return self.y end
 function Block:getZ() return self.z end
+
+-- ---------------------------------------------------------------------------------------
+-- Le monde, comme World dans PocketMine : lire et poser des blocs.
+--
+--   local world = server.getWorld()
+--   local bloc = world:getBlock(x, y, z)        -- bloc:getName(), bloc:getState()
+--   world:setBlock(x, y, z, "minecraft:stone")  -- nom, état (entier) ou bloc
+--
+-- Un bloc est désigné par son nom (son état par défaut) ou par son « état » : un entier qui
+-- distingue aussi l'orientation, la couleur… (server.blockState(nom), server.blockName(état)).
+-- La lecture voit le monde au début de l'appel ; les blocs posés sont appliqués par le serveur
+-- à la fin de l'appel, et visibles à l'appel suivant.
+-- ---------------------------------------------------------------------------------------
+local raw_block, raw_blocks, raw_setblocks = server._block, server._blocks, server._setblocks
+function Block:getState() return self.state end
+
+local function state_of(block)
+  local t = type(block)
+  if t == "number" then return math.tointeger(block) end
+  if t == "string" then return server.blockState(block) end
+  if t == "table" and block.state then return block.state end
+  if t == "table" and block.name then return server.blockState(block.name) end
+  return nil
+end
+
+local World = {}
+World.__index = World
+World.__name = "World"
+function World:getBlockState(x, y, z) return raw_block(x, y, z) end
+function World:getBlock(x, y, z)
+  x, y, z = math.floor(x), math.floor(y), math.floor(z)
+  local state = raw_block(x, y, z)
+  if not state then return nil end
+  return setmetatable({ name = server.blockName(state), state = state, x = x, y = y, z = z }, Block)
+end
+-- États de tout un volume, dans une table plate rangée par y, puis x, puis z
+function World:getBlocks(x1, y1, z1, x2, y2, z2) return raw_blocks(x1, y1, z1, x2, y2, z2) end
+function World:setBlock(x, y, z, block)
+  local state = state_of(block)
+  if not state then error("bloc inconnu : " .. tostring(block), 2) end
+  raw_setblocks({ math.floor(x), math.floor(y), math.floor(z), state })
+end
+-- Pose en une fois : table plate { x, y, z, état, x, y, z, état, … } (1 000 000 blocs au plus)
+function World:setBlocks(list) raw_setblocks(list) end
+World.getBlockAt = World.getBlock
+local the_world = setmetatable({}, World)
+function server.getWorld() return the_world end
+server._block, server._blocks, server._setblocks = nil, nil, nil
 
 local Event = {}
 Event.__index = Event

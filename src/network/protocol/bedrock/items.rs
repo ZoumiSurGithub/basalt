@@ -957,3 +957,132 @@ mod grouped_request_tests {
         assert!(read_stack_requests(&[200, 1]).is_none());
     }
 }
+
+/// Objet jeté avec la touche « lâcher » (Q) : le jeu n'envoie pas de demande d'inventaire
+/// mais une InventoryTransaction « normale » avec deux actions : l'objet qui apparaît dans le
+/// monde (source 2, drapeau 0) et la case de l'inventaire qui se vide.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WorldDrop {
+    pub id: i16,
+    pub count: u16,
+    /// Case du sac (fenêtre 0) d'où vient l'objet, si le jeu l'a indiquée.
+    pub slot: Option<usize>,
+}
+
+pub fn read_world_drop(body: &[u8]) -> Option<WorldDrop> {
+    // L'objet vide n'a pas été relevé dans une capture : les deux écritures possibles sont
+    // essayées, et seule une lecture qui tombe exactement sur la fin du paquet est gardée.
+    for air_short in [false, true] {
+        for slots_flag in [false, true] {
+            if let Some(d) = world_drop_at(body, slots_flag, air_short) {
+                return Some(d);
+            }
+        }
+    }
+    None
+}
+
+fn read_net_item(d: &[u8], pos: &mut usize, air_short: bool) -> Option<(i16, u16)> {
+    let id = i16::from_le_bytes([*d.get(*pos)?, *d.get(*pos + 1)?]);
+    if id == 0 && air_short {
+        *pos += 2;
+        return Some((0, 0));
+    }
+    let count = u16::from_le_bytes([*d.get(*pos + 2)?, *d.get(*pos + 3)?]);
+    skip_item(d, pos)?;
+    Some((id, if id == 0 { 0 } else { count }))
+}
+
+fn world_drop_at(body: &[u8], slots_flag: bool, air_short: bool) -> Option<WorldDrop> {
+    let mut pos = 0;
+    let legacy = read_vari32(body, &mut pos)?;
+    let has_slots = if slots_flag {
+        let b = *body.get(pos)?;
+        pos += 1;
+        if b > 1 {
+            return None;
+        }
+        b == 1
+    } else {
+        legacy != 0
+    };
+    if has_slots {
+        let n = read_varu32(body, &mut pos)? as usize;
+        if n > 64 {
+            return None;
+        }
+        for _ in 0..n {
+            pos += 1;
+            let m = read_varu32(body, &mut pos)? as usize;
+            pos = pos.checked_add(m)?;
+        }
+    }
+    if read_varu32(body, &mut pos)? != 0 {
+        return None; // pas une transaction « normale »
+    }
+    let actions = read_varu32(body, &mut pos)? as usize;
+    if actions == 0 || actions > 16 {
+        return None;
+    }
+    let mut thrown: Option<(i16, u16)> = None;
+    let mut slot = None;
+    for _ in 0..actions {
+        let source = read_varu32(body, &mut pos)?;
+        let mut window = None;
+        let mut flags = None;
+        match source {
+            0 | 99999 => window = Some(read_vari32(body, &mut pos)?),
+            2 => flags = Some(read_varu32(body, &mut pos)?),
+            1 | 3 => {}
+            _ => return None,
+        }
+        let s = read_varu32(body, &mut pos)?;
+        let _old = read_net_item(body, &mut pos, air_short)?;
+        let new = read_net_item(body, &mut pos, air_short)?;
+        if source == 2 && flags == Some(0) && new.0 != 0 && new.1 > 0 {
+            thrown = Some(new);
+        }
+        if source == 0 && window == Some(0) && (s as usize) < 36 {
+            slot = Some(s as usize);
+        }
+    }
+    if pos != body.len() {
+        return None;
+    }
+    let (id, count) = thrown?;
+    Some(WorldDrop { id, count, slot })
+}
+
+#[cfg(test)]
+mod key_drop_tests {
+    use super::*;
+
+    fn item(id: i16, count: u16) -> Vec<u8> {
+        let mut v = id.to_le_bytes().to_vec();
+        v.extend_from_slice(&count.to_le_bytes());
+        v.extend_from_slice(&[0, 0, 0, 0]); // variante, pas d'identifiant de pile, bloc, données
+        v
+    }
+
+    fn packet(air: &[u8]) -> Vec<u8> {
+        let mut p = vec![0, 0, 2]; // pas de demande ancienne, transaction normale, deux actions
+        p.extend_from_slice(&[2, 0, 0]); // monde, lâcher, case 0
+        p.extend_from_slice(air);
+        p.extend(item(5, 1));
+        p.extend_from_slice(&[0, 0, 3]); // fenêtre 0 (sac), case 3
+        p.extend(item(5, 1));
+        p.extend_from_slice(air);
+        p
+    }
+
+    #[test]
+    fn key_drop_is_read_whatever_the_empty_item_looks_like() {
+        let want = WorldDrop { id: 5, count: 1, slot: Some(3) };
+        assert_eq!(read_world_drop(&packet(&item(0, 0))), Some(want));
+        assert_eq!(read_world_drop(&packet(&[0, 0])), Some(want));
+        // Un coup porté (type 3) n'est pas un lâcher
+        let mut attack = packet(&[0, 0]);
+        attack[1] = 3;
+        assert_eq!(read_world_drop(&attack), None);
+    }
+}

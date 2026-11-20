@@ -284,86 +284,37 @@ Si la commande porte une `permission` dans `plugin.yml`, le serveur la vérifie 
 le plugin ; un joueur qui ne l'a pas reçoit un refus. Sans permission déclarée, tout le monde
 peut la lancer.
 
-### Édition du monde en volume
+### Le monde : lire et poser des blocs
 
-`joueur:edit(opération, …)` demande au serveur une opération sur un grand nombre de blocs ;
-le serveur l'exécute, met le monde à jour chez tous les joueurs, répond au joueur et tient son
-historique pour annuler. C'est ce qu'utilise le plugin EasyEdit fourni (`plugins/EasyEdit`).
-
-| Opération | Arguments |
-|---|---|
-| `set`, `walls` | `x1, y1, z1, x2, y2, z2, motif` |
-| `replace` | `x1, y1, z1, x2, y2, z2, ancien, motif` |
-| `sphere` | `x, y, z, rayon, motif, creuse` |
-| `cyl` | `x, y, z, rayon, hauteur, motif, creux` |
-| `copy`, `cut` | `x1, y1, z1, x2, y2, z2, ox, oy, oz` (position du joueur) |
-| `paste` | `ox, oy, oz, sans_les_vides` |
-| `stack`, `move` | `x1, y1, z1, x2, y2, z2, dx, dy, dz, nombre` |
-| `count` | `x1, y1, z1, x2, y2, z2 [, bloc]` |
-| `undo`, `redo` | — |
-
-Un motif est un nom de bloc (`stone`, `minecraft:glass`) ou plusieurs séparés par des virgules,
-tirés au sort (`stone,dirt`). Une opération touche au plus 250 000 blocs.
-
-L'objet se comporte comme le pseudo dans un texte : `"Bienvenue " .. joueur` fonctionne.
-Pour s'en servir comme clé d'une table, utilisez `joueur:getName()`.
-
-Tout est enregistré dans `players/<pseudo>.dat`, à côté de `server.properties`, au format
-des fichiers de joueurs de PocketMine (vie, expérience, noms, position,
-inventaire) : quand le joueur part, toutes les minutes, à l'arrêt du serveur, et sur
-`joueur:save()`. Tout est rechargé à son retour. Les valeurs sont bornées par le serveur :
-un plugin ne peut pas donner une vie négative ou un niveau absurde.
+Comme `World` dans PocketMine, `server.getWorld()` donne accès aux blocs :
 
 ```lua
-server.on("load", function(joueur, nouveau)
-  if nouveau then
-    joueur:setMaxHealth(40)
-    joueur:setHealth(40)
-  end
-end)
-
-server.on("join", function(joueur)
-  joueur:setDisplayName("[Membre] " .. joueur:getName())
-  joueur:sendMessage("Niveau " .. joueur:getXpLevel() .. ", vie " .. joueur:getHealth())
-end)
+local world = server.getWorld()
+local bloc = world:getBlock(x, y, z)              -- bloc:getName(), bloc:getState(), bloc:getX()…
+world:setBlock(x, y, z, "minecraft:stone")        -- un nom, un état (entier) ou un bloc
+local etats = world:getBlocks(x1, y1, z1, x2, y2, z2)
+world:setBlocks({ x, y, z, etat, x, y, z, etat })  -- beaucoup de blocs en une fois
 ```
 
-### `login` : accepter ou refuser un joueur
-
-La table `joueur` contient :
-
-| Champ | Type | Contenu |
-|---|---|---|
-| `name` | texte | pseudo du joueur (certifié si `authenticated` vaut `true`) |
-| `xuid` | texte | identifiant Xbox (certifié si `authenticated` vaut `true`, sinon peut être vide) |
-| `address` | texte | adresse IP |
-| `game_version` | texte | version du jeu, par exemple `1.26.65` (peut être vide) |
-| `protocol` | nombre | numéro de protocole, par exemple `2225` |
-| `authenticated` | booléen | `true` si le compte Xbox a été vérifié par le serveur |
-
-Valeur renvoyée par la fonction :
-
-| Retour | Effet |
+| Fonction | Rôle |
 |---|---|
-| rien, `nil` ou `true` | le joueur est accepté |
-| un texte | le joueur est refusé et voit ce texte |
-| `false` | le joueur est refusé avec « Connexion refusée. » |
+| `world:getBlock(x, y, z)` | le bloc à cette position : `getName()`, `getState()`, `getX()`, `getY()`, `getZ()` |
+| `world:getBlockState(x, y, z)` | son état seulement (plus rapide) |
+| `world:getBlocks(x1, y1, z1, x2, y2, z2)` | états de tout un volume (1 000 000 de blocs au plus), dans une table plate rangée par y, puis x, puis z |
+| `world:setBlock(x, y, z, bloc)` | pose un bloc |
+| `world:setBlocks(t)` | pose beaucoup de blocs : `t` = `{ x, y, z, état, x, y, z, état, … }` (1 000 000 au plus) |
+| `server.blockState(nom)` | état par défaut d'un bloc (`"stone"` ou `"minecraft:stone"`), ou nil s'il n'existe pas |
+| `server.blockName(état)` | nom du bloc d'un état |
 
-```lua
-server.on("login", function(joueur)
-  if joueur.protocol < 2193 then
-    return "Mettez Minecraft à jour (1.26.50 ou plus récent)."
-  end
-end)
-```
+Un **état** est un entier qui désigne un bloc avec toutes ses propriétés (orientation d'un
+escalier, couleur de la laine…) : c'est ce qu'il faut garder pour recopier un bloc à
+l'identique. Un nom désigne le bloc dans son état par défaut.
 
-Si plusieurs plugins écoutent `login`, le premier refus l'emporte.
-
-> **Attention.** Avec `xbox-auth=true` (par défaut), `name` et `xuid` viennent du
-> jeton Xbox vérifié et `authenticated` vaut `true`. Avec `xbox-auth=false`, ce sont
-> de simples déclarations du client, falsifiables : testez `joueur.authenticated`
-> avant d'accorder des droits, et préférez `xuid` à `name` pour reconnaître un
-> joueur, car un pseudo peut changer.
+La lecture voit le monde tel qu'il était au début de l'appel. Les blocs posés sont appliqués
+par le serveur à la fin de l'appel (envoyés aux joueurs bloc par bloc s'ils sont peu nombreux,
+sinon par chunks entiers) et visibles dès l'appel suivant. Pour un très grand nombre de blocs,
+posez-les par tranches avec `server.every(1, …)` : c'est ce que fait le plugin EasyEdit fourni
+(`plugins/EasyEdit`), écrit entièrement avec ces fonctions, à lire comme exemple.
 
 ## Commandes
 

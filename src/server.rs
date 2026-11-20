@@ -18,7 +18,6 @@ use crate::data::Prop;
 use crate::tile::{self, TileContext};
 use crate::item::VanillaItems;
 use crate::config::Config;
-use crate::level::edit::{EditSession, Outcome, Region};
 use crate::permission::{self, NameList, OpList};
 use crate::player::{clean_text, GameMode, PlayerData};
 use crate::entity::item_physics::{self, Cell, Step};
@@ -73,8 +72,8 @@ fn move_player_known(protocol: i32) -> bool {
     protocol < 2225
 }
 
-/// Motif de blocs écrit par un joueur (`stone`, `minecraft:glass`, `stone,dirt`) vers les
-/// identifiants du monde.
+/// Blocs désignés par un texte de commande (« stone », « minecraft:stone », « stone,dirt »),
+/// pour /setblock et /fill : leur état par défaut.
 fn parse_pattern(data: Option<&GameData>, text: &str) -> Result<Vec<u32>, String> {
     let data = data.ok_or("les données du jeu ne sont pas chargées")?;
     let mut out = Vec::new();
@@ -89,6 +88,14 @@ fn parse_pattern(data: Option<&GameData>, text: &str) -> Result<Vec<u32>, String
         return Err("aucun bloc indiqué".into());
     }
     Ok(out)
+}
+
+/// Blocs changés en une fois : envoyés un par un s'ils sont peu nombreux, sinon par chunks.
+#[derive(Debug, Default)]
+struct Outcome {
+    changed: usize,
+    chunks: Vec<(i32, i32)>,
+    blocks: Vec<((i32, i32, i32), u32)>,
 }
 
 /// Catalogue des objets pour les données attachées aux blocs : noms, numéros, numéros de pile.
@@ -355,6 +362,8 @@ pub struct Server {
     next_id: i64,
     /// Objets posés au sol
     ground: HashMap<i64, GroundItem>,
+    /// Noms des blocs, partagés avec les plugins
+    plugin_blocks: Option<Arc<crate::data::BlockNames>>,
     /// Le jeu refuse les objets au sol : le butin retourne directement dans l'inventaire
     drops_refused: bool,
     chunk: Vec<u8>,
@@ -376,7 +385,6 @@ pub struct Server {
     /// Liste blanche (pseudos en minuscules), enregistrée dans white-list.txt
     whitelist: NameList,
     /// Édition du monde en volume : presse-papiers et historique de chaque joueur (pseudo en minuscules)
-    edits: HashMap<String, EditSession>,
     /// L'avertissement « téléportation indisponible » a déjà été affiché
     teleport_warned: bool,
     /// Heure du monde au démarrage (en ticks de jeu), décalée par /time
@@ -584,6 +592,7 @@ impl Server {
             running: true,
             next_id: 1,
             ground: HashMap::new(),
+            plugin_blocks: None,
             drops_refused: false,
             global_window: Instant::now(),
             global_bytes: 0,
@@ -597,7 +606,6 @@ impl Server {
             last_save: Instant::now(),
             ops: OpList::default(),
             whitelist: NameList::default(),
-            edits: HashMap::new(),
             teleport_warned: false,
             time_base: 6000,
             add_player_refused: false,
@@ -701,7 +709,15 @@ impl Server {
     }
 
     fn info(&self) -> Info {
-        let mut info = Info { motd: self.motd.clone(), players: Vec::new(), positions: Vec::new(), pdata: Vec::new(), perms: self.plugins.permissions() };
+        let mut info = Info {
+            motd: self.motd.clone(),
+            players: Vec::new(),
+            positions: Vec::new(),
+            pdata: Vec::new(),
+            perms: self.plugins.permissions(),
+            world: Some(self.world.view()),
+            blocks: self.plugin_blocks.clone(),
+        };
         for c in self.clients.values() {
             if let Some(n) = &c.name {
                 info.players.push(n.clone());
@@ -1450,7 +1466,7 @@ impl Server {
                         self.teleport(&addr, (x, y, z));
                     }
                 }
-                Action::Edit(name, op, args) => self.run_edit(&name, &op, &args),
+                Action::SetBlocks(list) => self.set_blocks_from_plugin(list),
                 Action::PlayerGive(name, item, count) => {
                     if let (Some(addr), Some(id)) = (self.addr_of(&name), self.item_id(&item)) {
                         self.add_item(&addr, id, count);
@@ -1465,79 +1481,34 @@ impl Server {
         }
     }
 
-    /// Exécute une opération d'édition en volume demandée par un plugin pour un joueur, met
-    /// le monde à jour chez tous les joueurs et répond au demandeur.
-    fn run_edit(&mut self, name: &str, op: &str, args: &[LVal]) {
-        let addr = match self.addr_of(name) {
-            Some(a) => a,
-            None => return,
-        };
-        let num = |i: usize| match args.get(i) {
-            Some(LVal::Num(n)) if n.is_finite() && n.abs() < 3.0e7 => Ok(n.floor() as i32),
-            _ => Err(format!("argument {} : nombre attendu", i + 1)),
-        };
-        let text = |i: usize| match args.get(i) {
-            Some(LVal::Str(s)) => Ok(s.as_str()),
-            _ => Err(format!("argument {} : texte attendu", i + 1)),
-        };
-        let flag = |i: usize| matches!(args.get(i), Some(LVal::Bool(true)));
-        let pos = |i: usize| -> Result<(i32, i32, i32), String> { Ok((num(i)?, num(i + 1)?, num(i + 2)?)) };
-        let region = || -> Result<Region, String> { Ok(Region::new(pos(0)?, pos(3)?)) };
-        let key = name.to_lowercase();
-        let mut session = self.edits.remove(&key).unwrap_or_default();
-        let data = self.data.as_ref();
-        let world = &mut self.world;
-        let pattern = |text: &str| parse_pattern(data, text);
-        let mut info: Option<String> = None;
-        let result: Result<Outcome, String> = (|| match op {
-            "set" => session.set(&mut *world, region()?, &pattern(text(6)?)?),
-            "replace" => {
-                let from = pattern(text(6)?)?[0];
-                session.replace(&mut *world, region()?, from, &pattern(text(7)?)?)
-            }
-            "walls" => session.walls(&mut *world, region()?, &pattern(text(6)?)?),
-            "sphere" => session.sphere(&mut *world, pos(0)?, num(3)?, &pattern(text(4)?)?, flag(5)),
-            "cyl" => session.cylinder(&mut *world, pos(0)?, num(3)?, num(4)?, &pattern(text(5)?)?, flag(6)),
-            "copy" => {
-                let count = session.copy(&*world, region()?, pos(6)?)?;
-                info = Some(format!("{} blocs copiés", count));
-                Ok(Outcome::default())
-            }
-            "cut" => session.cut(&mut *world, region()?, pos(6)?),
-            "paste" => session.paste(&mut *world, pos(0)?, flag(3)),
-            "stack" => session.stack(&mut *world, region()?, pos(6)?, num(9)?),
-            "move" => session.shift(&mut *world, region()?, pos(6)?, num(9)?),
-            "count" => {
-                let block = match args.get(6) {
-                    Some(LVal::Str(s)) => Some(pattern(s)?[0]),
-                    _ => None,
-                };
-                let count = EditSession::count(&*world, region()?, block)?;
-                info = Some(format!("{} blocs", count));
-                Ok(Outcome::default())
-            }
-            "undo" => session.undo(&mut *world),
-            "redo" => session.redo(&mut *world),
-            other => Err(format!("opération inconnue : {}", other)),
-        })();
-        self.edits.insert(key, session);
-        let message = match result {
-            Ok(outcome) => {
-                if outcome.changed > 0 {
-                    self.refresh_after_edit(&outcome);
-                    if self.cfg.debug {
-                        info!("{} : édition « {} », {} blocs changés dans {} chunks", name, op, outcome.changed, outcome.chunks.len());
-                    }
-                }
-                format!("§a{}", info.unwrap_or_else(|| format!("{} blocs modifiés", outcome.changed)))
-            }
-            Err(e) => format!("§c{}", e),
-        };
-        self.send(&addr, bedrock::ID_TEXT, &bedrock::text_raw(&message));
-    }
-
     /// Après une édition en volume : les joueurs reçoivent les blocs changés, un par un s'ils
     /// sont peu nombreux, sinon par chunks entiers.
+    /// Blocs posés par un plugin (`world:setBlock`, `world:setBlocks`). Les états inconnus du
+    /// jeu sont ignorés.
+    fn set_blocks_from_plugin(&mut self, list: Vec<(i32, i32, i32, u32)>) {
+        let mut outcome = Outcome::default();
+        let mut chunks: HashSet<(i32, i32)> = HashSet::new();
+        for (x, y, z, state) in list {
+            let known = self.data.as_ref().map(|d| d.block_name(state).is_some()).unwrap_or(false);
+            if !known || self.world.get(x, y, z) == state || !self.world.set(x, y, z, state) {
+                continue;
+            }
+            outcome.changed += 1;
+            chunks.insert((x >> 4, z >> 4));
+            if outcome.blocks.len() <= 512 {
+                outcome.blocks.push(((x, y, z), state));
+            }
+        }
+        if outcome.changed == 0 {
+            return;
+        }
+        if outcome.changed > 512 {
+            outcome.blocks.clear();
+        }
+        outcome.chunks = chunks.into_iter().collect();
+        self.refresh_after_edit(&outcome);
+    }
+
     fn refresh_after_edit(&mut self, outcome: &Outcome) {
         if !outcome.blocks.is_empty() {
             for ((x, y, z), block) in &outcome.blocks {
@@ -3364,6 +3335,44 @@ impl Server {
         }
     }
 
+    /// Touche « lâcher » (Q) : l'objet doit être dans la case indiquée (ou en main), en
+    /// quantité suffisante ; sinon le joueur retrouve l'inventaire exact du serveur.
+    fn on_key_drop(&mut self, addr: &SocketAddr, d: bedrock::WorldDrop) {
+        let taken = match self.clients.get_mut(addr) {
+            Some(c) if c.stage == Stage::InGame && c.dead.is_none() && !c.mode.is_spectator() => {
+                let slot = d.slot.unwrap_or(c.inv.selected as usize);
+                match c.inv.get((Target::Player, slot)) {
+                    Some(stack) if !stack.is_empty() && stack.id == d.id && d.count >= 1 && d.count as u8 <= stack.count && d.count <= 255 => {
+                        let ok = c.inv.apply(inventory::Action::Remove { count: d.count as u8, from: (Target::Player, slot) }).is_some();
+                        if ok {
+                            c.inv_touched = true;
+                        }
+                        ok
+                    }
+                    _ => false,
+                }
+            }
+            _ => return,
+        };
+        if !taken {
+            self.send_inventory(addr);
+            return;
+        }
+        // Le jeu a déjà retiré l'objet de son côté ; on renvoie l'état du serveur (même
+        // contenu, identifiants de piles à jour)
+        self.send_inventory(addr);
+        self.show_held(addr);
+        let out = self.fire("PlayerDropItemEvent", vec![("player", self.name_json(addr)), ("item", self.item_json(d.id, d.count as u8))]);
+        if cancelled(&out) {
+            self.add_item(addr, d.id, d.count);
+            return;
+        }
+        let at = self.clients.get(addr).map(|c| ((c.pos.0, c.pos.1 - 0.3, c.pos.2), item_physics::throw_velocity(c.yaw, c.pitch)));
+        if let Some((at, vel)) = at {
+            self.drop_item(at, vel, d.id, d.count as u8, 40);
+        }
+    }
+
     /// Applique une demande sur une copie de l'inventaire ; rien n'est gardé si une action échoue.
     fn run_stack_request(inv: &mut PlayerWindows, request: &bedrock::StackRequest, created: Option<i16>, dropped: &mut Vec<(i16, u8)>) -> Option<Vec<(u8, u8, u8, i32)>> {
         let mut work = inv.clone();
@@ -4489,6 +4498,12 @@ impl Server {
                         }
                     }
                 }
+                (Stage::InGame, bedrock::ID_INVENTORY_TRANSACTION) if bedrock::read_world_drop(&body).is_some() => {
+                    // Objet jeté avec la touche « lâcher » (Q)
+                    if let Some(d) = bedrock::read_world_drop(&body) {
+                        self.on_key_drop(&addr, d);
+                    }
+                }
                 (Stage::InGame, bedrock::ID_PLAYER_ACTION) => {
                     if let Some((_, bedrock::ACTION_RESPAWN)) = bedrock::read_player_action(&body) {
                         self.respawn(&addr);
@@ -5334,6 +5349,7 @@ impl Server {
             Ok(d) => {
                 info!("Données du jeu chargées : {} objets, {} blocs ({} états)", d.items.len(), d.block_count(), d.state_count());
                 self.blocks = Some(d.block_registry());
+                self.plugin_blocks = Some(Arc::new(d.block_names_for_plugins()));
                 self.data = Some(d);
                 self.items_level = 2;
             }

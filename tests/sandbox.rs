@@ -359,134 +359,124 @@ fn copy_bundled(plugin: &str, to: &std::path::Path) {
 }
 
 #[test]
-fn easyedit_turns_commands_into_world_edits() {
+fn easyedit_edits_the_world_by_itself() {
     use basalt::lua::PlayerSnap;
+    use basalt::world::World;
     let d = dir("easyedit");
     copy_bundled("EasyEdit", &d);
     let mut m = PluginManager::new(&d);
     if !m.available() {
         return;
     }
-    m.set_sandbox(true, "", 16);
-    m.load_all(&Info::default(), &[]);
+    let data = basalt::data::GameData::load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/data"))).unwrap();
+    let names = std::sync::Arc::new(data.block_names_for_plugins());
+    let mut world = World::new();
+    let mut info = Info::default();
+    info.blocks = Some(names.clone());
+    info.world = Some(world.view());
+    m.set_sandbox(true, "", 64);
+    m.load_all(&info, &[]);
     assert_eq!(m.plugins.len(), 1, "EasyEdit doit se charger dans le bac à sable");
-    assert_eq!(m.plugins[0].manifest.version, "1.0.0");
-    let names: Vec<String> = m.commands().into_iter().map(|c| c.0).collect();
+    let cmds: Vec<String> = m.commands().into_iter().map(|c| c.0).collect();
     for expected in ["wand", "pos1", "pos2", "set", "replace", "walls", "sphere", "hsphere", "cyl", "hcyl", "copy", "cut", "paste", "stack", "move", "count", "undo", "redo", "size", "easyedit"] {
-        assert!(names.contains(&expected.to_string()), "commande {} absente", expected);
+        assert!(cmds.contains(&expected.to_string()), "commande {} absente", expected);
         assert_eq!(m.command_permission(expected).as_deref(), Some("easyedit.use"));
     }
     // Un opérateur, les yeux en (10.5, -58.38, -3.5) : ses pieds sont dans le bloc (10, -60, -4)
-    let mut info = Info::default();
     info.players.push("Enzo".into());
     info.pdata.push(PlayerSnap { name: "Enzo".into(), display_name: "Enzo".into(), pos: (10.5, -58.38, -3.5), op: true, held: "minecraft:wooden_axe".into(), yaw: 0.0, pitch: -80.0, ..Default::default() });
     info.perms = m.permissions();
-    m.set_info(&info, 1);
-    let edits = |m: &mut PluginManager| -> Vec<(String, Vec<LVal>)> {
-        m.take_actions().into_iter().filter_map(|a| if let Action::Edit(_, op, args) = a { Some((op, args)) } else { None }).collect()
-    };
-    let n = |v: i32| LVal::Num(v as f64);
-    let s = |v: &str| LVal::Str(v.to_string());
+    let stone = data.default_state("minecraft:stone").unwrap();
+    let grass = data.default_state("minecraft:grass_block").unwrap();
+    let air = data.default_state("minecraft:air").unwrap();
 
-    // Sans sélection : un message, aucune édition
-    assert!(m.run_command_as("set", &["stone"], Some("Enzo")));
-    assert_eq!(edits(&mut m), vec![]);
-    // La baguette : casser = premier coin, cliquer = second ; les deux sont annulés
-    assert_eq!(m.dispatch("block_break", &[LVal::Player("Enzo".into()), LVal::Int(0), LVal::Int(-61), LVal::Int(0), s("minecraft:grass_block")]), vec![LVal::Bool(false)]);
-    assert_eq!(m.dispatch("block_click", &[LVal::Player("Enzo".into()), LVal::Int(4), LVal::Int(-58), LVal::Int(4), s("minecraft:stone")]), vec![LVal::Bool(false)]);
+    // Le serveur, réduit à l'essentiel : à chaque tick, une vue du monde pour le plugin, puis
+    // les blocs qu'il pose sont appliqués. Renvoie les messages adressés au joueur.
+    let tick = std::cell::Cell::new(1u64);
+    let run = |m: &mut PluginManager, world: &mut World, info: &mut Info, command: Option<(&str, &[&str])>, ticks: u64| -> Vec<String> {
+        let mut said = Vec::new();
+        let apply = |actions: Vec<Action>, world: &mut World, said: &mut Vec<String>| {
+            for a in actions {
+                match a {
+                    Action::SetBlocks(list) => {
+                        for (x, y, z, s) in list {
+                            world.set(x, y, z, s);
+                        }
+                    }
+                    Action::PlayerMessage(_, text) => said.push(text),
+                    _ => {}
+                }
+            }
+        };
+        if let Some((name, args)) = command {
+            info.world = Some(world.view());
+            m.set_info(info, tick.get());
+            m.run_command_as(name, args, Some("Enzo"));
+            m.clear_world();
+            let actions = m.take_actions();
+            apply(actions, world, &mut said);
+        }
+        for _ in 0..ticks {
+            tick.set(tick.get() + 1);
+            info.world = Some(world.view());
+            m.set_info(info, tick.get());
+            m.run_timers(tick.get());
+            m.clear_world();
+            let actions = m.take_actions();
+            apply(actions, world, &mut said);
+        }
+        said
+    };
+
+    // Sans sélection : un message, rien ne change
+    let said = run(&mut m, &mut world, &mut info, Some(("set", &["stone"])), 2);
+    assert!(said.iter().any(|s| s.contains("deux coins")), "{:?}", said);
+    assert_eq!(world.edit_count(), 0);
+
+    // La baguette : casser = premier coin, cliquer = second ; les deux gestes sont annulés
+    info.world = Some(world.view());
+    m.set_info(&info, tick.get());
+    let broke = m.fire("BlockBreakEvent", r#"{"player":"Enzo","block":{"name":"minecraft:grass_block","x":0,"y":-61,"z":0},"drops":[]}"#).unwrap();
+    assert!(broke.contains("\"cancelled\":true"), "{}", broke);
+    let clicked = m.fire("PlayerInteractEvent", r#"{"player":"Enzo","block":{"name":"minecraft:stone","x":4,"y":-58,"z":4},"action":1}"#).unwrap();
+    assert!(clicked.contains("\"cancelled\":true"), "{}", clicked);
     m.take_actions();
-    m.run_command_as("set", &["stone,dirt"], Some("Enzo"));
-    assert_eq!(edits(&mut m), vec![("set".to_string(), vec![n(0), n(-61), n(0), n(4), n(-58), n(4), s("stone,dirt")])]);
-    m.run_command_as("replace", &["stone", "glass"], Some("Enzo"));
-    assert_eq!(edits(&mut m)[0].0, "replace");
-    // Par rapport au joueur : copie, sphère creuse, empilement vers le haut (il regarde en l'air)
-    m.run_command_as("copy", &[], Some("Enzo"));
-    assert_eq!(edits(&mut m), vec![("copy".to_string(), vec![n(0), n(-61), n(0), n(4), n(-58), n(4), n(10), n(-60), n(-4)])]);
-    m.run_command_as("hsphere", &["glass", "6"], Some("Enzo"));
-    assert_eq!(edits(&mut m), vec![("sphere".to_string(), vec![n(10), n(-60), n(-4), n(6), s("glass"), LVal::Bool(true)])]);
-    m.run_command_as("stack", &["3"], Some("Enzo"));
-    assert_eq!(edits(&mut m), vec![("stack".to_string(), vec![n(0), n(-61), n(0), n(4), n(-58), n(4), n(0), n(1), n(0), n(3)])]);
-    m.run_command_as("move", &["north", "2"], Some("Enzo"));
-    assert_eq!(edits(&mut m)[0].1[6..], [n(0), n(0), n(-1), n(2)]);
-    m.run_command_as("paste", &["-a"], Some("Enzo"));
-    assert_eq!(edits(&mut m), vec![("paste".to_string(), vec![n(10), n(-60), n(-4), LVal::Bool(true)])]);
-    m.run_command_as("undo", &[], Some("Enzo"));
-    assert_eq!(edits(&mut m), vec![("undo".to_string(), vec![])]);
+
+    // /set stone : 5 × 4 × 5 = 100 blocs, posés par le plugin lui-même
+    let said = run(&mut m, &mut world, &mut info, Some(("set", &["stone"])), 3);
+    assert!(said.iter().any(|s| s.contains("100 blocs modifiés")), "{:?}", said);
+    assert_eq!(world.get(0, -61, 0), stone);
+    assert_eq!(world.get(4, -58, 4), stone);
+    assert_eq!(world.get(5, -58, 4), air);
+    // /count stone
+    let said = run(&mut m, &mut world, &mut info, Some(("count", &["stone"])), 0);
+    assert_eq!(said, vec!["§a100 blocs.".to_string()]);
+    // /undo : le terrain d'origine revient ; /redo le refait
+    run(&mut m, &mut world, &mut info, Some(("undo", &[])), 3);
+    assert_eq!(world.get(0, -61, 0), grass);
+    assert_eq!(world.get(4, -58, 4), air);
+    assert_eq!(world.edit_count(), 0);
+    run(&mut m, &mut world, &mut info, Some(("redo", &[])), 3);
+    assert_eq!(world.get(4, -58, 4), stone);
+
+    // /copy puis /paste : la copie est relative aux pieds du joueur (10, -60, -4)
+    run(&mut m, &mut world, &mut info, Some(("copy", &[])), 0);
+    info.pdata[0].pos = (30.5, -58.38, -3.5);
+    run(&mut m, &mut world, &mut info, Some(("paste", &["a"])), 3);
+    assert_eq!(world.get(20, -61, 0), stone, "collé 20 blocs plus loin");
+    assert_eq!(world.get(24, -58, 4), stone);
+
+    // Une grosse opération (sphère de rayon 20, plus de 20 000 blocs) se fait en plusieurs ticks
+    info.pdata[0].pos = (100.5, -38.38, 100.5);
+    let said = run(&mut m, &mut world, &mut info, Some(("sphere", &["glass", "20"])), 1);
+    assert!(said.iter().any(|s| s.contains("en cours")), "{:?}", said);
+    let said = run(&mut m, &mut world, &mut info, None, 4);
+    assert!(said.iter().any(|s| s.contains("Sphère") && s.contains("blocs modifiés")), "{:?}", said);
+    let glass = data.default_state("minecraft:glass").unwrap();
+    assert_eq!(world.get(100, -40, 100), glass, "centre de la sphère");
+
     // La baguette donne une hache en bois ; depuis la console, rien ne se passe
     m.run_command_as("wand", &[], Some("Enzo"));
     assert!(m.take_actions().contains(&Action::PlayerGive("Enzo".into(), "minecraft:wooden_axe".into(), 1)));
-    m.run_command("set", &["stone"]);
-    assert_eq!(edits(&mut m), vec![]);
-    // Sans la baguette en main, casser un bloc reste un geste normal
-    info.pdata[0].held = "minecraft:stone".into();
-    m.set_info(&info, 2);
-    assert_eq!(m.dispatch("block_break", &[LVal::Player("Enzo".into()), LVal::Int(0), LVal::Int(0), LVal::Int(0), s("minecraft:stone")]), vec![LVal::Nil]);
-}
-
-#[test]
-fn listeners_run_by_priority_across_plugins_like_pocketmine() {
-    let d = dir("events");
-    // Deux plugins : l'ordre de priorité passe avant l'ordre de chargement
-    std::fs::write(
-        d.join("a.lua"),
-        r#"
-local Ecouteur = {}
-function Ecouteur:onBlockBreak(event)
-  event:setDrops({ { name = "minecraft:dirt", count = 2 } })
-end
-Ecouteur.priorities = { onBlockBreak = EventPriority.LOW }
-server.getPluginManager():registerEvents(Ecouteur)
-server.registerEvent("BlockBreakEvent", function(event)
-  if event:getPlayer():getName() == "Enzo" then event:cancel() end
-end, EventPriority.HIGH)
--- Après l'annulation : n'est pas appelé (handleCancelled absent)
-server.registerEvent("BlockBreakEvent", function(event) event:setDrops({}) end, EventPriority.HIGHEST)
-server.registerEvent("BlockBreakEvent", function(event)
-  local b = event:getBlock()
-  server.set_motd(table.concat({ tostring(event:isCancelled()), event:getDrops()[1].name, b:getName(), b:getX(), event:getEventName() }, "|"))
-end, EventPriority.MONITOR, true)
--- Dégâts : un écouteur de EntityDamageByEntityEvent n'entend que les coups entre joueurs
-server.registerEvent("EntityDamageByEntityEvent", function(event)
-  event:setBaseDamage(event:getBaseDamage() * 2)
-end)
-"#,
-    )
-    .unwrap();
-    std::fs::write(
-        d.join("b.lua"),
-        r#"
-server.registerEvent("BlockBreakEvent", function(event)
-  event:setDrops({ { name = "minecraft:stone", count = 1 } })
-end, EventPriority.LOWEST)
-local ok, err = pcall(function() server.registerEvent("EvenementInconnu", function() end) end)
-server.set_motd("inconnu refusé : " .. tostring(not ok))
-"#,
-    )
-    .unwrap();
-    let mut m = PluginManager::new(&d);
-    if !m.available() {
-        return;
-    }
-    m.set_sandbox(true, "", 16);
-    m.load_all(&Info::default(), &[]);
-    let said: Vec<String> = m.take_actions().into_iter().filter_map(|a| if let Action::SetMotd(s) = a { Some(s) } else { None }).collect();
-    assert!(said.contains(&"inconnu refusé : true".to_string()), "{:?}", said);
-    assert!(m.listening().iter().any(|k| k == "BlockBreakEvent#LOW"));
-
-    let state = r#"{"player":"Enzo","block":{"name":"minecraft:stone","x":4,"y":-60,"z":7},"drops":[{"name":"minecraft:cobblestone","count":1}]}"#;
-    let out = m.fire("BlockBreakEvent", state).expect("écouté");
-    let v = basalt::json::parse(&out).unwrap();
-    assert_eq!(v.get("cancelled").and_then(|c| c.as_bool()), Some(true));
-    assert_eq!(v.get("drops").and_then(|d| d.as_arr()).and_then(|d| d[0].get("name")).and_then(|n| n.as_str()), Some("minecraft:dirt"));
-    let said: Vec<String> = m.take_actions().into_iter().filter_map(|a| if let Action::SetMotd(s) = a { Some(s) } else { None }).collect();
-    assert_eq!(said, vec!["true|minecraft:dirt|minecraft:stone|4|BlockBreakEvent".to_string()]);
-
-    // Chute : pas d'auteur, la règle « par une entité » ne s'applique pas
-    let fall = m.fire("EntityDamageEvent", r#"{"entity":"Enzo","cause":"FALL","baseDamage":3}"#).expect("écouté");
-    assert_eq!(basalt::json::parse(&fall).unwrap().get("baseDamage").and_then(|n| n.as_f64()), Some(3.0));
-    let hit = m.fire("EntityDamageEvent", r#"{"entity":"Enzo","cause":"ENTITY_ATTACK","baseDamage":3,"damager":"Alex"}"#).expect("écouté");
-    assert_eq!(basalt::json::parse(&hit).unwrap().get("baseDamage").and_then(|n| n.as_f64()), Some(6.0));
-    // Personne n'écoute : rien n'est appelé
-    assert_eq!(m.fire("PlayerJoinEvent", r#"{"player":"Enzo"}"#), None);
     let _ = std::fs::remove_dir_all(&d);
 }

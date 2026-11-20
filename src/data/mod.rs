@@ -32,6 +32,14 @@ pub enum Prop {
     Str(String),
 }
 
+/// Noms des blocs pour les plugins (qui tournent sur leur propre fil) : état -> nom, et nom
+/// -> état par défaut.
+#[derive(Default)]
+pub struct BlockNames {
+    pub names: HashMap<u32, String>,
+    pub defaults: HashMap<String, u32>,
+}
+
 pub struct GameData {
     pub items: Vec<ItemDef>,
     item_by_name: HashMap<String, usize>,
@@ -265,6 +273,14 @@ impl GameData {
             wanted.iter_mut().find(|(k, _)| k == key)?.1 = value.clone();
         }
         self.block_states.get(name)?.iter().copied().find(|s| self.state_props.get(s) == Some(&wanted))
+    }
+
+    /// Copie des noms de blocs pour les plugins.
+    pub fn block_names_for_plugins(&self) -> BlockNames {
+        BlockNames {
+            names: self.block_names.clone(),
+            defaults: self.block_states.iter().filter_map(|(n, s)| s.first().map(|d| (n.clone(), *d))).collect(),
+        }
     }
 
     pub fn block_name(&self, state: u32) -> Option<&str> {
