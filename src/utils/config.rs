@@ -27,6 +27,10 @@ pub struct Config {
     pub white_list: bool,
     /// Inventaire gardé à la mort (règle « keepInventory » du jeu). Non : il tombe au sol.
     pub keep_inventory: bool,
+    /// Terrain des nouveaux mondes : « normal » (relief, biomes, grottes) ou « flat » (plat)
+    pub level_type: String,
+    /// Graine des nouveaux mondes (vide : au hasard)
+    pub level_seed: String,
     /// Dossier du serveur : celui de `server.properties`, où vivent `ops.txt` et `white-list.txt`
     pub root: std::path::PathBuf,
     /// Fichier de configuration, quand elle en vient (pour y enregistrer un changement)
@@ -69,7 +73,7 @@ impl Default for Config {
             min_protocol: crate::versions::MIN_PROTOCOL,
             max_protocol: crate::versions::MAX_PROTOCOL,
             gamemode: "Survival".into(),
-            world_name: "Monde plat".into(),
+            world_name: "Monde".into(),
             view_distance: 6,
             debug: false,
             probes: false,
@@ -77,6 +81,8 @@ impl Default for Config {
             xbox_auth: true,
             white_list: false,
             keep_inventory: false,
+            level_type: "normal".into(),
+            level_seed: String::new(),
             root: std::path::PathBuf::from("."),
             file: None,
             http_signaling: true,
@@ -132,7 +138,12 @@ gamemode=Survival
 # true : un joueur qui meurt garde son inventaire. false (comme dans le jeu) : son
 # inventaire et son armure tombent au sol là où il est mort.
 keep-inventory=false
-world-name=Monde plat
+# Terrain d'un nouveau monde : normal (relief, biomes, grottes, arbres) ou flat (plat).
+# Un monde déjà créé garde son terrain : pour en changer, utilisez un autre world-dir.
+level-type=normal
+# Graine d'un nouveau monde : un nombre ou un texte. Vide : au hasard.
+level-seed=
+world-name=Monde
 # Rayon (en chunks) du terrain envoyé autour du point d'apparition
 view-distance=6
 # true : seuls les joueurs connectés à leur compte Xbox sont acceptés, et leur
@@ -187,6 +198,15 @@ impl Config {
         };
         let mut c = Config::parse(&text);
         // Fichier d'une version précédente : la nouvelle option y est ajoutée, avec son explication
+        if !text.is_empty() && !text.lines().any(|l| l.trim_start().starts_with("level-type")) {
+            let mut more = text.clone();
+            if !more.ends_with('\n') {
+                more.push('\n');
+            }
+            more.push_str("# Terrain d'un nouveau monde : normal (relief, biomes, grottes, arbres) ou flat (plat).\n# Un monde déjà créé garde son terrain : pour en changer, utilisez un autre world-dir.\nlevel-type=normal\n# Graine d'un nouveau monde : un nombre ou un texte. Vide : au hasard.\nlevel-seed=\n");
+            let _ = std::fs::write(path, &more);
+        }
+        let text = std::fs::read_to_string(path).unwrap_or(text);
         if !text.is_empty() && !text.lines().any(|l| l.trim_start().starts_with("keep-inventory")) {
             let mut more = text.clone();
             if !more.ends_with('\n') {
@@ -252,6 +272,8 @@ impl Config {
         c.xbox_auth = map.get("xbox-auth").map(|v| v != "false").unwrap_or(true);
         c.white_list = map.get("white-list").map(|v| v == "true" || v == "on").unwrap_or(false);
         c.keep_inventory = map.get("keep-inventory").map(|v| v == "true" || v == "on").unwrap_or(false);
+        c.level_type = text_of("level-type", "normal");
+        c.level_seed = map.get("level-seed").cloned().unwrap_or_default();
         c.auth_keys_file = text_of("auth-keys-file", "");
         c.debug = map.get("debug-packets").map(|v| v == "true").unwrap_or(false);
         c.probes = map.get("debug-probes").map(|v| v == "true").unwrap_or(false);

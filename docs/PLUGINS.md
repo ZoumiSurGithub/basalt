@@ -7,6 +7,8 @@ plugin peut faire aujourd'hui, avec des exemples vérifiés sur le serveur.
 - [Où placer un plugin](#où-placer-un-plugin)
 - [Cycle de vie](#cycle-de-vie)
 - [Événements](#événements)
+- [Écouteurs d'événements (comme PocketMine)](#écouteurs-dévénements-comme-pocketmine)
+- [L'objet joueur](#lobjet-joueur), puis [le monde : lire et poser des blocs](#le-monde--lire-et-poser-des-blocs)
 - [Commandes](#commandes)
 - [Minuteries](#minuteries)
 - [Référence de l'API](#référence-de-lapi)
@@ -339,7 +341,7 @@ end)
 - Les commandes intégrées (`help`, `list`, `plugins`, `reload`, `motd`, `version`,
   `stop`) ne peuvent pas être remplacées.
 - Si deux plugins déclarent le même nom, celui chargé en premier est utilisé.
-- Les commandes ne sont disponibles que dans la console, pas encore en jeu.
+- Les commandes des plugins se tapent en jeu (`/nom`) comme dans la console.
 
 ## Minuteries
 
@@ -568,11 +570,11 @@ return {
 
 L'API suit l'avancement du serveur. Ne sont pas encore accessibles aux plugins :
 
-- envoyer un message à un joueur, lire ou modifier le chat ;
-- la téléportation, le mode de jeu, un événement de déplacement ;
-- les blocs, le monde, les objets et les inventaires ;
-- les commandes tapées en jeu et les permissions ;
-- l'annulation d'une minuterie, la communication entre plugins.
+- un événement de déplacement (`PlayerMoveEvent`), trop fréquent pour le fil des plugins ;
+- le contenu des inventaires (seuls `joueur:give` et `joueur:getItemInHand` existent) ;
+- les entités autres que les joueurs ;
+- l'annulation d'une minuterie ;
+- la communication directe entre plugins (en dehors des événements qu'ils écoutent tous).
 
 Ces fonctions seront ajoutées à mesure que le serveur les prendra en charge ; ce
 document sera mis à jour en même temps.

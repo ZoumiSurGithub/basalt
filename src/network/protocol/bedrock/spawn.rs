@@ -40,6 +40,11 @@ pub struct StartGame<'a> {
     pub rotation: (f32, f32),
     pub world_name: &'a str,
     pub game_version: &'a str,
+    /// Graine, et terrain plat ou non (seulement annoncés au jeu)
+    pub seed: u64,
+    pub flat: bool,
+    /// Point d'apparition du monde (bloc où se tiennent les pieds)
+    pub spawn: (i32, i32, i32),
     pub features: crate::versions::Features,
 }
 
@@ -58,17 +63,17 @@ pub fn start_game(s: &StartGame) -> Vec<u8> {
     w.f32(s.rotation.1); // orientation
 
     // --- LevelSettings ---
-    w.u64(0); // graine
+    w.u64(s.seed); // graine
     w.i16(0); // biome d'apparition : par défaut
     w.string("plains");
     w.vari32(0); // dimension : surface
-    w.vari32(2); // générateur : plat
+    w.vari32(if s.flat { 2 } else { 1 }); // générateur : plat ou normal
     w.vari32(s.gamemode); // mode de jeu du monde
     w.bool(false); // hardcore
     w.vari32(1); // difficulté : facile
-    w.vari32(0); // point d'apparition
-    w.vari32(GROUND_Y);
-    w.vari32(0);
+    w.vari32(s.spawn.0); // point d'apparition
+    w.vari32(s.spawn.1);
+    w.vari32(s.spawn.2);
     w.bool(true); // succès désactivés
     w.vari32(0); // type de monde éditeur
     w.bool(false); // créé dans l'éditeur

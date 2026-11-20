@@ -1,40 +1,144 @@
-//! Le monde : un terrain plat, plus les modifications faites par les joueurs.
+//! Le monde : un terrain généré (voir `generator`), plus les modifications des joueurs.
 //!
-//! Le terrain de base est calculé (pierre, terre, terre, herbe, de y = -64 à -61).
-//! Seuls les blocs modifiés sont gardés en mémoire, rangés par chunk. Un chunk
-//! sans modification est envoyé avec le contenu commun précalculé ; un chunk
-//! modifié est encodé à la demande.
-//!
-//! Les modifications sont enregistrées dans `level.nbt`.
+//! Le terrain de base est une fonction de la graine : il se régénère à l'identique et n'est
+//! jamais enregistré. Les chunks générés sont gardés dans un cache (les plus anciens en
+//! sortent quand il est plein) et générés à l'avance par des fils de travail, autour des
+//! joueurs. Seuls les blocs modifiés sont gardés à part et enregistrés dans `level.nbt`,
+//! avec le type de terrain et la graine.
 //!
 //! Les plugins lisent le monde depuis leur propre fil, par une « vue » (`WorldView`) : une
-//! copie instantanée qui ne coûte rien à prendre. Le stockage est partagé, et n'est recopié
-//! (chunk par chunk) que si le serveur modifie un bloc pendant qu'une vue est encore utilisée.
+//! copie instantanée qui ne coûte rien à prendre. Le stockage des modifications est partagé,
+//! et n'est recopié (chunk par chunk) que si le serveur modifie un bloc pendant qu'une vue
+//! est encore utilisée ; le terrain généré est partagé tel quel.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+pub mod generator;
 
-use crate::bedrock::{block_hash, W};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 
-/// Hauteur minimale du monde (surface).
+use crate::bedrock::W;
+#[cfg(test)]
+use crate::bedrock::block_hash;
+use generator::{Column, Generator, Kind, Palette, Section};
+
+/// Hauteur minimale du monde.
 pub const MIN_Y: i32 = -64;
 /// Hauteur maximale où l'on peut construire.
 pub const MAX_Y: i32 = 319;
 /// Blocs modifiés tolérés au total : au-delà, les nouvelles modifications sont refusées.
 const MAX_EDITS: usize = 2_000_000;
+/// Chunks générés gardés en mémoire (environ 40 Ko chacun). Au-delà, les moins récemment
+/// utilisés sont oubliés : les régénérer ne prend qu'une milliseconde environ.
+const CACHE_CHUNKS: usize = 2048;
 
 /// Blocs modifiés d'un chunk : (x local, y, z local) -> identifiant réseau du bloc.
 type ChunkEdits = HashMap<(u8, i16, u8), u32>;
+
+/// Chunks générés, partagés entre la boucle du serveur, les fils de génération et les plugins.
+struct Terrain {
+    generator: Generator,
+    chunks: Mutex<HashMap<(i32, i32), (Arc<Column>, u64)>>,
+    clock: AtomicU64,
+    /// Chunks demandés aux fils de génération et pas encore prêts
+    pending: Mutex<HashSet<(i32, i32)>>,
+    jobs: Mutex<Option<Sender<(i32, i32)>>>,
+}
+
+impl Terrain {
+    fn new(generator: Generator) -> Arc<Terrain> {
+        Arc::new(Terrain {
+            generator,
+            chunks: Mutex::new(HashMap::new()),
+            clock: AtomicU64::new(0),
+            pending: Mutex::new(HashSet::new()),
+            jobs: Mutex::new(None),
+        })
+    }
+
+    fn cached(&self, key: (i32, i32)) -> Option<Arc<Column>> {
+        let stamp = self.clock.fetch_add(1, Ordering::Relaxed);
+        let mut chunks = self.chunks.lock().unwrap_or_else(|e| e.into_inner());
+        chunks.get_mut(&key).map(|(c, s)| {
+            *s = stamp;
+            c.clone()
+        })
+    }
+
+    fn insert(&self, key: (i32, i32), column: Arc<Column>) {
+        let stamp = self.clock.fetch_add(1, Ordering::Relaxed);
+        let mut chunks = self.chunks.lock().unwrap_or_else(|e| e.into_inner());
+        chunks.insert(key, (column, stamp));
+        if chunks.len() > CACHE_CHUNKS {
+            // Les moins récemment utilisés sortent (ils seront régénérés au besoin)
+            let mut stamps: Vec<u64> = chunks.values().map(|(_, s)| *s).collect();
+            stamps.sort_unstable();
+            let cut = stamps[stamps.len() / 4];
+            chunks.retain(|_, (_, s)| *s > cut);
+        }
+    }
+
+    /// Chunk généré (calculé sur place s'il n'est pas prêt).
+    fn column(&self, key: (i32, i32)) -> Arc<Column> {
+        if let Some(c) = self.cached(key) {
+            return c;
+        }
+        let column = Arc::new(self.generator.generate(key.0, key.1));
+        self.insert(key, column.clone());
+        column
+    }
+
+    fn ready(&self, key: (i32, i32)) -> bool {
+        self.chunks.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&key)
+    }
+
+    /// Demande un chunk aux fils de génération (sans attendre).
+    fn request(self: &Arc<Self>, key: (i32, i32)) {
+        if self.ready(key) {
+            return;
+        }
+        if !self.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(key) {
+            return; // déjà demandé
+        }
+        let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        if jobs.is_none() {
+            *jobs = Some(Self::start_workers(self.clone()));
+        }
+        if let Some(tx) = jobs.as_ref() {
+            let _ = tx.send(key);
+        }
+    }
+
+    fn start_workers(terrain: Arc<Terrain>) -> Sender<(i32, i32)> {
+        let (tx, rx) = mpsc::channel::<(i32, i32)>();
+        let rx = Arc::new(Mutex::new(rx));
+        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).saturating_sub(1).clamp(1, 4);
+        for i in 0..threads {
+            let (terrain, rx): (Arc<Terrain>, Arc<Mutex<Receiver<(i32, i32)>>>) = (terrain.clone(), rx.clone());
+            let _ = std::thread::Builder::new().name(format!("terrain-{}", i)).spawn(move || loop {
+                let key = match rx.lock().unwrap_or_else(|e| e.into_inner()).recv() {
+                    Ok(k) => k,
+                    Err(_) => return,
+                };
+                if !terrain.ready(key) {
+                    let column = Arc::new(terrain.generator.generate(key.0, key.1));
+                    terrain.insert(key, column);
+                }
+                terrain.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
+            });
+        }
+        tx
+    }
+}
 
 /// Vue du monde pour un autre fil (les plugins) : lecture seule, figée au moment où elle a
 /// été prise.
 #[derive(Clone)]
 pub struct WorldView {
     edits: Arc<HashMap<(i32, i32), Arc<ChunkEdits>>>,
+    terrain: Arc<Terrain>,
     air: u32,
-    stone: u32,
-    dirt: u32,
-    grass: u32,
 }
 
 impl WorldView {
@@ -46,12 +150,7 @@ impl WorldView {
         let key = ((x & 15) as u8, y as i16, (z & 15) as u8);
         match self.edits.get(&(x >> 4, z >> 4)).and_then(|c| c.get(&key)) {
             Some(b) => *b,
-            None => match y {
-                -64 => self.stone,
-                -63 | -62 => self.dirt,
-                -61 => self.grass,
-                _ => self.air,
-            },
+            None => self.terrain.column((x >> 4, z >> 4)).get((x & 15) as usize, y, (z & 15) as usize),
         }
     }
 }
@@ -61,13 +160,15 @@ pub struct World {
     /// (chunk x, chunk z) -> (x local, y, z local) -> identifiant réseau du bloc
     edits: Arc<HashMap<(i32, i32), Arc<ChunkEdits>>>,
     count: usize,
+    terrain: Arc<Terrain>,
     /// Modifié depuis le dernier enregistrement
     pub dirty: bool,
     /// Données attachées aux blocs : contenu des coffres, état des fours, texte des panneaux
     pub tiles: crate::tile::TileMap,
     pub air: u32,
+    #[cfg(test)]
     stone: u32,
-    dirt: u32,
+    #[cfg(test)]
     grass: u32,
 }
 
@@ -78,27 +179,34 @@ impl Default for World {
 }
 
 impl World {
+    /// Monde plat (blocs sans données du jeu) : le terrain des tests et des anciens mondes.
     pub fn new() -> World {
+        World::with_generator(Generator::new(Kind::Flat, 0, Palette::new(&|_| None)))
+    }
+
+    pub fn with_generator(generator: Generator) -> World {
+        let air = generator.blocks.air;
         World {
             edits: Arc::new(HashMap::new()),
             count: 0,
+            terrain: Terrain::new(generator),
             dirty: false,
             tiles: crate::tile::TileMap::new(),
-            air: block_hash("minecraft:air"),
+            air,
+            #[cfg(test)]
             stone: block_hash("minecraft:stone"),
-            dirt: block_hash("minecraft:dirt"),
+            #[cfg(test)]
             grass: block_hash("minecraft:grass_block"),
         }
     }
 
-    /// Bloc du terrain d'origine à cette hauteur.
-    fn base(&self, y: i32) -> u32 {
-        match y {
-            -64 => self.stone,
-            -63 | -62 => self.dirt,
-            -61 => self.grass,
-            _ => self.air,
-        }
+    pub fn generator(&self) -> &Generator {
+        &self.terrain.generator
+    }
+
+    /// Bloc du terrain d'origine à cette position.
+    fn base(&self, x: i32, y: i32, z: i32) -> u32 {
+        self.terrain.column((x >> 4, z >> 4)).get((x & 15) as usize, y, (z & 15) as usize)
     }
 
     pub fn in_bounds(y: i32) -> bool {
@@ -113,8 +221,19 @@ impl World {
         let key = ((x & 15) as u8, y as i16, (z & 15) as u8);
         match self.edits.get(&(x >> 4, z >> 4)).and_then(|c| c.get(&key)) {
             Some(b) => *b,
-            None => self.base(y),
+            None => self.base(x, y, z),
         }
+    }
+
+    /// Hauteur du bloc plein le plus haut d'une colonne (feuilles et plantes exclues si
+    /// `solid` le dit), ou `MIN_Y - 1` si la colonne est vide.
+    pub fn highest(&self, x: i32, z: i32, solid: &dyn Fn(u32) -> bool) -> i32 {
+        for y in (MIN_Y..=MAX_Y).rev() {
+            if solid(self.get(x, y, z)) {
+                return y;
+            }
+        }
+        MIN_Y - 1
     }
 
     /// Change un bloc. Renvoie faux si la position est hors du monde ou si la limite est atteinte.
@@ -124,7 +243,7 @@ impl World {
         }
         let chunk = (x >> 4, z >> 4);
         let key = ((x & 15) as u8, y as i16, (z & 15) as u8);
-        if block == self.base(y) {
+        if block == self.base(x, y, z) {
             // retour à l'état d'origine : rien à garder
             if self.edits.get(&chunk).map(|c| c.contains_key(&key)).unwrap_or(false) {
                 let all = Arc::make_mut(&mut self.edits);
@@ -140,6 +259,11 @@ impl World {
             }
             return true;
         }
+        self.store(chunk, key, block)
+    }
+
+    /// Garde une modification telle quelle (sans la comparer au terrain).
+    fn store(&mut self, chunk: (i32, i32), key: (u8, i16, u8), block: u32) -> bool {
         let known = self.edits.get(&chunk).map(|c| c.contains_key(&key)).unwrap_or(false);
         if !known {
             if self.count >= MAX_EDITS {
@@ -158,12 +282,22 @@ impl World {
 
     /// Vue du monde pour un autre fil (plugins) : copie instantanée, sans recopie des blocs.
     pub fn view(&self) -> WorldView {
-        WorldView { edits: self.edits.clone(), air: self.air, stone: self.stone, dirt: self.dirt, grass: self.grass }
+        WorldView { edits: self.edits.clone(), terrain: self.terrain.clone(), air: self.air }
     }
 
     /// Nombre de blocs qui diffèrent du terrain d'origine.
     pub fn edit_count(&self) -> usize {
         self.count
+    }
+
+    /// Demande la génération d'un chunk en arrière-plan (sans attendre).
+    pub fn prepare(&self, cx: i32, cz: i32) {
+        self.terrain.request((cx, cz));
+    }
+
+    /// Le chunk est-il généré (prêt à être envoyé sans attendre) ?
+    pub fn is_ready(&self, cx: i32, cz: i32) -> bool {
+        self.terrain.ready((cx, cz))
     }
 
     /// Enregistre les blocs modifiés dans `level.nbt`. Chaque bloc occupe quatre entiers
@@ -185,7 +319,13 @@ impl World {
                 blocks.extend_from_slice(&[cx * 16 + *x as i32, *y as i32, cz * 16 + *z as i32, *block as i32]);
             }
         }
-        Tag::compound(vec![("Version", Tag::Int(1)), ("Blocks", Tag::IntArray(blocks))])
+        let g = self.generator();
+        Tag::compound(vec![
+            ("Version", Tag::Int(1)),
+            ("Generator", Tag::string(g.kind.name())),
+            ("Seed", Tag::Long(g.seed as i64)),
+            ("Blocks", Tag::IntArray(blocks)),
+        ])
     }
 
     /// Écrit un document préparé par `snapshot` (compression et disque : la partie lente,
@@ -197,6 +337,20 @@ impl World {
         Ok(())
     }
 
+    /// Type de terrain et graine d'un monde déjà créé, s'il y en a un dans ce dossier. Un
+    /// monde enregistré avant la génération de terrain est plat.
+    pub fn stored_generator(dir: &std::path::Path) -> Result<Option<(Kind, u64)>, String> {
+        match crate::nbt::load_file(&dir.join("level.nbt"))? {
+            Some(doc) => {
+                let kind = doc.get("Generator").and_then(|t| t.as_str()).map(Kind::parse).unwrap_or(Kind::Flat);
+                let seed = doc.get("Seed").and_then(|t| t.as_i64()).unwrap_or(0) as u64;
+                Ok(Some((kind, seed)))
+            }
+            None if dir.join("blocs.bin").exists() => Ok(Some((Kind::Flat, 0))),
+            None => Ok(None),
+        }
+    }
+
     /// Recharge les blocs enregistrés. Renvoie leur nombre (0 si aucun fichier).
     pub fn load(&mut self, dir: &std::path::Path) -> Result<usize, String> {
         match crate::nbt::load_file(&dir.join("level.nbt"))? {
@@ -206,7 +360,9 @@ impl World {
                     return Err("level.nbt : liste « Blocks » tronquée".into());
                 }
                 for b in blocks.chunks_exact(4) {
-                    self.set(b[0], b[1], b[2], b[3] as u32);
+                    if Self::in_bounds(b[1]) {
+                        self.store((b[0] >> 4, b[2] >> 4), ((b[0] & 15) as u8, b[1] as i16, (b[2] & 15) as u8), b[3] as u32);
+                    }
                 }
                 self.dirty = false;
                 Ok(self.count)
@@ -243,49 +399,60 @@ impl World {
         self.edits.contains_key(&(cx, cz))
     }
 
-    /// Contenu d'un chunk modifié : (nombre de sous-chunks, données). None si le chunk est d'origine.
-    pub fn chunk_payload(&self, cx: i32, cz: i32) -> Option<(u32, Vec<u8>)> {
-        let edits = self.edits.get(&(cx, cz))?;
-        // Sous-chunk le plus haut à envoyer : celui du terrain d'origine, ou plus haut si l'on a construit.
-        let mut top = MIN_Y + 15;
-        for ((_, y, _), block) in edits.iter() {
-            if *block != self.air && (*y as i32) > top {
-                top = *y as i32;
-            }
-        }
-        let sections = ((top - MIN_Y) / 16 + 1) as u32;
-        let mut w = W::default();
-        for s in 0..sections as i32 {
-            let base_y = MIN_Y + s * 16;
-            let mut palette: Vec<u32> = vec![self.air];
-            let mut indices = vec![0u16; 4096];
-            for x in 0..16usize {
-                for z in 0..16usize {
-                    for dy in 0..16usize {
-                        let y = base_y + dy as i32;
-                        let block = match edits.get(&(x as u8, y as i16, z as u8)) {
-                            Some(b) => *b,
-                            None => self.base(y),
-                        };
-                        let idx = match palette.iter().position(|p| *p == block) {
-                            Some(i) => i,
-                            None => {
-                                palette.push(block);
-                                palette.len() - 1
-                            }
-                        };
-                        indices[(x << 8) | (z << 4) | dy] = idx as u16;
-                    }
+    /// Contenu d'un chunk à envoyer : (nombre de sous-chunks, données). Les sous-chunks d'air
+    /// au-dessus du dernier bloc ne sont pas envoyés.
+    pub fn chunk_payload(&self, cx: i32, cz: i32) -> (u32, Vec<u8>) {
+        let column = self.terrain.column((cx, cz));
+        let edits = self.edits.get(&(cx, cz));
+        // Sous-chunks à envoyer : jusqu'au plus haut qui n'est pas que de l'air
+        let mut sections = column.sections.iter().rposition(|s| !matches!(s, Section::Uniform(b) if *b == self.air)).map(|i| i + 1).unwrap_or(1);
+        if let Some(edits) = edits {
+            for ((_, y, _), block) in edits.iter() {
+                if *block != self.air {
+                    sections = sections.max(((*y as i32 - MIN_Y) / 16 + 1) as usize);
                 }
             }
-            encode_sub_chunk(&mut w, (base_y >> 4) as i8, &palette, &indices);
         }
+        let mut w = W::default();
+        for s in 0..sections {
+            let y_index = ((MIN_Y >> 4) + s as i32) as i8;
+            let base_y = MIN_Y + s as i32 * 16;
+            let touched = edits.map(|e| e.keys().any(|(_, y, _)| (*y as i32) >= base_y && (*y as i32) < base_y + 16)).unwrap_or(false);
+            match (&column.sections[s], touched) {
+                (Section::Mixed { palette, index }, false) => {
+                    let wide: Vec<u16> = index.iter().map(|i| *i as u16).collect();
+                    encode_sub_chunk(&mut w, y_index, palette, &wide);
+                }
+                (section, _) => {
+                    let mut palette: Vec<u32> = Vec::new();
+                    let mut indices = vec![0u16; 4096];
+                    for x in 0..16usize {
+                        for z in 0..16usize {
+                            for dy in 0..16usize {
+                                let y = base_y + dy as i32;
+                                let block = edits.and_then(|e| e.get(&(x as u8, y as i16, z as u8))).copied().unwrap_or_else(|| section.get(x, dy, z));
+                                let idx = match palette.iter().position(|p| *p == block) {
+                                    Some(i) => i,
+                                    None => {
+                                        palette.push(block);
+                                        palette.len() - 1
+                                    }
+                                };
+                                indices[(x << 8) | (z << 4) | dy] = idx as u16;
+                            }
+                        }
+                    }
+                    encode_sub_chunk(&mut w, y_index, &palette, &indices);
+                }
+            }
+        }
+        let biome = column.biome.id();
         for _ in 0..24 {
             w.u8(1); // biome unique pour la section
-            w.vari32(1); // plaines
+            w.vari32(biome as i32);
         }
         w.u8(0); // blocs de bordure
-        Some((sections, w.0))
+        (sections as u32, w.0)
     }
 }
 
@@ -329,7 +496,6 @@ mod tests {
     fn edits_are_tracked_and_reverted() {
         let mut world = World::new();
         assert_eq!(world.get(3, -61, 4), world.grass);
-        assert!(world.chunk_payload(0, 0).is_none());
         assert!(world.set(3, -61, 4, world.air));
         assert_eq!(world.get(3, -61, 4), world.air);
         assert!(world.is_edited(0, 0));
@@ -340,17 +506,48 @@ mod tests {
     }
 
     #[test]
-    fn untouched_edit_chunk_matches_flat_payload() {
-        // Un chunk dont la seule modification est hors du premier sous-chunk garde
-        // un premier sous-chunk identique au terrain commun.
+    fn flat_chunk_payload_has_one_section_until_someone_builds() {
         let mut world = World::new();
+        let (sections, payload) = world.chunk_payload(4, -2);
+        assert_eq!(sections, 1);
+        // Sous-chunk au format 9, une couche, hauteur -4 ; 2 bits par bloc (4 blocs différents)
+        assert_eq!(&payload[..4], &[9, 1, (-4i8) as u8, (2 << 1) | 1]);
+        // Un bloc posé plus haut ajoute un sous-chunk
         assert!(world.set(-1, -40, -1, world.stone));
-        let (sections, payload) = world.chunk_payload(-1, -1).unwrap();
+        let (sections, again) = world.chunk_payload(-1, -1);
         assert_eq!(sections, 2);
-        let flat = crate::bedrock::flat_chunk_payload();
-        // même taille de premier sous-chunk : en-tête 4 octets + 256 mots + palette
-        assert_eq!(&payload[..4], &flat[..4]);
-        assert_eq!(payload[4..4 + 1024], flat[4..4 + 1024]);
+        assert_eq!(again[..4 + 1024], payload[..4 + 1024], "premier sous-chunk inchangé");
+    }
+
+    #[test]
+    fn generated_world_keeps_edits_and_its_seed() {
+        use generator::{Generator, Kind, Palette};
+        let dir = std::env::temp_dir().join(format!("basalt-world-gen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut w = World::with_generator(Generator::new(Kind::Normal, 777, Palette::new(&|_| None)));
+        let top = w.generator().surface(5, 5);
+        let ground = w.get(5, top, 5);
+        assert_ne!(ground, w.air);
+        // Creuser puis reboucher : plus rien à garder
+        assert!(w.set(5, top, 5, w.air));
+        assert_eq!(w.edit_count(), 1);
+        assert!(w.set(5, top, 5, ground));
+        assert_eq!(w.edit_count(), 0);
+        assert!(w.set(5, top + 1, 5, w.stone));
+        w.save(&dir).unwrap();
+        assert_eq!(World::stored_generator(&dir).unwrap(), Some((Kind::Normal, 777)));
+        let mut again = World::with_generator(Generator::new(Kind::Normal, 777, Palette::new(&|_| None)));
+        assert_eq!(again.load(&dir).unwrap(), 1);
+        assert_eq!(again.get(5, top + 1, 5), w.stone);
+        assert_eq!(again.get(5, top, 5), ground);
+        // Les fils de génération préparent un chunk demandé
+        again.prepare(40, 40);
+        let start = std::time::Instant::now();
+        while !again.is_ready(40, 40) && start.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(again.is_ready(40, 40));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

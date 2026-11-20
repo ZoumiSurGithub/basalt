@@ -424,6 +424,9 @@ fn start_opts(dir: &PathBuf, max_per_ip: usize, xbox_auth: bool) -> (SocketAddr,
         cfg.xbox_auth = xbox_auth;
         cfg.nethernet_udp_port = 0;
         cfg.gamemode = "Creative".into();
+        // Terrain plat : les tests marchent sur le sol à y = -60 (sauf fichier témoin)
+        cfg.level_type = if dir.join("terrain-normal").exists() { "normal".into() } else { "flat".into() };
+        cfg.level_seed = "42".into();
         cfg.debug = std::env::var("BASALT_TEST_DEBUG").is_ok();
         cfg.auth_keys_file = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/auth/keys.json").into();
         let mut server = Server::new(cfg).unwrap();
@@ -541,7 +544,9 @@ fn full_connection_flow() {
         match id {
             121 => zones += 1,
             58 => chunks += 1,
-            other => panic!("paquet inattendu pendant la marche : {}", other),
+            // Le reste (listes volumineuses qui finissent d'arriver, message d'arrivée, mise à
+            // jour régulière de la vie…) ne concerne pas le terrain
+            _ => {}
         }
     }
     assert_eq!(zones, 2, "une zone publiée par chunk franchi");
@@ -1529,5 +1534,58 @@ fn crafting_is_checked_against_real_recipes() {
     drop(steve);
     stop.store(true, Ordering::Relaxed);
     handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Monde généré : le joueur apparaît sur la terre ferme, au-dessus du niveau de la mer, et
+/// reçoit des chunks en relief (plusieurs sous-chunks), générés en arrière-plan.
+#[test]
+fn generated_world_spawns_players_on_dry_land() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-terrain-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("terrain-normal"), "").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(300));
+    let mut c = Client::new(addr);
+    c.handshake();
+    c.game(0xc1, &2225i32.to_be_bytes(), None);
+    assert_eq!(c.recv_game(false).0, 0x8f);
+    c.login(2225, "Steve", false);
+    c.wait_for(6);
+    c.game(8, &[3, 0, 0], Some(0xff));
+    c.wait_for(7);
+    c.game(8, &[4, 0, 0], Some(0xff));
+    let start_game = c.wait_for(11);
+    let y = f32::from_le_bytes([start_game[7], start_game[8], start_game[9], start_game[10]]);
+    assert!(y > 62.0 && y < 250.0, "apparition au-dessus de la mer, pas à {}", y);
+    c.game(69, &[6, 16], Some(0xff));
+    let (mut chunks, mut tall) = (0, 0);
+    loop {
+        let (id, body) = c.recv_after_state();
+        match id {
+            58 => {
+                chunks += 1;
+                // x, z, dimension (un octet chacun près de l'origine), puis le nombre de sous-chunks
+                if body[3] > 1 {
+                    tall += 1;
+                }
+            }
+            2 => {
+                assert_eq!(body, vec![0, 0, 0, 3]);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(chunks, 29, "chunks dans un rayon de 3");
+    assert_eq!(tall, chunks, "terrain en relief : plusieurs sous-chunks par chunk");
+    assert!(dir.join("world").join("level.nbt").exists(), "graine enregistrée dès la création");
+    drop(c);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    // Redémarrage : même monde, même graine
+    let world = basalt::world::World::stored_generator(&dir.join("world")).unwrap();
+    assert_eq!(world, Some((basalt::world::generator::Kind::Normal, 42)));
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -123,3 +123,19 @@ pub(crate) fn level_chunk_legacy(x: i32, z: i32, payload: &[u8], f: crate::versi
     }
     w.0
 }
+
+/// LevelChunk des versions d'avant 1.26.60, avec le nombre de sous-chunks du contenu.
+pub fn level_chunk_counted(x: i32, z: i32, count: u32, payload: &[u8], f: crate::versions::Features) -> Vec<u8> {
+    let mut w = W::default();
+    w.vari32(x);
+    w.vari32(z);
+    w.vari32(0); // dimension
+    w.varu32(count); // nombre de sous-chunks
+    w.bool(false); // cache désactivé
+    w.varu32(payload.len() as u32);
+    w.0.extend_from_slice(payload);
+    if f.chunk_biome_update_flag {
+        w.bool(false);
+    }
+    w.0
+}

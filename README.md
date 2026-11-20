@@ -3,50 +3,68 @@
 Socle de serveur **Minecraft Bedrock** écrit en Rust, dans l'esprit de PocketMine-MP :
 un seul exécutable, un fichier `server.properties`, une console, et des plugins en Lua.
 
-Aucune dépendance Rust externe : le projet se compile avec `cargo build --release`
-et produit un binaire d'environ 600 Ko.
+Le cœur du serveur n'utilise que la bibliothèque standard de Rust. Seul le transport
+NetherNet (exigé par les jeux 1.26.60 et plus) s'appuie sur deux bibliothèques en Rust pur
+(`str0m`, `p384`). Les plugins utilisent Lua 5.4, chargé au démarrage s'il est présent.
 
 ## État du projet
 
-Basalt est un **serveur en construction**. Il sait désormais faire entrer un joueur
-dans un monde plat, mais cette partie n'a pas encore été essayée avec le vrai jeu.
+Basalt est un **serveur en construction**, mais déjà jouable : il a été essayé avec le vrai
+jeu (Bedrock 1.26.63 à 1.26.66 sous Windows, deux comptes Xbox en même temps).
 
-| Fonction | État |
+**Vérifié avec le vrai jeu :**
+
+| Fonction | Détails |
 |---|---|
-| Serveur visible dans la liste des serveurs (ping RakNet) | fait |
-| Connexion RakNet : poignée de main, fiabilité, ordre, fragmentation, réémission | fait |
-| NetherNet, étape 1 : signalisation HTTP (le serveur apparaît dans la liste des jeux récents) | fait |
-| NetherNet, étape 2 : liaison WebRTC par `str0m` (indispensable pour entrer avec un jeu 1.26.60 ou plus) | fait, **vérifié avec le jeu 1.26.65 sous Windows** (entrée dans le monde, déplacements) |
-| Début de session Bedrock : réglages réseau, lecture du login (pseudo, XUID) | fait |
-| Refus propre des versions du jeu différentes | fait |
-| Console, `server.properties`, arrêt propre | fait |
-| Plugins Lua : événements, commandes, minuteries, expulsion | fait |
-| Entrée en jeu : packs de ressources, `StartGame`, monde plat, apparition | **écrit, à valider avec le jeu** |
-| Terrain qui suit le joueur quand il se déplace | **écrit, à valider avec le jeu** |
-| Contrôle des déplacements (vitesse, téléportation) | **écrit, à valider avec le jeu** |
-| Joueurs visibles entre eux (les plus proches seulement) | **écrit, à valider avec le jeu** |
-| Chat, casser et poser des blocs, inventaire | à faire |
-| Authentification Xbox Live (vérification des jetons) | **écrit, à valider avec le jeu** |
-| Chiffrement des échanges | fait (DTLS en NetherNet, ECDH + AES-256 en RakNet) |
-| Sauvegarde du monde | à faire |
+| Connexion | NetherNet (jeux 1.26.60+), compte Xbox vérifié, liste des serveurs |
+| Monde | casser et poser des blocs (escaliers, orientations, angles), sauvegarde et rechargement (sur terrain plat) |
+| Joueurs | visibles entre eux avec leur skin, liste des joueurs (pause, Social, `/list`), rotation de la tête, position et rotation retrouvées à la reconnexion |
+| Inventaire | sac, barre, armure, seconde main, coffres, fours, menu créatif, fabrication (vérifiée par le serveur) |
+| Combat et survie | coups entre joueurs avec recul, dégâts de chute, mort, écran de réapparition, inventaire lâché à la mort (`keep-inventory` en option) |
+| Modes de jeu | survie, créatif, aventure, spectateur |
+| Objets au sol | lâcher (inventaire, Q, Ctrl+Q), physique, fusion des tas, ramassage, disparition au bout de 5 minutes |
+| Commandes | chat et commandes en jeu, `/tp` et téléportation par les plugins |
+| Anti-triche | contrôle des déplacements (le tricheur est replacé), fabrication vérifiée, inventaire tenu par le serveur |
+| Plugins Lua | événements à la PocketMine, commandes, accès au monde, EasyEdit fourni (entièrement en plugin) |
 
-Limites à connaître :
+**Écrit et testé automatiquement, pas encore essayé avec le vrai jeu :**
 
-- **Non essayé avec un vrai client Minecraft.** Les tests automatiques utilisent un
-  faux client : ils prouvent que le serveur envoie la bonne suite de paquets, pas que
-  le jeu les accepte. Les paquets suivent la documentation officielle de Mojang et son
-  journal des changements, mais certains détails d'encodage n'y figurent pas et ont été
-  repris des versions précédentes du protocole. Les listes d'objets et de biomes sont
-  envoyées vides.
-- **Authentification non encore éprouvée en conditions réelles.** Voir la section
-  « Authentification Xbox » ci-dessous.
-- **Monde non modifiable.** Le terrain plat est infini et suit le joueur, mais ses
-  actions (casser, poser, frapper) ne sont pas traitées.
-- **Réglages de secours.** Si un vrai client est replacé à tort ou se déconnecte
-  quand un autre joueur apparaît, `movement-check=false` et `show-players=false`
-  désactivent ces deux fonctions le temps de corriger.
-- **Pas de liste des joueurs ni de skins.** Les autres joueurs apparaissent sans
-  leur skin personnalisé, et le menu pause ne les liste pas.
+- génération du terrain (voir « Le monde » ci-dessous) ;
+- connexion par RakNet (jeux plus anciens que 1.26.60), avec son chiffrement (ECDH + AES-256) ;
+- installation et mise à jour sous Windows par les scripts fournis ;
+- montée en charge (voir plus bas).
+
+**Pas encore fait :** chargement de vrais mondes Minecraft (format LevelDB),
+mondes multiples (Nether, End), blocs qui réagissent (eau, lave, sable, redstone),
+monstres et animaux, faim et expérience, cycle jour/nuit animé, météo.
+
+**Réglages de secours.** Si un joueur est replacé à tort, ou se déconnecte quand un autre
+joueur apparaît, `movement-check=false` et `show-players=false` désactivent ces fonctions
+le temps de corriger.
+
+### Le monde
+
+Un nouveau monde est généré à partir d'une graine, comme dans le jeu : relief, océans et
+plages, plaines, forêts de chênes et de bouleaux, déserts avec cactus, plaines enneigées,
+montagnes, grottes (grandes cavités et galeries, lave tout en bas), minerais à leurs
+hauteurs habituelles (charbon, fer, cuivre, or, redstone, lapis, diamant, version
+« deepslate » sous y = 0), poches de granite, diorite, andésite et tuf, herbes et fleurs.
+Le terrain n'a pas la forme exacte de celui de Minecraft : une graine ne redonne pas le
+même monde que dans le jeu.
+
+Dans `server.properties` :
+
+- `level-type=normal` (relief) ou `level-type=flat` (plat) ;
+- `level-seed=` : un nombre ou un texte ; vide, la graine est tirée au hasard.
+
+Ces deux réglages ne servent qu'à la création d'un monde : le type de terrain et la graine
+sont ensuite enregistrés dans `level.nbt`, et un monde existant garde les siens. Les mondes
+créés avant la génération de terrain restent plats. Pour un nouveau monde, changez
+`world-dir` (ou supprimez le dossier du monde).
+
+Le terrain lui-même n'est jamais enregistré : il se régénère à l'identique à partir de la
+graine. Seuls les blocs modifiés par les joueurs le sont. Les chunks sont générés à
+l'avance, sur plusieurs cœurs, autour des joueurs (environ une milliseconde par chunk).
 
 ### Si la connexion échoue avec le jeu
 
@@ -254,14 +272,8 @@ RSA, ECDSA P-384) et comparée à OpenSSL sur plusieurs centaines de signatures
 valides et falsifiées (`tests/crypto.rs`). Ce code ne fait que vérifier des données
 publiques ; il ne manipule aucun secret.
 
-Limites actuelles :
-
-- **Jamais essayé avec un vrai jeton.** Le téléchargement des clés et la lecture
-  d'un jeton réel n'ont pas pu être essayés ; les tests utilisent des jetons
-  fabriqués sur le même modèle. Les noms des champs du jeton (`xid`, `xname`,
-  `cpk`) peuvent demander un ajustement.
-- **Ancien format non pris en charge.** Seul le jeton introduit en 2025 est
-  accepté, pas l'ancienne chaîne de certificats.
+Vérifié avec de vrais comptes Xbox (jeu 1.26.63 à 1.26.66). Seul le jeton introduit en
+2025 est accepté, pas l'ancienne chaîne de certificats.
 
 Si l'authentification bloque vos essais, mettez `xbox-auth=false` : le serveur
 l'indique alors clairement au démarrage, et les pseudos ne sont plus vérifiés.
@@ -347,16 +359,25 @@ Ces scripts n'ont pas encore été essayés sur une vraie machine Windows.
 
 ## Console
 
+Les commandes du jeu se tapent aussi dans la console, sans `/` :
+
 | Commande | Effet |
 |---|---|
 | `help` | liste des commandes, y compris celles des plugins |
 | `list` | joueurs connectés |
+| `say`, `me`, `tell` | messages |
+| `gamemode`, `give`, `clear`, `kill`, `tp` | joueurs |
+| `setblock`, `fill`, `time` | monde |
+| `kick`, `op`, `deop`, `whitelist` | modération |
 | `status` | charge du serveur : ticks par seconde, trafic, logins en attente |
-| `plugins` | plugins chargés |
-| `reload` | recharge tous les plugins |
+| `timings on` / `timings off` | rapport détaillé du temps passé par le serveur (dossier `timings/`) |
+| `plugins`, `reload` | plugins chargés, rechargement |
 | `motd [texte]` | affiche ou change le nom du serveur |
 | `version` | version du serveur et versions du jeu acceptées |
 | `stop` | arrêt propre |
+
+En jeu, les mêmes commandes sont réservées aux opérateurs (`ops.txt`), sauf `help`,
+`list`, `me` et `tell`.
 
 ## Écrire un plugin
 
@@ -384,38 +405,34 @@ est dans **[docs/PLUGINS.md](docs/PLUGINS.md)**.
 | `src/main.rs` | démarrage : configuration, signaux, console |
 | `src/server.rs` | `Server` : boucle principale, joueurs connectés, console |
 | `src/player/` | `Player` : un joueur, sa sauvegarde et son chargement (hérite de `Human`) |
-| `src/entity/` | `Entity` → `Living` → `Human` : la hiérarchie des entités |
+| `src/entity/` | `Entity` → `Living` → `Human` : la hiérarchie des entités ; physique des objets au sol (`item_physics.rs`) |
 | `src/inventory/` | `Inventory` (base commune), `BaseInventory`, puis `PlayerInventory`, `ArmorInventory`, `ChestInventory`, `FurnaceInventory`, `CraftingGrid` ; `PlayerWindows` (tous les inventaires d'un joueur) ; `transaction.rs` (demandes du jeu) |
 | `src/block/` | `Block` (base de tous les blocs), types de blocs (`types.rs`), registre `VanillaBlocks` couvrant tous les blocs du jeu |
 | `src/tile/` | `Tile` (base des données attachées aux blocs), `ContainerTile`, `FurnaceTile`, `SignTile`, `TileMap` et sa sauvegarde |
 | `src/item/` | `Item` (base de tous les objets), `Tool`, `Armor`, `Food`, `VanillaItems` ; `ItemStack` (une pile) |
-| `src/world/` | `World` : le monde, ses blocs modifiés et leur sauvegarde |
+| `src/world/` | `World` : le monde, ses blocs modifiés et leur sauvegarde ; `generator.rs` : génération du terrain |
 | `src/permission/` | `Permission`, règles par défaut, liste des opérateurs |
 | `src/utils/` | journal (`log.rs`), `server.properties` (`config.rs`), JSON et base64 (`json.rs`), YAML (`yaml.rs`), décompression (`inflate.rs`) |
 | `src/security/` | authentification Xbox (`auth.rs`), SHA-2 et signatures (`crypto.rs`), clé du serveur (`identity.rs`) |
 | `src/network/` | RakNet (`raknet.rs`), signalisation HTTP (`signaling.rs`), liaison WebRTC (`nethernet.rs`), fragments (`framing.rs`) |
 | `src/network/protocol/versions.rs` | versions acceptées et différences entre protocoles |
 | `src/network/protocol/bedrock/` | paquets Bedrock, un fichier par thème : `codec`, `login`, `spawn`, `chunk`, `player`, `state`, `chat`, `blocks`, `items` |
-| `src/data/` | chargement des données du jeu : objets, blocs et états, NBT, gzip |
-| `data/` | fichiers de données du jeu 1.26.60 (projet BedrockData, licence CC0) |
+| `src/data/` | chargement des données du jeu : objets, blocs et états, recettes (`recipes.rs`), NBT, gzip |
+| `data/` | fichiers de données du jeu (projet BedrockData, licence CC0) ; `data/<protocole>/packets/` : paquets relevés auprès du serveur officiel par l'outil de capture |
 | `src/plugin/` | fiche `plugin.yml` (`manifest.rs`), moteur Lua et API (`lua.rs`), préambule et bac à sable (`sandbox.lua`), fil d'exécution dédié (`host.rs`) |
 | `examples/stress.rs` | outil de charge : simule des centaines ou milliers de joueurs |
-| `tests/e2e.rs` | faux client : ping, connexion, login, entrée en jeu, plugin |
+| `tests/e2e.rs` | faux client : connexion, login, entrée en jeu, combat, objets, fabrication, plugins |
+| `plugins/EasyEdit/` | plugin fourni : édition du monde en volume, exemple de plugin en plusieurs fichiers |
 
 Tests : `cargo test`
 
 ## Suite proposée
 
-1. Valider l'entrée en jeu avec un vrai client et corriger les paquets si besoin.
-2. Chat et commandes en jeu (le format du paquet de chat a changé récemment et
-   demande un essai avec le jeu).
-3. Liste des joueurs et skins.
-4. Casser et poser des blocs, inventaire, registre d'objets complet.
-5. Chiffrement de la session (ECDH P-384, AES) pour compléter l'authentification.
-6. Sauvegarde des mondes (format LevelDB de Bedrock).
-
-Les étapes 5 et 6 demanderont probablement des bibliothèques externes
-(cryptographie, LevelDB) plutôt que du code écrit à la main.
+1. **Le monde** : chargement des mondes Minecraft (format LevelDB), blocs qui réagissent
+   (eau, lave, gravité), mondes multiples, villages et autres structures.
+2. **Le jeu** : monstres et animaux, faim, expérience, temps de minage selon l'outil,
+   jour et nuit.
+3. **Montée en charge** : mesure avec 1000 joueurs simulés sur une vraie machine.
 
 ## Licence
 

@@ -370,7 +370,6 @@ pub struct Server {
     plugin_blocks: Option<Arc<crate::data::BlockNames>>,
     /// Le jeu refuse les objets au sol : le butin retourne directement dans l'inventaire
     drops_refused: bool,
-    chunk: Vec<u8>,
     #[allow(dead_code)]
     chunk_no_biomes: Vec<u8>,
     /// Écriture de LevelChunk en cours d'essai (mise au point avec le vrai jeu)
@@ -405,6 +404,8 @@ pub struct Server {
     releases: Vec<(u64, (i32, i32, i32), u32)>,
     started: Instant,
     world: crate::world::World,
+    /// Point d'apparition du monde (bloc où se tiennent les pieds)
+    spawn: (i32, i32, i32),
     /// Envoie la liste d'objets réduite (nécessaire à « give ») ; repasse à la liste vide
     /// si le jeu la refuse ou décroche juste après l'apparition.
     /// Liste d'objets envoyée : 2 complète (données du jeu), 1 réduite, 0 vide. Le serveur
@@ -541,20 +542,12 @@ fn build_chunk(
     exp: u8,
     x: i32,
     z: i32,
-    chunk: &[u8],
     world: &crate::world::World,
     features: crate::versions::Features,
-    variant: u8,
 ) -> Vec<u8> {
-    // Chunk modifié par les joueurs : contenu encodé à la demande
-    if let Some((sections, payload)) = world.chunk_payload(x, z) {
-        if features.chunk_biome_update_flag {
-            return bedrock::level_chunk_probe(x, z, sections, &payload, false);
-        }
-        return bedrock::level_chunk_variant(x, z, &payload, features, variant);
-    }
     if features.chunk_biome_update_flag && (exp == 1 || exp == 4) {
-        // aucun sous-chunk : seulement les biomes et l'octet des blocs de bordure
+        // Expérience de mise au point : aucun sous-chunk, seulement les biomes et l'octet des
+        // blocs de bordure
         let mut payload = Vec::new();
         for _ in 0..24 {
             payload.extend_from_slice(&[1, 2]);
@@ -562,7 +555,11 @@ fn build_chunk(
         payload.push(0);
         return bedrock::level_chunk_probe(x, z, 0, &payload, false);
     }
-    bedrock::level_chunk_variant(x, z, chunk, features, variant)
+    let (sections, payload) = world.chunk_payload(x, z);
+    if features.chunk_biome_update_flag {
+        return bedrock::level_chunk_probe(x, z, sections, &payload, false);
+    }
+    bedrock::level_chunk_counted(x, z, sections, &payload, features)
 }
 
 fn bedrock_extra(id: u32) -> bool {
@@ -599,7 +596,6 @@ impl Server {
             drops_refused: false,
             global_window: Instant::now(),
             global_bytes: 0,
-            chunk: bedrock::flat_chunk_payload(),
             chunk_no_biomes: bedrock::flat_chunk_payload_with(false),
             chunk_variant: 1, // la variante 0 a déjà été refusée par le jeu 1.26.65
             chunk_variant_by: None,
@@ -618,6 +614,7 @@ impl Server {
             releases: Vec::new(),
             started: Instant::now(),
             world: crate::world::World::new(),
+            spawn: (0, -60, 0),
             items_level: 1,
             data: None,
             blocks: None,
@@ -1333,11 +1330,18 @@ impl Server {
                 continue;
             }
             let features = crate::versions::features(c.protocol);
+            // Les prochains chunks de la file sont générés à l'avance, en arrière-plan
+            for (x, z) in c.queue.iter().take(CHUNKS_PER_TICK * 8) {
+                self.world.prepare(*x, *z);
+            }
             for _ in 0..CHUNKS_PER_TICK {
-                match c.queue.pop_front() {
+                match c.queue.front().copied() {
+                    // Pas encore généré : on attend le tick suivant, dans l'ordre de la file
+                    Some((x, z)) if !self.world.is_ready(x, z) => break,
                     Some((x, z)) => {
+                        c.queue.pop_front();
                         c.loaded.insert((x, z));
-                        let pk = build_chunk(self.experiment, x, z, &self.chunk, &self.world, features, self.chunk_variant);
+                        let pk = build_chunk(self.experiment, x, z, &self.world, features);
                         out.push((*addr, c.compression, bedrock::encode_packet(bedrock::ID_LEVEL_CHUNK, &pk, c.compression)));
                     }
                     None => break,
@@ -2514,9 +2518,69 @@ impl Server {
         self.emit("death", &[LVal::Player(player)]);
     }
 
+    /// Choisit le terrain du monde (celui déjà enregistré, sinon `level-type` et `level-seed`),
+    /// recharge les modifications et place le point d'apparition.
+    fn open_world(&mut self) {
+        use crate::world::generator::{parse_seed, Generator, Kind, Palette};
+        let dir = std::path::PathBuf::from(&self.cfg.world_dir);
+        let (kind, seed, created) = match crate::world::World::stored_generator(&dir) {
+            Ok(Some((kind, seed))) => (kind, seed, false),
+            Ok(None) => (Kind::parse(&self.cfg.level_type), parse_seed(&self.cfg.level_seed), true),
+            Err(e) => {
+                warn!("Monde illisible ({}) : terrain plat, l'ancien fichier sera remplacé au prochain enregistrement", e);
+                (Kind::Flat, 0, false)
+            }
+        };
+        let palette = {
+            let data = &self.data;
+            Palette::new(&|name: &str| data.as_ref().and_then(|d| d.default_state(name)))
+        };
+        let tiles = std::mem::take(&mut self.world.tiles);
+        self.world = crate::world::World::with_generator(Generator::new(kind, seed, palette));
+        self.world.tiles = tiles;
+        match self.world.load(&dir) {
+            Ok(0) => {}
+            Ok(n) => info!("Monde rechargé : {} blocs modifiés", n),
+            Err(e) => warn!("Monde non rechargé ({}) : le serveur repart d'un terrain neuf, l'ancien fichier sera remplacé au prochain enregistrement", e),
+        }
+        if created {
+            // Le type de terrain et la graine sont enregistrés tout de suite
+            self.world.dirty = true;
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = self.world.save(&dir);
+            info!("Nouveau monde : terrain {}, graine {}", kind.name(), seed as i64);
+        } else {
+            info!("Terrain du monde : {}, graine {}", kind.name(), seed as i64);
+        }
+        self.spawn = self.find_spawn();
+    }
+
     /// Point de réapparition (à hauteur des yeux).
     fn spawn_point(&self) -> (f32, f32, f32) {
-        (0.5, bedrock::GROUND_Y as f32 + player_eye_height(), 0.5)
+        (self.spawn.0 as f32 + 0.5, self.spawn.1 as f32 + player_eye_height(), self.spawn.2 as f32 + 0.5)
+    }
+
+    /// Point d'apparition du monde : sur le terrain généré, au-dessus du premier bloc plein
+    /// (pas sur les feuilles d'un arbre), près de l'origine.
+    fn find_spawn(&self) -> (i32, i32, i32) {
+        let (x, _, z) = self.world.generator().spawn();
+        let y = self.world.highest(x, z, &|state| self.blocks_movement(state) && !self.is_leaves(state));
+        (x, y + 1, z)
+    }
+
+    /// Bloc dans lequel on ne peut pas se tenir (ni air, ni liquide, ni plante, ni neige fine).
+    fn blocks_movement(&self, state: u32) -> bool {
+        if state == self.world.air {
+            return false;
+        }
+        match self.data.as_ref().and_then(|d| d.block_name(state)) {
+            Some(n) => !(n.contains("water") || n.contains("lava") || (n.contains("grass") && !n.contains("grass_block")) || n.contains("snow_layer") || n.contains("dandelion") || n.contains("poppy") || n.contains("sapling")),
+            None => true,
+        }
+    }
+
+    fn is_leaves(&self, state: u32) -> bool {
+        self.data.as_ref().and_then(|d| d.block_name(state)).map(|n| n.contains("leaves")).unwrap_or(false)
     }
 
     /// Le joueur a cliqué sur « Réapparaître » : il revient au point de réapparition, en pleine
@@ -4413,7 +4477,13 @@ impl Server {
                         .filter(|d| d.has_pos && d.pos.0.abs() < 3.0e7 && d.pos.2.abs() < 3.0e7)
                         // Hauteur exacte, même dans un trou creusé sous le niveau du sol
                         .map(|d| (d.pos.0, d.pos.1.clamp(-64.0 + 1.62, 400.0), d.pos.2))
-                        .unwrap_or((0.5, bedrock::GROUND_Y as f32 + 1.62, 0.5));
+                        // Position enregistrée dans un autre monde (ou bouchée depuis) : un joueur
+                        // n'apparaît jamais coincé dans la roche
+                        .filter(|p| {
+                            let (x, y, z) = (p.0.floor() as i32, (p.1 - 1.62 + 0.01).floor() as i32, p.2.floor() as i32);
+                            !self.blocks_movement(self.world.get(x, y, z)) && !self.blocks_movement(self.world.get(x, y + 1, z))
+                        })
+                        .unwrap_or_else(|| self.spawn_point());
                     // Il regarde aussi dans la direction où il regardait en partant
                     let (yaw, pitch) = self.clients.get(&addr).and_then(|c| c.data.as_ref()).map(|d| d.rotation).unwrap_or((0.0, 0.0));
                     if let Some(c) = self.clients.get_mut(&addr) {
@@ -4429,6 +4499,9 @@ impl Server {
                         rotation: (pitch, yaw),
                         world_name: &self.cfg.world_name.clone(),
                         game_version: &self.cfg.game_version.clone(),
+                        seed: self.world.generator().seed,
+                        flat: self.world.generator().kind == crate::world::generator::Kind::Flat,
+                        spawn: self.spawn,
                         features,
                     });
                     if features.jigsaw_before_start {
@@ -4499,20 +4572,22 @@ impl Server {
                         self.send(
                             &addr,
                             bedrock::ID_CHUNK_PUBLISHER_UPDATE,
-                            &bedrock::chunk_publisher_update(at.0.floor() as i32, bedrock::GROUND_Y, at.2.floor() as i32, radius as u32 * 16),
+                            &bedrock::chunk_publisher_update(at.0.floor() as i32, at.1.floor() as i32, at.2.floor() as i32, radius as u32 * 16),
                         );
-                        // Du centre vers l'extérieur, pour que le sol sous le joueur arrive d'abord
+                        // Du centre vers l'extérieur, pour que le sol sous le joueur arrive d'abord.
+                        // Les chunks partent au fil de leur génération (voir send_queued_chunks).
                         let coords = Self::chunks_around(center, radius);
                         for (x, z) in &coords {
-                            let pk = build_chunk(self.experiment, *x, *z, &self.chunk, &self.world, features, self.chunk_variant);
-                            self.send(&addr, bedrock::ID_LEVEL_CHUNK, &pk);
+                            self.world.prepare(*x, *z);
                         }
+                        let _ = features;
                         if let Some(c) = self.clients.get_mut(&addr) {
                             c.radius = radius;
                             c.center = center;
                             c.move_budget = SPEED_CREATIVE * 2.0;
                             c.move_budget_at = Instant::now();
-                            c.loaded = coords.into_iter().collect();
+                            c.loaded.clear();
+                            c.queue = coords.into_iter().collect();
                         }
                         // Le signal d'apparition part quand tout le terrain initial est envoyé
                         // (voir send_queued_chunks) : le joueur doit apparaître dans un monde chargé.
@@ -4785,7 +4860,7 @@ impl Server {
                         pack_responses: 0,
                         chunks_sent: false,
                         joined: false,
-                        pos: (0.5, bedrock::GROUND_Y as f32 + 1.62, 0.5),
+                        pos: self.spawn_point(),
                         center: (0, 0),
                         radius: 0,
                         loaded: HashSet::new(),
@@ -5518,11 +5593,7 @@ impl Server {
         }
         self.load_captured(std::path::Path::new("data"));
         self.load_ops();
-        match self.world.load(std::path::Path::new(&self.cfg.world_dir)) {
-            Ok(0) => {}
-            Ok(n) => info!("Monde rechargé : {} blocs modifiés", n),
-            Err(e) => warn!("Monde non rechargé ({}) : le serveur repart d'un terrain neuf, l'ancien fichier sera remplacé au prochain enregistrement", e),
-        }
+        self.open_world();
         if let Some(d) = &self.data {
             let mut ctx = ItemCatalog { data: d, next: &mut self.tile_net_id };
             match self.world.tiles.load(std::path::Path::new(&self.cfg.world_dir), &mut ctx) {
