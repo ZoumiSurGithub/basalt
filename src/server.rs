@@ -3774,8 +3774,12 @@ impl Server {
             self.send(addr, bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, current));
             return;
         }
+        // En créatif, poser un bloc ne le retire pas de la main (comme dans le jeu : le jeu ne
+        // le retire pas non plus de son côté, et les deux inventaires resteraient d'accord)
         if let Some(c) = self.clients.get_mut(addr) {
-            c.inv.consume_held();
+            if c.mode != GameMode::Creative {
+                c.inv.consume_held();
+            }
         }
         // Dernier bloc de la pile posé : les autres joueurs voient la main vide
         self.show_held(addr);
