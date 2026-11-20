@@ -95,3 +95,16 @@ fn stairs_take_a_corner_state_from_their_neighbours() {
     // Une planche n'est pas un escalier
     assert_eq!(placement::settled_stair(&d, d.default_state("minecraft:oak_planks").unwrap(), &front), None);
 }
+
+/// Chaque dalle simple du jeu a sa double dalle (deux dalles posées l'une sur l'autre).
+#[test]
+fn every_slab_has_a_double_slab() {
+    let d = data();
+    for name in ["minecraft:oak_slab", "minecraft:stone_brick_slab", "minecraft:cut_copper_slab", "minecraft:waxed_oxidized_cut_copper_slab", "minecraft:smooth_stone_slab", "minecraft:bamboo_mosaic_slab"] {
+        let slab = d.default_state(name).unwrap_or_else(|| panic!("bloc inconnu : {}", name));
+        let double = placement::double_slab_of(&d, slab).unwrap_or_else(|| panic!("pas de double dalle pour {}", name));
+        assert!(d.block_name(double).unwrap().contains("double"));
+    }
+    let stone = d.default_state("minecraft:stone").unwrap();
+    assert!(placement::double_slab_of(&d, stone).is_none());
+}

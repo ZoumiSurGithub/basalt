@@ -344,3 +344,18 @@ mod tests {
         assert_eq!(left_of(left_of(left_of(left_of(NORTH)))), NORTH);
     }
 }
+
+/// Double dalle correspondant à une dalle simple (`oak_slab` → `oak_double_slab`,
+/// `cut_copper_slab` → `double_cut_copper_slab`). `None` pour tout autre bloc.
+pub fn double_slab_of(data: &GameData, slab: u32) -> Option<u32> {
+    let name = data.block_name(slab)?;
+    if !name.ends_with("_slab") || name.contains("double") {
+        return None;
+    }
+    let double = if name.ends_with("cut_copper_slab") {
+        name.replacen("cut_copper_slab", "double_cut_copper_slab", 1)
+    } else {
+        format!("{}_double_slab", name.trim_end_matches("_slab"))
+    };
+    data.default_state(&double)
+}

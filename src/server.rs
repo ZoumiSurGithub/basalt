@@ -3919,6 +3919,13 @@ impl Server {
             }
             _ => (default, None),
         };
+        // Dalle posée sur une dalle du même bois ou de la même pierre : une double dalle
+        if near {
+            if let Some((pos, double)) = self.double_slab_for(block, (x, y, z), face) {
+                self.make_double_slab(addr, pos, double);
+                return;
+            }
+        }
         let same_block = |s: &Self, state: u32| match &s.data {
             Some(d) => d.block_name(state).is_some() && d.block_name(state) == d.block_name(default),
             None => state == default,
@@ -4033,6 +4040,64 @@ impl Server {
         }
         for (p, state) in changes {
             self.change_block(p, state);
+        }
+    }
+
+    /// Double dalle formée par cette dalle posée (`placed` : état prévu à la place `target`,
+    /// contre la face `face`) : sur la dalle cliquée (face du dessus d'une dalle du bas, ou
+    /// du dessous d'une dalle du haut), ou dans la moitié libre d'une dalle déjà là.
+    fn double_slab_for(&self, placed: u32, target: (i32, i32, i32), face: u8) -> Option<((i32, i32, i32), u32)> {
+        let d = self.data.as_ref()?;
+        let name = d.block_name(placed)?;
+        let double = placement::double_slab_of(d, placed)?;
+        let half = |s: u32| match d.prop(s, "minecraft:vertical_half") {
+            Some(Prop::Str(h)) => Some(h == "top"),
+            _ => None,
+        };
+        let same = |s: u32| d.block_name(s) == Some(name);
+        // 1. La dalle cliquée elle-même
+        let clicked = bedrock::unplace_target(target, face);
+        let c = self.world.get(clicked.0, clicked.1, clicked.2);
+        if same(c) && ((face == 1 && half(c) == Some(false)) || (face == 0 && half(c) == Some(true))) {
+            return Some((clicked, double));
+        }
+        // 2. Une dalle déjà à l'endroit visé, dont la moitié libre est celle que vise le joueur
+        let t = self.world.get(target.0, target.1, target.2);
+        if same(t) && half(t).is_some() && half(t) != half(placed) {
+            return Some((target, double));
+        }
+        None
+    }
+
+    /// Transforme une dalle en double dalle (la dalle tenue est consommée).
+    fn make_double_slab(&mut self, addr: &SocketAddr, pos: (i32, i32, i32), double: u32) {
+        let (x, y, z) = pos;
+        let current = self.world.get(x, y, z);
+        let refused = self.plugins.listens("BlockPlaceEvent") && {
+            let fields = vec![("player", self.name_json(addr)), ("block", self.block_json(double, pos))];
+            let out = self.fire("BlockPlaceEvent", fields);
+            cancelled(&out)
+        };
+        if refused || !self.world.set(x, y, z, double) {
+            self.send_inventory(addr);
+            self.send(addr, bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, current));
+            return;
+        }
+        if let Some(c) = self.clients.get_mut(addr) {
+            if c.mode != GameMode::Creative {
+                c.inv.consume_held();
+            }
+        }
+        self.show_held(addr);
+        self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, double), None);
+        // Une double dalle est un bloc plein : elle ne garde pas d'eau
+        if self.world.is_wet(x, y, z) {
+            self.world.set_wet(x, y, z, false);
+            let air = self.world.air;
+            self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block_layer(x, y, z, air, 1), None);
+        }
+        if self.cfg.debug {
+            info!("{} : double dalle en {} {} {}", addr, x, y, z);
         }
     }
 
