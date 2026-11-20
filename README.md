@@ -29,7 +29,7 @@ jeu (Bedrock 1.26.63 à 1.26.66 sous Windows, deux comptes Xbox en même temps).
 
 **Écrit et testé automatiquement, pas encore essayé avec le vrai jeu :**
 
-- génération du terrain (voir « Le monde » ci-dessous) ;
+- génération du terrain à la manière du jeu (voir « Le monde » ci-dessous) ;
 - connexion par RakNet (jeux plus anciens que 1.26.60), avec son chiffrement (ECDH + AES-256) ;
 - installation et mise à jour sous Windows par les scripts fournis ;
 - montée en charge (voir plus bas).
@@ -44,27 +44,46 @@ le temps de corriger.
 
 ### Le monde
 
-Un nouveau monde est généré à partir d'une graine, comme dans le jeu : relief, océans et
-plages, plaines, forêts de chênes et de bouleaux, déserts avec cactus, plaines enneigées,
-montagnes, grottes (grandes cavités et galeries, lave tout en bas), minerais à leurs
-hauteurs habituelles (charbon, fer, cuivre, or, redstone, lapis, diamant, version
-« deepslate » sous y = 0), poches de granite, diorite, andésite et tuf, herbes et fleurs.
-Le terrain n'a pas la forme exacte de celui de Minecraft : une graine ne redonne pas le
-même monde que dans le jeu.
+Un nouveau monde est généré comme dans le jeu depuis la 1.18 (`src/world/vanilla.rs`) :
+
+- **climat** : continentalité, érosion, étrangeté (pics et vallées), température et
+  humidité, comme les cinq bruits du jeu ; le relief en découle (océans profonds, côtes,
+  plaines, plateaux, montagnes jusqu'à 250 blocs, rivières dans les vallées, marais) ;
+- **biomes** choisis avec les tableaux du jeu : une cinquantaine, des océans gelés aux
+  océans chauds, plaines, forêts (fleuries, de bouleaux, sombres), taïgas (géantes,
+  enneigées), jungles, savanes, déserts, badlands (avec leurs bandes de terre cuite),
+  marais et mangroves, prairies, cerisaies, bosquets, pentes et pics enneigés, pics
+  rocheux, champs de champignons, pics de glace, plus les grottes luxuriantes, grottes de
+  stalactites et abîmes en profondeur. Les biomes sont envoyés au jeu en 3D (couleurs de
+  l'herbe et de l'eau, ciel) ;
+- **grottes** : grandes cavités, galeries, boyaux étroits, entrées depuis la surface, lave
+  tout en bas ;
+- **surface** de chaque biome (sable, grès, terre cuite, neige, glace compacte, neige
+  poudreuse, calcite, podzol, mycélium, boue, gravier, pierre sur les pentes raides) ;
+- **arbres** de chaque biome (chêne, grand chêne, bouleau, sapin, sapin géant, chêne noir,
+  chêne pâle, acacia, jungle et jungle géante, cerisier, palétuvier), fleurs, herbes,
+  fougères, buissons de baies, cactus, cannes à sucre, nénuphars, algues, pics de glace ;
+- **minerais** à leurs hauteurs (émeraude dans les montagnes), poches de granite,
+  diorite, andésite, tuf, gravier.
+
+Pas encore générés : villages et autres structures, lacs, aquifères (l'eau souterraine du
+jeu), filons géants de fer et de cuivre. Les valeurs ne sont pas celles du jeu : le monde
+a la même allure, mais une graine ne redonne pas le même monde que dans Minecraft.
 
 Dans `server.properties` :
 
-- `level-type=normal` (relief) ou `level-type=flat` (plat) ;
+- `level-type=normal` (comme le jeu) ou `level-type=flat` (plat) ;
 - `level-seed=` : un nombre ou un texte ; vide, la graine est tirée au hasard.
 
 Ces deux réglages ne servent qu'à la création d'un monde : le type de terrain et la graine
 sont ensuite enregistrés dans `level.nbt`, et un monde existant garde les siens. Les mondes
-créés avant la génération de terrain restent plats. Pour un nouveau monde, changez
+créés avant la génération de terrain restent plats, et ceux créés avec le premier terrain
+de Basalt gardent ce terrain. Pour un nouveau monde, changez
 `world-dir` (ou supprimez le dossier du monde).
 
 Le terrain lui-même n'est jamais enregistré : il se régénère à l'identique à partir de la
 graine. Seuls les blocs modifiés par les joueurs le sont. Les chunks sont générés à
-l'avance, sur plusieurs cœurs, autour des joueurs (environ une milliseconde par chunk).
+l'avance, sur plusieurs cœurs, autour des joueurs (environ 2 ms par chunk).
 
 ### Si la connexion échoue avec le jeu
 
@@ -410,7 +429,7 @@ est dans **[docs/PLUGINS.md](docs/PLUGINS.md)**.
 | `src/block/` | `Block` (base de tous les blocs), types de blocs (`types.rs`), registre `VanillaBlocks` couvrant tous les blocs du jeu |
 | `src/tile/` | `Tile` (base des données attachées aux blocs), `ContainerTile`, `FurnaceTile`, `SignTile`, `TileMap` et sa sauvegarde |
 | `src/item/` | `Item` (base de tous les objets), `Tool`, `Armor`, `Food`, `VanillaItems` ; `ItemStack` (une pile) |
-| `src/world/` | `World` : le monde, ses blocs modifiés et leur sauvegarde ; `generator.rs` : génération du terrain |
+| `src/world/` | `World` : le monde, ses blocs modifiés et leur sauvegarde ; `vanilla.rs` : terrain à la manière du jeu ; `generator.rs` : terrain plat et premier terrain |
 | `src/permission/` | `Permission`, règles par défaut, liste des opérateurs |
 | `src/utils/` | journal (`log.rs`), `server.properties` (`config.rs`), JSON et base64 (`json.rs`), YAML (`yaml.rs`), décompression (`inflate.rs`) |
 | `src/security/` | authentification Xbox (`auth.rs`), SHA-2 et signatures (`crypto.rs`), clé du serveur (`identity.rs`) |

@@ -2530,7 +2530,7 @@ impl Server {
         let dir = std::path::PathBuf::from(&self.cfg.world_dir);
         let (kind, seed, created) = match crate::world::World::stored_generator(&dir) {
             Ok(Some((kind, seed))) => (kind, seed, false),
-            Ok(None) => (Kind::parse(&self.cfg.level_type), parse_seed(&self.cfg.level_seed), true),
+            Ok(None) => (Kind::from_config(&self.cfg.level_type), parse_seed(&self.cfg.level_seed), true),
             Err(e) => {
                 warn!("Monde illisible ({}) : terrain plat, l'ancien fichier sera remplacé au prochain enregistrement", e);
                 (Kind::Flat, 0, false)

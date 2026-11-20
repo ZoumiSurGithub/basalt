@@ -23,7 +23,7 @@ pub const SECTIONS: usize = ((MAX_Y - MIN_Y + 1) / 16) as usize;
 
 /// Bruit de Perlin à permutation tirée d'une graine.
 #[derive(Clone)]
-struct Perlin {
+pub(crate) struct Perlin {
     perm: [u8; 512],
 }
 
@@ -53,16 +53,16 @@ impl Rng {
 }
 
 /// Mélange d'une graine et de coordonnées, pour un tirage propre à chaque chunk.
-fn mix(seed: u64, a: i64, b: i64, salt: u64) -> u64 {
+pub(crate) fn mix(seed: u64, a: i64, b: i64, salt: u64) -> u64 {
     let mut r = Rng::new(seed ^ (a as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ (b as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f) ^ salt.wrapping_mul(0x1656_67b1_9e37_79f9));
     r.next()
 }
 
-fn fade(t: f64) -> f64 {
+pub(crate) fn fade(t: f64) -> f64 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
 
-fn lerp(t: f64, a: f64, b: f64) -> f64 {
+pub(crate) fn lerp(t: f64, a: f64, b: f64) -> f64 {
     a + t * (b - a)
 }
 
@@ -80,7 +80,7 @@ fn grad3(hash: u8, x: f64, y: f64, z: f64) -> f64 {
 }
 
 impl Perlin {
-    fn new(seed: u64) -> Perlin {
+    pub(crate) fn new(seed: u64) -> Perlin {
         let mut p: Vec<u8> = (0..=255u8).collect();
         let mut rng = Rng::new(seed);
         for i in (1..256).rev() {
@@ -95,7 +95,7 @@ impl Perlin {
     }
 
     /// Bruit 3D, environ -1..1.
-    fn noise3(&self, x: f64, y: f64, z: f64) -> f64 {
+    pub(crate) fn noise3(&self, x: f64, y: f64, z: f64) -> f64 {
         let (xf, yf, zf) = (x.floor(), y.floor(), z.floor());
         let (xi, yi, zi) = ((xf as i64 & 255) as usize, (yf as i64 & 255) as usize, (zf as i64 & 255) as usize);
         let (x, y, z) = (x - xf, y - yf, z - zf);
@@ -116,7 +116,7 @@ impl Perlin {
         )
     }
 
-    fn noise2(&self, x: f64, z: f64) -> f64 {
+    pub(crate) fn noise2(&self, x: f64, z: f64) -> f64 {
         self.noise3(x, 0.5, z)
     }
 
@@ -207,7 +207,20 @@ pub struct Palette {
     pub redstone: (u32, u32),
     pub lapis: (u32, u32),
     pub diamond: (u32, u32),
+    /// Autres blocs, par nom court (« mycelium », « acacia_log »…), pour le terrain vanilla
+    pub named: std::collections::HashMap<&'static str, u32>,
 }
+
+/// Blocs supplémentaires employés par le terrain vanilla.
+pub const EXTRA_BLOCKS: &[&str] = &[
+    "mycelium", "red_sand", "hardened_clay", "orange_terracotta", "yellow_terracotta", "white_terracotta", "brown_terracotta",
+    "red_terracotta", "light_gray_terracotta", "mud", "packed_ice", "blue_ice", "powder_snow", "calcite", "moss_block", "podzol",
+    "coarse_dirt", "acacia_log", "acacia_leaves", "jungle_log", "jungle_leaves", "dark_oak_log", "dark_oak_leaves", "cherry_log",
+    "cherry_leaves", "mangrove_log", "mangrove_leaves", "mangrove_roots", "pale_oak_log", "pale_oak_leaves", "fern", "large_fern",
+    "deadbush", "reeds", "sweet_berry_bush", "pumpkin", "blue_orchid", "allium", "azure_bluet", "red_tulip", "oxeye_daisy",
+    "cornflower", "lily_of_the_valley", "waterlily", "seagrass", "emerald_ore", "deepslate_emerald_ore", "brown_mushroom",
+    "red_mushroom", "bamboo", "moss_carpet", "azalea", "glow_lichen", "smooth_basalt", "dripstone_block", "sculk",
+];
 
 impl Palette {
     /// `state` : état par défaut d'un bloc d'après son nom (données du jeu). Sans données, les
@@ -255,6 +268,7 @@ impl Palette {
             redstone: ore("redstone"),
             lapis: ore("lapis"),
             diamond: ore("diamond"),
+            named: EXTRA_BLOCKS.iter().map(|n| (*n, or(n, "air"))).collect(),
         }
     }
 }
@@ -284,6 +298,9 @@ impl Section {
 pub struct Column {
     pub sections: Vec<Section>,
     pub biome: Biome,
+    /// Biomes du terrain vanilla : identifiant Bedrock par case de 4×4×4 blocs, sous-chunk par
+    /// sous-chunk (64 cases chacun, x * 16 + z * 4 + y). Absent : `biome` partout.
+    pub biome_ids: Option<Vec<u8>>,
 }
 
 impl Column {
@@ -297,7 +314,7 @@ impl Column {
     }
 
     /// Construit la colonne à partir d'un tableau plein (x, z, y).
-    fn from_blocks(blocks: &[u32], air: u32, biome: Biome) -> Column {
+    pub(crate) fn from_blocks(blocks: &[u32], air: u32, biome: Biome) -> Column {
         let height = (MAX_Y - MIN_Y + 1) as usize;
         let mut sections = Vec::with_capacity(SECTIONS);
         for s in 0..SECTIONS {
@@ -321,7 +338,7 @@ impl Column {
             sections.push(if palette.len() == 1 { Section::Uniform(palette[0]) } else { Section::Mixed { palette, index } });
         }
         let _ = air;
-        Column { sections, biome }
+        Column { sections, biome, biome_ids: None }
     }
 }
 
@@ -330,20 +347,34 @@ impl Column {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Flat,
+    /// Premier terrain de Basalt (mondes créés avec lui : gardé pour ne pas les changer)
     Normal,
+    /// Terrain à la manière du jeu depuis la 1.18 (bruits de climat, biomes, grottes)
+    Vanilla,
 }
 
 impl Kind {
+    /// Nom enregistré dans `level.nbt`.
     pub fn parse(text: &str) -> Kind {
         match text.trim().to_ascii_lowercase().as_str() {
             "flat" | "plat" => Kind::Flat,
-            _ => Kind::Normal,
+            "normal" => Kind::Normal,
+            _ => Kind::Vanilla,
+        }
+    }
+    /// Réglage `level-type` de `server.properties`, pour un nouveau monde.
+    pub fn from_config(text: &str) -> Kind {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "flat" | "plat" => Kind::Flat,
+            "basalt" | "legacy" => Kind::Normal,
+            _ => Kind::Vanilla,
         }
     }
     pub fn name(self) -> &'static str {
         match self {
             Kind::Flat => "flat",
             Kind::Normal => "normal",
+            Kind::Vanilla => "vanilla",
         }
     }
 }
@@ -361,6 +392,7 @@ pub struct Generator {
     tunnels_a: Perlin,
     tunnels_b: Perlin,
     detail: Perlin,
+    vanilla: Option<super::vanilla::Vanilla>,
 }
 
 /// Arbre à poser : position du pied du tronc et essence.
@@ -387,6 +419,7 @@ impl Generator {
             tunnels_a: p(7),
             tunnels_b: p(8),
             detail: p(9),
+            vanilla: if kind == Kind::Vanilla { Some(super::vanilla::Vanilla::new(seed)) } else { None },
         }
     }
 
@@ -394,6 +427,9 @@ impl Generator {
     pub fn surface(&self, x: i32, z: i32) -> i32 {
         if self.kind == Kind::Flat {
             return -61;
+        }
+        if let Some(v) = &self.vanilla {
+            return v.surface(x, z).0;
         }
         let (fx, fz) = (x as f64, z as f64);
         let continent = self.height.fbm2(fx / 512.0, fz / 512.0, 5);
@@ -443,6 +479,9 @@ impl Generator {
     /// Point d'apparition : la première terre ferme en partant de (0, 0) et en tournant
     /// autour. Renvoie (x, hauteur du sol, z).
     pub fn spawn(&self) -> (i32, i32, i32) {
+        if let Some(v) = &self.vanilla {
+            return v.spawn();
+        }
         for r in 0..64i32 {
             for (dx, dz) in ring(r) {
                 let (x, z) = (dx * 8, dz * 8);
@@ -457,6 +496,9 @@ impl Generator {
 
     /// Génère un chunk entier.
     pub fn generate(&self, cx: i32, cz: i32) -> Column {
+        if let Some(v) = &self.vanilla {
+            return v.generate(&self.blocks, cx, cz);
+        }
         let b = &self.blocks;
         let height = (MAX_Y - MIN_Y + 1) as usize;
         let mut blocks = vec![b.air; 16 * 16 * height];

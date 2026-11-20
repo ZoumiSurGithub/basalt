@@ -103,7 +103,16 @@ impl Client {
         p.extend_from_slice(&1228u16.to_be_bytes());
         p.extend_from_slice(&99i64.to_be_bytes());
         self.sock.send(&p).unwrap();
-        assert_eq!(self.recv_raw()[0], 0x08);
+        // Un port réutilisé par le système peut encore recevoir les derniers datagrammes
+        // d'une session précédente : on les ignore
+        loop {
+            let r = self.recv_raw();
+            if r[0] & 0x80 != 0 || r[0] == 0xc0 || r[0] == 0xa0 {
+                continue;
+            }
+            assert_eq!(r[0], 0x08);
+            break;
+        }
 
         let mut p = vec![0x09];
         p.extend_from_slice(&99i64.to_be_bytes());
@@ -1586,7 +1595,7 @@ fn generated_world_spawns_players_on_dry_land() {
     handle.join().unwrap();
     // Redémarrage : même monde, même graine
     let world = basalt::world::World::stored_generator(&dir.join("world")).unwrap();
-    assert_eq!(world, Some((basalt::world::generator::Kind::Normal, 42)));
+    assert_eq!(world, Some((basalt::world::generator::Kind::Vanilla, 42)));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

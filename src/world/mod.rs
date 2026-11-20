@@ -12,6 +12,7 @@
 //! est encore utilisée ; le terrain généré est partagé tel quel.
 
 pub mod generator;
+pub mod vanilla;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -447,12 +448,58 @@ impl World {
             }
         }
         let biome = column.biome.id();
-        for _ in 0..24 {
-            w.u8(1); // biome unique pour la section
-            w.vari32(biome as i32);
+        for s in 0..24usize {
+            match column.biome_ids.as_ref().map(|ids| &ids[s * 64..s * 64 + 64]) {
+                Some(quarts) if quarts.iter().any(|b| *b != quarts[0]) => encode_biomes(&mut w, quarts),
+                Some(quarts) => {
+                    w.u8(1); // biome unique pour la section
+                    w.vari32(quarts[0] as i32);
+                }
+                None => {
+                    w.u8(1);
+                    w.vari32(biome as i32);
+                }
+            }
         }
         w.u8(0); // blocs de bordure
         (sections as u32, w.0)
+    }
+}
+
+/// Biomes d'un sous-chunk, bloc par bloc (x << 8 | z << 4 | y), d'après les cases de 4×4×4
+/// blocs (`quarts` : x * 16 + z * 4 + y).
+fn encode_biomes(w: &mut W, quarts: &[u8]) {
+    let mut palette: Vec<u8> = Vec::new();
+    for b in quarts {
+        if !palette.contains(b) {
+            palette.push(*b);
+        }
+    }
+    let bits: usize = [1usize, 2, 3, 4, 5, 6, 8].iter().copied().find(|b| (1usize << b) >= palette.len()).unwrap_or(8);
+    w.u8(((bits as u8) << 1) | 1);
+    let per_word = 32 / bits;
+    let (mut word, mut filled) = (0u32, 0);
+    for x in 0..16usize {
+        for z in 0..16usize {
+            for y in 0..16usize {
+                let b = quarts[(x / 4) * 16 + (z / 4) * 4 + y / 4];
+                let idx = palette.iter().position(|p| *p == b).unwrap_or(0) as u32;
+                word |= idx << (bits * filled);
+                filled += 1;
+                if filled == per_word {
+                    w.u32(word);
+                    word = 0;
+                    filled = 0;
+                }
+            }
+        }
+    }
+    if filled > 0 {
+        w.u32(word);
+    }
+    w.vari32(palette.len() as i32);
+    for b in palette {
+        w.vari32(b as i32);
     }
 }
 
