@@ -341,6 +341,8 @@ pub struct PlayerSnap {
     pub held: String,
     /// Opérateur du serveur
     pub op: bool,
+    /// Mode de jeu : 0 survie, 1 créatif, 2 aventure, 3 spectateur
+    pub gamemode: i32,
     /// Permissions fixées pour ce joueur (elles priment sur la règle par défaut)
     pub perms: Vec<(String, bool)>,
 }
@@ -601,6 +603,10 @@ unsafe extern "C" fn l_pget(l: L) -> c_int {
         "yaw" => num(p.yaw as f64),
         "pitch" => num(p.pitch as f64),
         "held" => text(&p.held),
+        "gamemode" => {
+            (c.api.pushinteger)(l, p.gamemode as i64);
+            1
+        }
         "pos" => {
             (c.api.pushnumber)(l, p.pos.0 as f64);
             (c.api.pushnumber)(l, p.pos.1 as f64);
@@ -637,6 +643,10 @@ unsafe extern "C" fn l_pset(l: L) -> c_int {
             Some(s) => LVal::Str(s),
             None => return bad_call(c, "un texte est attendu"),
         },
+        "gamemode" => match arg_num(c, l, 3) {
+            Some(v) if [0.0, 1.0, 2.0, 3.0].contains(&v) => LVal::Num(v),
+            _ => return bad_call(c, "joueur:setGamemode(0 à 3) : 0 survie, 1 créatif, 2 aventure, 3 spectateur"),
+        },
         "health" | "max_health" | "food" | "xp_level" | "xp_progress" => match arg_num(c, l, 3) {
             Some(v) => LVal::Num(v),
             None => return bad_call(c, "un nombre est attendu"),
@@ -652,6 +662,7 @@ unsafe extern "C" fn l_pset(l: L) -> c_int {
             ("food", LVal::Num(v)) => p.food = *v as f32,
             ("xp_level", LVal::Num(v)) => p.xp_level = *v as i32,
             ("xp_progress", LVal::Num(v)) => p.xp_progress = *v as f32,
+            ("gamemode", LVal::Num(v)) => p.gamemode = *v as i32,
             ("op", LVal::Bool(b)) => p.op = *b,
             (k, v) if k.starts_with("perm:") => {
                 let node = &k[5..];

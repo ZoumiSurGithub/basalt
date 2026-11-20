@@ -226,7 +226,7 @@ annulé n'est plus transmis aux écouteurs suivants, sauf à ceux qui demandent 
 | `PlayerRespawnEvent` | non | `getPlayer()`, `getRespawnPosition()` (x, y, z aux pieds) | `setRespawnPosition(x, y, z)` |
 | `PlayerDropItemEvent` | oui (l'objet revient dans l'inventaire) | `getPlayer()`, `getItem()` | — |
 | `EntityItemPickupEvent` | oui (l'objet reste au sol) | `getEntity()` (ou `getPlayer()`), `getItem()` | — |
-| `PlayerGameModeChangeEvent` | oui | `getPlayer()`, `getNewGamemode()` (0 survie, 1 créatif) | — |
+| `PlayerGameModeChangeEvent` | oui | `getPlayer()`, `getNewGamemode()` (`GameMode.SURVIVAL` 0, `CREATIVE` 1, `ADVENTURE` 2, `SPECTATOR` 3) | — |
 
 `getBlock()` renvoie un bloc : `bloc:getName()` (`"minecraft:stone"`), `bloc:getX()`,
 `getY()`, `getZ()`, `getPosition()`. `getItem()` et `getDrops()` renvoient des tables
@@ -250,6 +250,7 @@ l'obtenir avec `server.getPlayer(pseudo)` (ou `nil` s'il n'est pas en jeu) et
 | `joueur:getName()` ou `joueur.name` | — | pseudo du compte |
 | `joueur:getDisplayName()` | `joueur:setDisplayName(texte)` | nom montré dans le chat et les messages |
 | `joueur:getNameTag()` | `joueur:setNameTag(texte)` | texte au-dessus de la tête |
+| `joueur:getGamemode()` | `joueur:setGamemode(n)` | mode de jeu : `GameMode.SURVIVAL` (0), `CREATIVE` (1), `ADVENTURE` (2), `SPECTATOR` (3) |
 | `joueur:getHealth()` | `joueur:setHealth(n)` | vie (de 0 à la vie maximale ; à 0, le joueur meurt) |
 | `joueur:getMaxHealth()` | `joueur:setMaxHealth(n)` | vie maximale (20 par défaut) |
 | `joueur:getFood()` | `joueur:setFood(n)` | faim, de 0 à 20 |

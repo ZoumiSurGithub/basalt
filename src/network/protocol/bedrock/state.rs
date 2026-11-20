@@ -65,7 +65,8 @@ pub fn update_attributes_with(runtime_id: u64, health: f32, max_health: f32, foo
     w.0
 }
 
-pub fn update_abilities(unique_id: i64, creative: bool) -> Vec<u8> {
+pub fn update_abilities(unique_id: i64, mode: crate::player::GameMode) -> Vec<u8> {
+    use crate::player::GameMode;
     let mut w = W::default();
     w.0.extend_from_slice(&unique_id.to_le_bytes());
     w.u8(1); // permissions : membre
@@ -73,11 +74,16 @@ pub fn update_abilities(unique_id: i64, creative: bool) -> Vec<u8> {
     w.varu32(1); // une couche
     w.0.extend_from_slice(&1u16.to_le_bytes()); // couche de base
     w.u32((1 << 20) - 1); // toutes les capacités sont définies
-    // construire, miner, portes, coffres, attaquer joueurs et créatures, vitesses
-    let mut values: u32 = 0x3f | (1 << 13) | (1 << 14) | (1 << 19);
-    if creative {
-        values |= (1 << 8) | (1 << 10) | (1 << 11); // invulnérable, vol autorisé, construction instantanée
-    }
+    // Capacités : 0 construire, 1 miner, 2 portes et leviers, 3 coffres, 4 attaquer les joueurs,
+    // 5 attaquer les créatures, 8 invulnérable, 9 en vol, 10 vol autorisé, 11 construction
+    // instantanée, 13 et 19 vitesses de vol, 14 vitesse de marche, 17 traverser les blocs
+    let speeds: u32 = (1 << 13) | (1 << 14) | (1 << 19);
+    let values: u32 = match mode {
+        GameMode::Survival => 0x3f | speeds,
+        GameMode::Creative => 0x3f | speeds | (1 << 8) | (1 << 10) | (1 << 11),
+        GameMode::Adventure => (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | speeds,
+        GameMode::Spectator => speeds | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 17),
+    };
     w.u32(values);
     w.f32(0.05); // vitesse de vol
     w.f32(1.0); // vitesse de vol verticale

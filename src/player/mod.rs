@@ -5,7 +5,9 @@
 //! Le cycle est le même pour tous : `load` (ou `new` à la première visite) quand le joueur
 //! entre, `save` quand il part, à intervalles réguliers et à l'arrêt du serveur.
 
+pub mod gamemode;
 pub mod skin;
+pub use gamemode::GameMode;
 pub use skin::Skin;
 
 use std::path::{Path, PathBuf};

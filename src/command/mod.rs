@@ -31,7 +31,7 @@ impl VanillaCommands {
             def("msg", "commands.tell.description", "/msg <target:player> <message:text>", false),
             def("w", "commands.tell.description", "/w <target:player> <message:text>", false),
             def("say", "commands.say.description", "/say <message:text>", true),
-            def("gamemode", "commands.gamemode.description", "/gamemode <gameMode:survival|creative|s|c|0|1> [player:player]", true),
+            def("gamemode", "commands.gamemode.description", "/gamemode <gameMode:survival|creative|adventure|spectator|default|s|c|a|sp|d|0|1|2|6> [player:player]", true),
             def("give", "commands.give.description", "/give <player:player> <itemName:item> [amount:int]", true),
             def("clear", "commands.clear.description", "/clear [player:player] [itemName:item]", true),
             def("setblock", "commands.setblock.description", "/setblock <position:pos> <tileName:block>", true),

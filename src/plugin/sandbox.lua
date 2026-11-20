@@ -95,6 +95,9 @@ function Player:give(item, count) pdo(self.name, "give", tostring(item), count o
 function Player:getYaw() return pget(self.name, "yaw") or 0 end
 function Player:getPitch() return pget(self.name, "pitch") or 0 end
 function Player:getItemInHand() return pget(self.name, "held") or "" end
+-- Mode de jeu : 0 survie, 1 créatif, 2 aventure, 3 spectateur (numéros de PocketMine)
+function Player:getGamemode() return pget(self.name, "gamemode") or 0 end
+function Player:setGamemode(mode) pset(self.name, "gamemode", mode) end
 -- Direction du regard, en décalage de blocs : (dx, dy, dz) parmi les six directions
 function Player:getDirection()
   local pitch, yaw = self:getPitch(), self:getYaw() % 360
@@ -151,6 +154,7 @@ end
 -- chacun peut le modifier ou l'annuler, et le serveur applique le résultat final.
 -- ---------------------------------------------------------------------------------------
 
+GameMode = { SURVIVAL = 0, CREATIVE = 1, ADVENTURE = 2, SPECTATOR = 3 }
 EventPriority = { LOWEST = "LOWEST", LOW = "LOW", NORMAL = "NORMAL", HIGH = "HIGH", HIGHEST = "HIGHEST", MONITOR = "MONITOR" }
 
 -- Champs de chaque événement : nom, type ("player", "block", "position", "drops", "item",
@@ -399,7 +403,7 @@ local keep = {
   setmetatable = true, getmetatable = true,
   rawget = true, rawset = true, rawequal = true, rawlen = true,
   _G = true, _VERSION = true,
-  EventPriority = true, EntityDamageEvent = true, PlayerInteractEvent = true,
+  EventPriority = true, EntityDamageEvent = true, PlayerInteractEvent = true, GameMode = true,
 }
 local names = {}
 for k in pairs(_G) do names[#names + 1] = k end

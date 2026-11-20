@@ -72,7 +72,7 @@ server.set_motd(table.concat(out, ";"))
         "io=nil", "os=nil", "debug=nil", "package=nil", "load=nil", "loadfile=nil", "dofile=nil", "collectgarbage=nil",
         "dump=nil", "time=number", "connect=true", "outside=nil", "parent=nil", "drive=false", "require=false",
         "written=true", "appended=true", "inside=bonjour", "module=42",
-        "globals=EntityDamageEvent,EventPriority,PlayerInteractEvent,_G,_VERSION,assert,coroutine,error,getmetatable,ipairs,math,next,pairs,pcall,print,rawequal,rawget,rawlen,rawset,require,select,server,setmetatable,string,table,tonumber,tostring,type,utf8,xpcall",
+        "globals=EntityDamageEvent,EventPriority,GameMode,PlayerInteractEvent,_G,_VERSION,assert,coroutine,error,getmetatable,ipairs,math,next,pairs,pcall,print,rawequal,rawget,rawlen,rawset,require,select,server,setmetatable,string,table,tonumber,tostring,type,utf8,xpcall",
     ] {
         assert!(text.contains(expected), "attendu « {} » dans : {}", expected, text);
     }

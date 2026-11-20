@@ -127,7 +127,7 @@ protocol=2225
 #   2225 = 1.26.60 à 1.26.65    2259 = préversion 1.26.70
 min-protocol=2168
 max-protocol=2259
-# Survival ou Creative
+# Mode de jeu des nouveaux joueurs : Survival, Creative, Adventure ou Spectator
 gamemode=Survival
 # true : un joueur qui meurt garde son inventaire. false (comme dans le jeu) : son
 # inventaire et son armure tombent au sol là où il est mort.

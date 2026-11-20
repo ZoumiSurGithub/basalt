@@ -1271,6 +1271,17 @@ fn players_get_hurt_die_and_respawn() {
         }
     }
 
+    // Les quatre modes du jeu : aventure (2) puis spectateur (6), puis retour en survie
+    for (mode, id) in [("adventure", 4u8), ("spectator", 12u8), ("survival", 0u8)] {
+        let line = format!("/gamemode {}", mode);
+        let mut body = vec![line.len() as u8];
+        body.extend_from_slice(line.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        steve.game(77, &body, Some(0xff));
+        let set = steve.wait_for(62);
+        assert_eq!(set, vec![id], "mode {}", mode);
+    }
+
     // Steve reçoit des pierres : elles tomberont au sol à sa mort
     let give = b"/give Steve stone 5";
     let mut body = vec![give.len() as u8];

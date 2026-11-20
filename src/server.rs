@@ -20,7 +20,7 @@ use crate::item::VanillaItems;
 use crate::config::Config;
 use crate::level::edit::{EditSession, Outcome, Region};
 use crate::permission::{self, NameList, OpList};
-use crate::player::{clean_text, PlayerData};
+use crate::player::{clean_text, GameMode, PlayerData};
 use crate::lua::{Action, Info, LVal, PlayerSnap};
 use crate::plugin::host::PluginHost;
 use crate::inventory::{self, PlayerWindows, Target};
@@ -291,7 +291,7 @@ struct Client {
     /// Un inventaire non vide a déjà été envoyé (sert à interpréter un refus du jeu)
     inv_touched: bool,
     /// Mode de jeu du joueur (celui du serveur à son arrivée, puis /gamemode)
-    creative: bool,
+    mode: GameMode,
     /// Mort, en attente de réapparition (tick de la mort)
     dead: Option<u64>,
     /// Tick du dernier coup reçu : un joueur ne peut pas être frappé plus de 2 fois par seconde
@@ -715,6 +715,7 @@ impl Server {
                     pitch: c.pitch,
                     held: Some(c.inv.held()).filter(|s| !s.is_empty()).and_then(|s| self.data.as_ref().and_then(|g| g.item_by_id(s.id))).map(|i| i.name.clone()).unwrap_or_default(),
                     op: self.ops.is_op(&d.name),
+                    gamemode: c.mode.save_id(),
                     perms: d.permissions.clone(),
                 });
             }
@@ -899,7 +900,7 @@ impl Server {
                 c.inv_touched = true;
             }
             if let (Some(mode), false) = (saved_mode, fresh) {
-                c.creative = mode == 1;
+                c.mode = GameMode::from_save_id(mode);
             }
             c.data = Some(data);
             c.first_visit = fresh;
@@ -921,7 +922,7 @@ impl Server {
             d.has_pos = true;
         }
         d.last_played = Self::now_unix();
-        d.game_type = Some(c.creative as i32);
+        d.game_type = Some(c.mode.save_id());
         // Dossier du monde, comme PocketMine le note
         d.level = std::path::Path::new(&self.cfg.world_dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         d.items.clear();
@@ -1032,7 +1033,7 @@ impl Server {
         let footing = self.footing(input.pos);
         let mut fall: Option<Cause> = None;
         let mut fall_amount = 0.0;
-        let max_speed = self.max_speed(self.clients.get(addr).map(|c| c.creative).unwrap_or(false));
+        let max_speed = self.max_speed(self.clients.get(addr).map(|c| c.mode.may_fly()).unwrap_or(false));
         let check = self.cfg.movement_check;
         // Le déplacement sera diffusé au prochain tick
         let tick = self.tick + 1;
@@ -1085,7 +1086,7 @@ impl Server {
                     let feet = pos.1 - player_eye_height();
                     if feet < -128.0 {
                         fall = Some(Cause::Void);
-                    } else if c.creative || footing == Footing::Liquid {
+                    } else if !c.mode.takes_damage() || footing == Footing::Liquid {
                         c.fall_peak = None;
                     } else if footing == Footing::Air {
                         c.fall_peak = Some(c.fall_peak.map(|p| p.max(feet)).unwrap_or(feet));
@@ -1144,6 +1145,7 @@ impl Server {
             sprinting: bool,
             held: (i16, u8, u32),
             skin: Option<Arc<crate::player::Skin>>,
+            mode: i32,
         }
         let refresh = self.tick % VISIBILITY_EVERY == 0;
         let mut players: Vec<Seen> = Vec::new();
@@ -1152,7 +1154,7 @@ impl Server {
         let now_tick = self.tick;
         for c in self.clients.values() {
             // Un mort reste visible le temps de sa chute (1 seconde), puis disparaît
-            let shown = c.dead.map(|t| now_tick.saturating_sub(t) <= 20).unwrap_or(true);
+            let shown = c.dead.map(|t| now_tick.saturating_sub(t) <= 20).unwrap_or(true) && !c.mode.is_spectator();
             if c.joined && c.stage == Stage::InGame && shown {
                 players.push(Seen {
                     id: c.id,
@@ -1166,6 +1168,7 @@ impl Server {
                     sneaking: c.sneaking,
                     sprinting: c.sprinting,
                     skin: if refresh { c.skin.clone() } else { None },
+                    mode: c.mode.bedrock_id(),
                     held: {
                         let h = c.inv.held();
                         (h.id, h.count.min(1), if h.is_empty() { 0 } else { self.block_for(h.id).unwrap_or(0) })
@@ -1186,7 +1189,6 @@ impl Server {
         }
         let range = self.cfg.player_view;
         let cap = self.cfg.max_visible;
-        let gamemode = self.cfg.gamemode.eq_ignore_ascii_case("creative") as i32;
         let hidden = self.add_player_refused;
         let still = self.move_actor_refused;
         let no_equipment = self.equip_refused;
@@ -1248,7 +1250,7 @@ impl Server {
                                     }
                                     packets.push((
                                         bedrock::ID_ADD_PLAYER,
-                                        bedrock::add_player(&id16, &o.name, o.id, (o.pos.0, o.pos.1 - 1.62, o.pos.2), o.pitch, o.yaw, o.head_yaw, gamemode, Self::remote_flags(o.sneaking, o.sprinting), (0, 0, 0)),
+                                        bedrock::add_player(&id16, &o.name, o.id, (o.pos.0, o.pos.1 - 1.62, o.pos.2), o.pitch, o.yaw, o.head_yaw, o.mode, Self::remote_flags(o.sneaking, o.sprinting), (0, 0, 0)),
                                     ));
                                     // L'objet qu'il tient suit dans un paquet à part : s'il était
                                     // refusé par le jeu, l'apparition du joueur ne le serait pas
@@ -1388,6 +1390,10 @@ impl Server {
                     };
                     if let ("op", LVal::Bool(b)) = (key.as_str(), &value) {
                         self.set_op(&name, *b);
+                        continue;
+                    }
+                    if let ("gamemode", LVal::Num(v)) = (key.as_str(), &value) {
+                        self.set_gamemode(&addr, GameMode::from_save_id(*v as i32));
                         continue;
                     }
                     let mut attributes = false;
@@ -1644,20 +1650,23 @@ impl Server {
     }
 
     /// Change le mode de jeu d'un joueur et l'en informe.
-    fn set_gamemode(&mut self, addr: &SocketAddr, creative: bool) {
-        let out = self.fire("PlayerGameModeChangeEvent", vec![("player", self.name_json(addr)), ("newGamemode", Json::Num(if creative { 1.0 } else { 0.0 }))]);
+    /// Change le mode de jeu d'un joueur. Faux si un plugin s'y oppose.
+    fn set_gamemode(&mut self, addr: &SocketAddr, mode: GameMode) -> bool {
+        let out = self.fire("PlayerGameModeChangeEvent", vec![("player", self.name_json(addr)), ("newGamemode", Json::Num(mode.save_id() as f64))]);
         if cancelled(&out) {
-            return;
+            return false;
         }
         let id = match self.clients.get_mut(addr) {
             Some(c) => {
-                c.creative = creative;
+                c.mode = mode;
+                c.fall_peak = None;
                 c.id
             }
-            None => return,
+            None => return false,
         };
-        self.send(addr, bedrock::ID_SET_PLAYER_GAME_TYPE, &bedrock::set_time(creative as i32));
-        self.send(addr, bedrock::ID_UPDATE_ABILITIES, &bedrock::update_abilities(id, creative));
+        self.send(addr, bedrock::ID_SET_PLAYER_GAME_TYPE, &bedrock::set_time(mode.bedrock_id()));
+        self.send(addr, bedrock::ID_UPDATE_ABILITIES, &bedrock::update_abilities(id, mode));
+        true
     }
 
     /// Exécute une commande du jeu pour un joueur (`sender`) ou pour la console (`None`).
@@ -1715,22 +1724,24 @@ impl Server {
                 }
             }
             "gamemode" => {
-                let creative = match arg(0).to_lowercase().as_str() {
-                    "creative" | "c" | "1" => true,
-                    "survival" | "s" | "0" => false,
-                    "adventure" | "a" | "2" | "spectator" | "6" => {
-                        self.reply(sender, "§cLes modes aventure et spectateur ne sont pas encore gérés par le serveur.");
-                        return;
-                    }
-                    _ => return usage(self),
+                let mode = match arg(0).to_lowercase().as_str() {
+                    // « default » : le mode du serveur (server.properties)
+                    "default" | "d" | "5" => GameMode::parse(&self.cfg.gamemode).unwrap_or(GameMode::Survival),
+                    other => match GameMode::parse(other) {
+                        Some(m) => m,
+                        None => return usage(self),
+                    },
                 };
                 let targets = if args.len() > 1 { self.targets(sender, arg(1)) } else { sender.into_iter().collect() };
                 if targets.is_empty() {
                     return self.reply(sender, NO_TARGET);
                 }
-                let mode = if creative { "Créatif" } else { "Survie" };
+                let label = mode.label();
                 for t in targets {
-                    self.set_gamemode(&t, creative);
+                    if !self.set_gamemode(&t, mode) {
+                        continue;
+                    }
+                    let mode = label;
                     if Some(t) == sender {
                         self.reply(sender, &format!("Votre mode de jeu a été mis à jour : {}", mode));
                     } else {
@@ -2209,6 +2220,10 @@ impl Server {
 
     /// PlayerInteractEvent (clic droit sur un bloc) : vrai si un écouteur l'annule.
     fn interact_cancelled(&mut self, addr: &SocketAddr, pos: (i32, i32, i32)) -> bool {
+        // Un spectateur n'ouvre ni porte ni coffre
+        if self.clients.get(addr).map(|c| c.mode.is_spectator()).unwrap_or(true) {
+            return true;
+        }
         if !self.plugins.listens("PlayerInteractEvent") {
             return false;
         }
@@ -2386,7 +2401,7 @@ impl Server {
         let unstoppable = matches!(cause, Cause::Void | Cause::Command);
         match self.clients.get(addr) {
             Some(c) if c.joined && c.dead.is_none() => {
-                if c.creative && !unstoppable {
+                if c.mode.is_spectator() || (!c.mode.takes_damage() && !unstoppable) {
                     return;
                 }
                 if matches!(cause, Cause::Player(_)) && c.hurt_at > 0 && tick.saturating_sub(c.hurt_at) < 10 {
@@ -2598,7 +2613,10 @@ impl Server {
             }
             _ => return,
         };
-        let victim = self.clients.iter().find(|(_, c)| c.id as u64 == target && c.id != from && c.joined).map(|(a, c)| (*a, c.pos, c.creative, c.id));
+        if self.clients.get(addr).map(|c| c.mode.is_spectator()).unwrap_or(true) {
+            return;
+        }
+        let victim = self.clients.iter().find(|(_, c)| c.id as u64 == target && c.id != from && c.joined).map(|(a, c)| (*a, c.pos, !c.mode.takes_damage(), c.id));
         let (victim, pos, creative, victim_id) = match victim {
             Some(v) => v,
             None => return,
@@ -2737,7 +2755,8 @@ impl Server {
         // Ramassage : à moins d'un bloc et demi des pieds du joueur
         let mut taken: Vec<(SocketAddr, i64, i64)> = Vec::new();
         for (addr, c) in self.clients.iter() {
-            if !c.joined || c.stage != Stage::InGame || c.dead.is_some() {
+            // Un spectateur ne ramasse rien
+            if !c.joined || c.stage != Stage::InGame || c.dead.is_some() || c.mode.is_spectator() {
                 continue;
             }
             let feet = c.pos.1 - player_eye_height();
@@ -2795,7 +2814,8 @@ impl Server {
     fn on_block_use(&mut self, addr: &SocketAddr, block_use: bedrock::BlockUse) {
         let (x, y, z) = block_use.pos;
         let near = match self.clients.get(addr) {
-            Some(c) if c.stage == Stage::InGame && c.dead.is_none() => {
+            // Aventure et spectateur ne cassent rien
+            Some(c) if c.stage == Stage::InGame && c.dead.is_none() && c.mode.can_build() => {
                 let (dx, dy, dz) = (c.pos.0 - x as f32 - 0.5, c.pos.1 - y as f32 - 0.5, c.pos.2 - z as f32 - 0.5);
                 dx * dx + dy * dy + dz * dz <= 8.0 * 8.0
             }
@@ -2822,7 +2842,7 @@ impl Server {
             return;
         }
         // En survie, les règles du bloc s'appliquent : incassable ou non, butin selon l'outil
-        let survival = !self.clients.get(addr).map(|c| c.creative).unwrap_or(false);
+        let survival = self.clients.get(addr).map(|c| c.mode == GameMode::Survival).unwrap_or(false);
         let loot: Option<Vec<(i16, u8)>> = match (&self.data, &self.blocks, self.items_level, survival) {
             (Some(d), Some(blocks), 2, true) => d.block_name(old).and_then(|name| blocks.get(name).map(|b| (name, b))).map(|(name, block)| {
                 if !block.is_breakable() {
@@ -3061,7 +3081,7 @@ impl Server {
         }
         for request in requests {
             // Menu créatif : l'objet demandé doit exister, et le serveur être en mode créatif
-            let creative = self.clients.get(addr).map(|c| c.creative).unwrap_or(false);
+            let creative = self.clients.get(addr).map(|c| c.mode == GameMode::Creative).unwrap_or(false);
             let from_menu = request.actions.iter().any(|a| matches!(a, bedrock::StackAction::CraftCreative { .. }));
             let created = match &request.created {
                 Some(name) if creative || !from_menu => self.item_id(name),
@@ -3383,7 +3403,8 @@ impl Server {
     fn on_place(&mut self, addr: &SocketAddr, target: (i32, i32, i32), face: u8, click: (f32, f32, f32)) {
         let (x, y, z) = target;
         let (near, item, looks, yaw) = match self.clients.get(addr) {
-            Some(c) if c.stage == Stage::InGame && c.dead.is_none() => {
+            // Aventure et spectateur ne posent rien
+            Some(c) if c.stage == Stage::InGame && c.dead.is_none() && c.mode.can_build() => {
                 let (dx, dy, dz) = (c.pos.0 - x as f32 - 0.5, c.pos.1 - y as f32 - 0.5, c.pos.2 - z as f32 - 0.5);
                 // Sens du regard : l'angle annoncé par le jeu, comme en vanilla. C'est ce qui permet
                 // de poser un escalier de biais par rapport au bloc visé, pour former un coin.
@@ -3994,7 +4015,6 @@ impl Server {
                         self.send(&addr, bedrock::ID_RESOURCE_PACK_STACK, &bedrock::resource_pack_stack());
                         continue;
                     }
-                    let creative = self.cfg.gamemode.eq_ignore_ascii_case("creative");
                     // Le joueur est chargé dès maintenant : il apparaît directement là où il
                     // s'était arrêté, sans qu'il faille le déplacer après coup
                     self.load_player(&addr);
@@ -4016,7 +4036,7 @@ impl Server {
                     }
                     let start = bedrock::start_game(&bedrock::StartGame {
                         entity_id: id,
-                        gamemode: creative as i32,
+                        gamemode: self.clients.get(&addr).map(|c| c.mode.bedrock_id()).unwrap_or(0),
                         position: spawn,
                         rotation: (pitch, yaw),
                         world_name: &self.cfg.world_name.clone(),
@@ -4380,7 +4400,7 @@ impl Server {
                         inputs: 0,
                         inv: PlayerWindows::new(),
                         inv_touched: false,
-                        creative: self.cfg.gamemode.eq_ignore_ascii_case("creative"),
+                        mode: GameMode::parse(&self.cfg.gamemode).unwrap_or(GameMode::Survival),
                         dead: None,
                         hurt_at: 0,
                         fall_peak: None,
@@ -4715,16 +4735,16 @@ impl Server {
             Some(c) => c.id,
             None => return,
         };
-        let creative = self.clients.get(addr).map(|c| c.creative).unwrap_or(false);
+        let mode = self.clients.get(addr).map(|c| c.mode).unwrap_or(GameMode::Survival);
         let list: Vec<(u32, Vec<u8>)> = vec![
             (bedrock::ID_UPDATE_ATTRIBUTES, bedrock::update_attributes(id as u64)),
-            (bedrock::ID_UPDATE_ABILITIES, bedrock::update_abilities(id, creative)),
+            (bedrock::ID_UPDATE_ABILITIES, bedrock::update_abilities(id, mode)),
             (bedrock::ID_SET_ACTOR_DATA, bedrock::set_actor_data_player(id as u64)),
             (bedrock::ID_SET_TIME, bedrock::set_time(self.world_time() as i32)),
             (bedrock::ID_CREATIVE_CONTENT, self.captured(addr, bedrock::ID_CREATIVE_CONTENT).unwrap_or_else(bedrock::creative_content_empty)),
             (bedrock::ID_INVENTORY_CONTENT, bedrock::inventory_content_empty(0, 36, features)),
             (bedrock::ID_PLAYER_HOTBAR, bedrock::player_hotbar(0)),
-            (bedrock::ID_SET_PLAYER_GAME_TYPE, bedrock::set_time(if creative { 1 } else { 0 })),
+            (bedrock::ID_SET_PLAYER_GAME_TYPE, bedrock::set_time(mode.bedrock_id())),
             (bedrock::ID_SET_DIFFICULTY, vec![1]),
             (bedrock::ID_SET_COMMANDS_ENABLED, vec![1]),
             (bedrock::ID_UPDATE_ADVENTURE_SETTINGS, bedrock::update_adventure_settings()),
@@ -4893,7 +4913,7 @@ impl Server {
                     json_string(&self.cfg.world_name),
                     self.players().len(),
                     self.cfg.max_players,
-                    self.cfg.gamemode.eq_ignore_ascii_case("creative") as i32
+                    GameMode::parse(&self.cfg.gamemode).unwrap_or(GameMode::Survival).bedrock_id()
                 );
                 req.respond(200, "application/json", body.as_bytes());
             } else if req.path.starts_with("/v1/join/") && req.method == "POST" {
