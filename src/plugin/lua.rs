@@ -35,6 +35,7 @@ pub(crate) struct MemState {
 }
 
 extern "C" {
+    /// Allocateur C, utilisé par limited_alloc.
     fn realloc(ptr: *mut c_void, size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);
 }
@@ -72,10 +73,12 @@ thread_local! {
 /// Plugin en cours d'exécution (vide si aucun), pour nommer le responsable d'un retard.
 static CURRENT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
+/// Nom du plugin en cours d'exécution (pour les messages d'erreur et les mesures).
 pub fn current_plugin() -> String {
     CURRENT.lock().map(|c| c.clone()).unwrap_or_default()
 }
 
+/// Note le plugin qui s'exécute, sans allouer à chaque appel.
 fn set_current(name: &str) {
     if let Ok(mut c) = CURRENT.lock() {
         c.clear();
@@ -86,6 +89,7 @@ fn set_current(name: &str) {
 /// Dépassements de temps tolérés avant de désactiver un plugin.
 const MAX_STRIKES: u32 = 3;
 
+/// Millisecondes depuis le démarrage, pour les limites de temps.
 pub(crate) fn now_ms() -> u64 {
     CLOCK.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
@@ -117,6 +121,7 @@ mod dl {
     use std::os::raw::{c_char, c_int, c_void};
     #[cfg_attr(target_os = "linux", link(name = "dl"))]
     extern "C" {
+        /// Fonctions du système pour charger la bibliothèque Lua à l'exécution.
         fn dlopen(file: *const c_char, flags: c_int) -> *mut c_void;
         fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
     }
@@ -129,9 +134,11 @@ mod dl {
         "liblua.so\0",
         "liblua.dylib\0",
     ];
+    /// Ouvre une bibliothèque (nom terminé par \0) ; nul si elle est absente.
     pub unsafe fn open(name: &str) -> *mut c_void {
         dlopen(name.as_ptr() as *const c_char, 2)
     }
+    /// Adresse d'une fonction de la bibliothèque (nom terminé par \0).
     pub unsafe fn sym(h: *mut c_void, name: &str) -> *mut c_void {
         dlsym(h, name.as_ptr() as *const c_char)
     }
@@ -142,13 +149,16 @@ mod dl {
     use std::os::raw::{c_char, c_void};
     #[link(name = "kernel32")]
     extern "system" {
+        /// Équivalents Windows.
         fn LoadLibraryA(name: *const c_char) -> *mut c_void;
         fn GetProcAddress(handle: *mut c_void, name: *const c_char) -> *mut c_void;
     }
     pub const NAMES: &[&str] = &["lua54.dll\0", "lua5.4.dll\0", "lua.dll\0"];
+    /// Ouvre une bibliothèque (nom terminé par \0) ; nul si elle est absente.
     pub unsafe fn open(name: &str) -> *mut c_void {
         LoadLibraryA(name.as_ptr() as *const c_char)
     }
+    /// Adresse d'une fonction de la bibliothèque (nom terminé par \0).
     pub unsafe fn sym(h: *mut c_void, name: &str) -> *mut c_void {
         GetProcAddress(h, name.as_ptr() as *const c_char)
     }
@@ -215,6 +225,7 @@ impl Api {
         p.map(|p| unsafe { &*(p as *const Api) })
     }
 
+    /// Cherche Lua 5.4 (à côté du serveur, puis dans le système) et lit toutes ses fonctions.
     fn load() -> Result<&'static Api, String> {
         unsafe {
             let mut h = std::ptr::null_mut();
@@ -430,6 +441,8 @@ unsafe fn ctx<'a>(l: L) -> &'a mut Ctx {
     &mut *((api.touserdata)(l, REGISTRY - 1) as *mut Ctx)
 }
 
+/// Arguments des fonctions de l'API : texte (un nombre est converti), fonction gardée dans
+/// le registre.
 unsafe fn arg_str(c: &Ctx, l: L, i: c_int) -> Option<String> {
     let t = (c.api.type_)(l, i);
     if t != T_STRING && t != T_NUMBER {
@@ -451,11 +464,13 @@ unsafe fn arg_fn(c: &Ctx, l: L, i: c_int) -> Option<c_int> {
     Some((c.api.ref_)(l, REGISTRY))
 }
 
+/// Signale un appel mal formé dans la console, sans erreur Lua.
 fn bad_call(c: &Ctx, what: &str) -> c_int {
     warn!("[{}] appel invalide : {}", c.name, what);
     0
 }
 
+/// server.log / server.warn : ligne de console préfixée du nom du plugin.
 unsafe extern "C" fn l_log(l: L) -> c_int {
     let c = ctx(l);
     let msg = arg_str(c, l, 1).unwrap_or_default();
@@ -470,6 +485,7 @@ unsafe extern "C" fn l_warn(l: L) -> c_int {
     0
 }
 
+/// server.on(événement, fonction)
 unsafe extern "C" fn l_on(l: L) -> c_int {
     let c = ctx(l);
     match (arg_str(c, l, 1), arg_fn(c, l, 2)) {
@@ -481,6 +497,7 @@ unsafe extern "C" fn l_on(l: L) -> c_int {
     }
 }
 
+/// server.command(nom, [description,] fonction)
 unsafe extern "C" fn l_command(l: L) -> c_int {
     let c = ctx(l);
     // Forme courte : server.command(nom, fonction), la description vient de plugin.yml
@@ -501,6 +518,7 @@ unsafe extern "C" fn l_command(l: L) -> c_int {
     }
 }
 
+/// Minuteries en ticks, utilisées par afterSeconds / everySeconds.
 unsafe fn add_timer(l: L, repeat: bool) -> c_int {
     let c = ctx(l);
     let mut ok = 0;
@@ -511,7 +529,7 @@ unsafe fn add_timer(l: L, repeat: bool) -> c_int {
             c.timers.push(Timer { at: c.tick + ticks, every: if repeat { ticks } else { 0 }, func: f });
             0
         }
-        _ => bad_call(c, "server.after/every(ticks >= 1, fonction)"),
+        _ => bad_call(c, "server.afterSeconds/everySeconds(secondes, fonction)"),
     }
 }
 
@@ -523,6 +541,7 @@ unsafe extern "C" fn l_every(l: L) -> c_int {
     add_timer(l, true)
 }
 
+/// server.setMotd(texte) / server.getMotd()
 unsafe extern "C" fn l_set_motd(l: L) -> c_int {
     let c = ctx(l);
     match arg_str(c, l, 1) {
@@ -531,7 +550,7 @@ unsafe extern "C" fn l_set_motd(l: L) -> c_int {
             c.actions.push(Action::SetMotd(m));
             0
         }
-        None => bad_call(c, "server.set_motd(texte)"),
+        None => bad_call(c, "server.setMotd(texte)"),
     }
 }
 
@@ -541,6 +560,7 @@ unsafe extern "C" fn l_motd(l: L) -> c_int {
     1
 }
 
+/// Pseudos des joueurs en jeu (utilisé par getOnlinePlayers).
 unsafe extern "C" fn l_players(l: L) -> c_int {
     let c = ctx(l);
     (c.api.createtable)(l, c.info.players.len() as c_int, 0);
@@ -551,24 +571,13 @@ unsafe extern "C" fn l_players(l: L) -> c_int {
     1
 }
 
-/// server.position(pseudo) -> x, y, z (ou rien si le joueur est inconnu)
-unsafe extern "C" fn l_position(l: L) -> c_int {
-    let c = ctx(l);
-    let name = match arg_str(c, l, 1) {
-        Some(n) => n,
-        None => return bad_call(c, "server.position(pseudo)"),
-    };
-    match c.info.players.iter().position(|p| *p == name).and_then(|i| c.info.positions.get(i)) {
-        Some(&(x, y, z)) => {
-            (c.api.pushnumber)(l, x as f64);
-            (c.api.pushnumber)(l, y as f64);
-            (c.api.pushnumber)(l, z as f64);
-            3
-        }
-        None => 0,
-    }
+/// Hauteur des pieds d'après celle des yeux, arrondie au dix-millième (les positions
+/// voyagent en nombres à virgule simple : sans arrondi, 64 deviendrait 64,0000027…).
+fn feet(eye: f32) -> f64 {
+    ((eye as f64 - 1.62) * 10_000.0).round() / 10_000.0
 }
 
+/// Nombre fini à cette position.
 unsafe fn arg_num(c: &Ctx, l: L, i: c_int) -> Option<f64> {
     let mut ok = 0;
     let v = (c.api.tonumberx)(l, i, &mut ok);
@@ -643,8 +652,9 @@ unsafe extern "C" fn l_pget(l: L) -> c_int {
             1
         }
         "pos" => {
+            // Les plugins voient la position des pieds (le serveur garde celle des yeux)
             (c.api.pushnumber)(l, p.pos.0 as f64);
-            (c.api.pushnumber)(l, p.pos.1 as f64);
+            (c.api.pushnumber)(l, feet(p.pos.1));
             (c.api.pushnumber)(l, p.pos.2 as f64);
             3
         }
@@ -720,6 +730,7 @@ const MAX_READ: i64 = 1_000_000;
 /// Plus grand nombre de blocs posés d'un coup (`server._setblocks`).
 const MAX_WRITE: usize = 1_000_000;
 
+/// Coordonnée entière, dans les limites du monde.
 unsafe fn arg_int(c: &Ctx, l: L, i: c_int) -> Option<i32> {
     arg_num(c, l, i).filter(|v| v.abs() < 3.0e7).map(|v| v.floor() as i32)
 }
@@ -866,10 +877,12 @@ unsafe extern "C" fn l_pdo(l: L) -> c_int {
         },
         "teleport" => match (arg_num(c, l, 3), arg_num(c, l, 4), arg_num(c, l, 5)) {
             (Some(x), Some(y), Some(z)) => {
+                // Le plugin donne les pieds ; le serveur place les yeux au-dessus
+                let eye = y as f32 + crate::player::EYE_HEIGHT;
                 if let Some(p) = c.info.pdata.iter_mut().find(|p| p.name == name) {
-                    p.pos = (x as f32, y as f32, z as f32);
+                    p.pos = (x as f32, eye, z as f32);
                 }
-                c.actions.push(Action::PlayerTeleport(name, x as f32, y as f32, z as f32))
+                c.actions.push(Action::PlayerTeleport(name, x as f32, eye, z as f32))
             }
             _ => return bad_call(c, "joueur:teleport(x, y, z)"),
         },
@@ -886,6 +899,7 @@ unsafe extern "C" fn l_pdo(l: L) -> c_int {
     0
 }
 
+/// Expulse un joueur (joueur:kick).
 unsafe extern "C" fn l_kick(l: L) -> c_int {
     let c = ctx(l);
     match arg_str(c, l, 1) {
@@ -894,7 +908,7 @@ unsafe extern "C" fn l_kick(l: L) -> c_int {
             c.actions.push(Action::Kick(name, reason));
             0
         }
-        None => bad_call(c, "server.kick(pseudo, raison)"),
+        None => bad_call(c, "joueur:kick(raison)"),
     }
 }
 
@@ -928,6 +942,7 @@ unsafe fn npc_order(l: L, verb: &str) -> c_int {
     0
 }
 
+/// Fonctions des PNJ, toutes traitées par npc_order.
 unsafe extern "C" fn l_npc_spawn(l: L) -> c_int {
     npc_order(l, "spawn")
 }
@@ -944,6 +959,7 @@ unsafe extern "C" fn l_npc_remove_all(l: L) -> c_int {
     npc_order(l, "remove_all")
 }
 
+/// server.stop()
 unsafe extern "C" fn l_stop(l: L) -> c_int {
     ctx(l).actions.push(Action::Stop);
     0
@@ -976,12 +992,14 @@ impl Plugin {
         set_current(&self.name);
     }
 
+    /// Fin d'un appel : plus de limite de temps ni de compte de mémoire.
     fn disarm(&self) {
         DEADLINE_MS.with(|d| d.set(u64::MAX));
         CURRENT_MEM.with(|m| m.set(std::ptr::null_mut()));
         set_current("");
     }
 
+    /// Pose une valeur Rust sur la pile Lua.
     unsafe fn push(&self, v: &LVal) {
         let a = self.api;
         match v {
@@ -1032,6 +1050,7 @@ impl Plugin {
         }
     }
 
+    /// Message d'erreur en haut de la pile.
     unsafe fn error_text(&self) -> String {
         let mut len = 0usize;
         let p = (self.api.tolstring)(self.state, -1, &mut len);
@@ -1079,12 +1098,14 @@ impl Plugin {
         }
     }
 
+    /// Fonctions abonnées à cet événement.
     fn handlers(&self, event: &str) -> Vec<c_int> {
         unsafe { (*self.ctx).handlers.get(event).cloned().unwrap_or_default() }
     }
 }
 
 impl Drop for Plugin {
+    /// Ferme l'état Lua (les finaliseurs du plugin tournent avec une limite de temps).
     fn drop(&mut self) {
         unsafe {
             self.arm(CALL_BUDGET_MS); // les finaliseurs du plugin sont limités eux aussi
@@ -1118,6 +1139,7 @@ pub struct PluginManager {
 }
 
 impl PluginManager {
+    /// Cherche la bibliothèque Lua ; les plugins eux-mêmes sont chargés par load_all.
     pub fn new(dir: &Path) -> PluginManager {
         let api = match Api::load() {
             Ok(a) => Some(a),
@@ -1137,6 +1159,7 @@ impl PluginManager {
         self.memory_limit = memory_mb.clamp(4, 4096) * 1024 * 1024;
     }
 
+    /// Lua est-il installé ? Sans lui, le serveur tourne sans plugins.
     pub fn available(&self) -> bool {
         self.api.is_some()
     }
@@ -1229,6 +1252,7 @@ impl PluginManager {
         self.dispatch("enable", &[]);
     }
 
+    /// Charge un plugin : état Lua neuf, préambule, puis son fichier principal.
     fn load_one(
         &self,
         api: &'static Api,
@@ -1268,7 +1292,7 @@ impl PluginManager {
             let plugin = Plugin { name: name.to_string(), manifest: found.manifest.clone(), api, state, ctx, mem, strikes: std::cell::Cell::new(0) };
 
             (api.createtable)(state, 0, 24);
-            let funcs: [(&str, CFn); 26] = [
+            let funcs: [(&str, CFn); 25] = [
                 ("spawnNpc\0", l_npc_spawn),
                 ("walkNpc\0", l_npc_walk),
                 ("teleportNpc\0", l_npc_teleport),
@@ -1287,13 +1311,12 @@ impl PluginManager {
                 ("warn\0", l_warn),
                 ("on\0", l_on),
                 ("command\0", l_command),
-                ("after\0", l_after),
-                ("every\0", l_every),
-                ("set_motd\0", l_set_motd),
-                ("motd\0", l_motd),
-                ("players\0", l_players),
-                ("kick\0", l_kick),
-                ("position\0", l_position),
+                ("_after\0", l_after),
+                ("_every\0", l_every),
+                ("setMotd\0", l_set_motd),
+                ("getMotd\0", l_motd),
+                ("_players\0", l_players),
+                ("_kick\0", l_kick),
                 ("stop\0", l_stop),
             ];
             for (fname, f) in funcs.iter() {
@@ -1359,6 +1382,7 @@ impl PluginManager {
         }
     }
 
+    /// Événement disable, puis fermeture de tous les plugins.
     pub fn unload_all(&mut self) {
         self.dispatch("disable", &[]);
         self.plugins.clear();
@@ -1374,6 +1398,7 @@ impl PluginManager {
         }
     }
 
+    /// Donne aux plugins l'état du serveur (joueurs, monde) pour les prochains appels.
     pub fn set_info(&mut self, info: &Info, tick: u64) {
         for p in &self.plugins {
             unsafe {
@@ -1477,6 +1502,7 @@ impl PluginManager {
         self.run_command_as(name, args, None)
     }
 
+    /// Lance la commande d'un plugin ; `sender` est le joueur, ou None pour la console.
     pub fn run_command_as(&mut self, name: &str, args: &[&str], sender: Option<&str>) -> bool {
         for p in &self.plugins {
             let found = unsafe { (*p.ctx).commands.iter().find(|c| c.0 == name).map(|c| c.2) };
@@ -1508,6 +1534,7 @@ impl PluginManager {
         self.plugins.iter().flat_map(|p| p.manifest.commands.iter()).find(|c| c.name == command).and_then(|c| c.permission.clone())
     }
 
+    /// Récupère les actions demandées par les plugins depuis le dernier appel.
     pub fn take_actions(&mut self) -> Vec<Action> {
         let mut out = Vec::new();
         for p in &self.plugins {

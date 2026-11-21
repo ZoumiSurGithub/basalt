@@ -41,6 +41,7 @@ impl Armor {
 }
 
 impl Item for Armor {
+    /// Usure et protection de la pièce d'armure.
     fn base(&self) -> &BaseItem {
         &self.base
     }
@@ -60,6 +61,7 @@ pub struct Food {
 }
 
 impl Food {
+    /// Valeurs nutritives d'un aliment (faim rendue, saturation) ; None si ça ne se mange pas.
     pub fn from_name(short: &str) -> Option<Food> {
         let (hunger, saturation) = match short {
             "apple" => (4, 2.4),
@@ -92,6 +94,7 @@ impl Food {
 }
 
 impl Item for Food {
+    /// Aliment.
     fn base(&self) -> &BaseItem {
         &self.base
     }

@@ -39,6 +39,7 @@ pub struct Reassembler {
 }
 
 impl Reassembler {
+    /// Recompose les messages découpés, sans dépasser `limit` octets.
     pub fn new(limit: usize) -> Reassembler {
         Reassembler { buf: Vec::new(), expected: None, limit }
     }

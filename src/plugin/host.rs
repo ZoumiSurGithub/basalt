@@ -76,6 +76,7 @@ pub struct PluginHost {
     listening: Vec<String>,
 }
 
+/// Ce que le serveur peut savoir des plugins sans attendre leur fil.
 fn catalog_of(m: &PluginManager) -> Catalog {
     Catalog {
         available: m.available(),
@@ -92,6 +93,7 @@ fn catalog_of(m: &PluginManager) -> Catalog {
     }
 }
 
+/// Fil des plugins : il charge les plugins puis traite les demandes du serveur une par une.
 fn worker(dir: PathBuf, sandbox: bool, trusted: String, memory_mb: usize, jobs: Receiver<(u64, Job)>, done: mpsc::Sender<Done>) {
     let mut manager = PluginManager::new(&dir);
     manager.set_sandbox(sandbox, &trusted, memory_mb);
@@ -140,6 +142,7 @@ fn worker(dir: PathBuf, sandbox: bool, trusted: String, memory_mb: usize, jobs: 
 }
 
 impl PluginHost {
+    /// Lance le fil des plugins. Le serveur ne fait que poster des demandes et lire les réponses.
     pub fn new(dir: &Path, sandbox: bool, trusted: &str, memory_mb: usize) -> PluginHost {
         let (tx, jobs) = mpsc::sync_channel(QUEUE);
         let (done_tx, rx) = mpsc::channel();
@@ -166,6 +169,7 @@ impl PluginHost {
         host
     }
 
+    /// Range une réponse du fil : actions à appliquer, catalogue mis à jour.
     fn absorb(&mut self, d: Done) -> (u64, Vec<LVal>) {
         self.pending = self.pending.saturating_sub(1);
         self.actions.extend(d.actions);
@@ -216,6 +220,7 @@ impl PluginHost {
         }
     }
 
+    /// Les plugins prennent du retard : avertit au plus toutes les 10 secondes.
     fn note_late(&mut self) {
         let since = *self.late_since.get_or_insert_with(Instant::now);
         let quiet = self.last_warning.map(|w| w.elapsed() > Duration::from_secs(10)).unwrap_or(true);
@@ -263,6 +268,7 @@ impl PluginHost {
         self.wait_for(id, wait)
     }
 
+    /// Lectures du catalogue (copie tenue à jour après chaque réponse du fil).
     pub fn available(&self) -> bool {
         self.catalog.available
     }
@@ -287,11 +293,13 @@ impl PluginHost {
         info
     }
 
+    /// Infos du monde transmises aux plugins avec la prochaine demande.
     pub fn set_info(&mut self, info: &Info, tick: u64) {
         self.info = info.clone();
         self.tick = tick;
     }
 
+    /// Charge tous les plugins et attend la fin (avec une limite, voir WAIT_LOAD).
     pub fn load_all(&mut self, info: &Info, constants: &[(&'static str, LVal)]) {
         self.info = info.clone();
         if self.call(Job::Load(info.clone(), constants.to_vec()), WAIT_LOAD).is_none() {
@@ -299,6 +307,7 @@ impl PluginHost {
         }
     }
 
+    /// Décharge les plugins (événement disable compris).
     pub fn unload_all(&mut self) {
         self.call(Job::Unload, WAIT_UNLOAD);
     }
@@ -331,6 +340,7 @@ impl PluginHost {
         }
     }
 
+    /// Fait avancer les minuteries ; ne poste rien si le fil n'a pas fini la demande précédente.
     pub fn run_timers(&mut self, tick: u64) {
         self.drain();
         self.tick = tick;
@@ -376,6 +386,7 @@ impl PluginHost {
 }
 
 impl Drop for PluginHost {
+    /// Arrêt du serveur.
     fn drop(&mut self) {
         // Le fil s'arrête de lui-même ; s'il est coincé dans un plugin, on ne l'attend pas
         let _ = self.tx.try_send((u64::MAX, Job::Quit));

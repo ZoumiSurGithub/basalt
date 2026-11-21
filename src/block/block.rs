@@ -46,6 +46,7 @@ impl BaseBlock {
         BaseBlock { props, ..BaseBlock::new(name, props.hardness, tool, required_tier) }
     }
 
+    /// Valeurs communes d'un bloc ; le préfixe minecraft: est ajouté s'il manque.
     pub fn new(name: &str, hardness: f32, tool: ToolType, required_tier: Option<ToolTier>) -> BaseBlock {
         let name = if name.contains(':') { name.to_string() } else { format!("minecraft:{}", name) };
         BaseBlock { name, hardness, props: BlockProps::plain(hardness), tool, required_tier }
@@ -60,6 +61,7 @@ pub struct Drop {
 }
 
 impl Drop {
+    /// Objet obtenu en cassant un bloc.
     pub fn new(item: &str, count: u8) -> Drop {
         let item = if item.contains(':') { item.to_string() } else { format!("minecraft:{}", item) };
         Drop { item, count }
@@ -130,6 +132,7 @@ pub trait Block {
 
     // ---- hérité par tous les blocs, redéfini au besoin --------------------------
 
+    /// Nom complet (minecraft:stone).
     fn name(&self) -> &str {
         &self.base().name
     }
@@ -140,26 +143,32 @@ pub trait Block {
         name.strip_prefix("minecraft:").unwrap_or(name)
     }
 
+    /// Dureté : temps de minage de base ; négative pour un bloc incassable.
     fn hardness(&self) -> f32 {
         self.base().hardness
     }
 
+    /// Outil qui mine ce bloc le plus vite.
     fn tool_type(&self) -> ToolType {
         self.base().tool
     }
 
+    /// Niveau d'outil minimal pour récolter le bloc (None : n'importe quoi, même la main).
     fn required_tier(&self) -> Option<ToolTier> {
         self.base().required_tier
     }
 
+    /// Un bloc de dureté négative (bedrock, barrière) ne se casse pas.
     fn is_breakable(&self) -> bool {
         self.hardness() >= 0.0
     }
 
+    /// Résistance aux explosions.
     fn blast_resistance(&self) -> f32 {
         self.base().props.blast_resistance
     }
 
+    /// Glissance (0,6 en général, plus pour la glace).
     fn friction(&self) -> f32 {
         self.base().props.friction
     }
@@ -175,6 +184,7 @@ pub trait Block {
         !(p.hardness == 0.0 && p.opacity < 0.2)
     }
 
+    /// La lumière passe-t-elle ?
     fn is_transparent(&self) -> bool {
         self.base().props.opacity < 1.0
     }
@@ -189,10 +199,12 @@ pub trait Block {
         false
     }
 
+    /// Lumière émise, de 0 à 15.
     fn light_level(&self) -> u8 {
         self.base().props.light
     }
 
+    /// Ce que fait un clic droit dessus (rien par défaut).
     fn interaction(&self) -> Interaction {
         Interaction::None
     }

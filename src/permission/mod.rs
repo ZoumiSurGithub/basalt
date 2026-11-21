@@ -54,6 +54,7 @@ pub struct NameList {
 pub type OpList = NameList;
 
 impl NameList {
+    /// Lit une liste de pseudos (ops.txt, white-list.txt) ; fichier absent : liste vide.
     pub fn load(path: &Path) -> NameList {
         let names = std::fs::read_to_string(path)
             .map(|text| text.lines().map(|l| l.trim().to_lowercase()).filter(|l| !l.is_empty() && !l.starts_with('#')).take(10_000).collect())
@@ -66,6 +67,7 @@ impl NameList {
         *self = NameList::load(&self.path.clone());
     }
 
+    /// Pseudo présent (sans tenir compte des majuscules) ?
     pub fn contains(&self, name: &str) -> bool {
         self.names.contains(&name.trim().to_lowercase())
     }
@@ -74,6 +76,7 @@ impl NameList {
         self.contains(name)
     }
 
+    /// Nombre de pseudos.
     pub fn len(&self) -> usize {
         self.names.len()
     }

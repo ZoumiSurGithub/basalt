@@ -26,6 +26,7 @@ pub fn init_capture_file() {
     }
 }
 
+/// Ouvre logs/latest.log (l'ancien devient previous.log).
 pub fn init_file() {
     let _ = std::fs::create_dir_all("logs");
     let _ = std::fs::rename("logs/latest.log", "logs/previous.log");
@@ -39,6 +40,7 @@ pub fn init_file() {
     }
 }
 
+/// Écrit un message dans la console et dans le fichier.
 pub fn write(level: Level, msg: &str) {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -63,6 +65,7 @@ pub fn flush() {
     crate::background::LOG.flush(std::time::Duration::from_secs(2));
 }
 
+/// Une ligne, en couleur dans la console et en texte simple dans le fichier.
 fn emit(time: &str, label: &str, color: &str, text_color: &str, msg: &str) {
     if let Ok(mut slot) = FILE.lock() {
         if let Some(f) = slot.as_mut() {

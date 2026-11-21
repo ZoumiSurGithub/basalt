@@ -107,12 +107,14 @@ struct ItemCatalog<'a> {
 }
 
 impl TileContext for ItemCatalog<'_> {
+    /// Les blocs à données (fours, coffres) passent par ce catalogue pour nommer leurs objets.
     fn name_of(&self, id: i16) -> Option<String> {
         self.data.item_by_id(id).map(|i| i.name.clone())
     }
     fn id_of(&self, name: &str) -> Option<i16> {
         self.data.item(name).map(|i| i.id)
     }
+    /// Identifiant réseau unique pour un objet d'inventaire.
     fn next_net_id(&mut self) -> i32 {
         *self.next = if *self.next >= i32::MAX - 1 { 1_000_000_000 } else { *self.next + 1 };
         *self.next
@@ -225,6 +227,8 @@ struct LoginWorkers {
 }
 
 impl LoginWorkers {
+    /// Fils de vérification des logins : la signature Xbox coûte cher, elle ne passe pas
+    /// par la boucle du serveur.
     fn start() -> LoginWorkers {
         let (jobs, job_rx) = mpsc::channel::<LoginJob>();
         let (result_tx, results) = mpsc::channel();
@@ -482,6 +486,7 @@ struct Perf {
 /// partie de ce que le serveur envoie, pour trouver laquelle fige le jeu.
 const EXPERIMENTS: u8 = 6;
 
+/// Nom d'une expérience, pour le journal.
 fn experiment_name(exp: u8) -> &'static str {
     match exp {
         0 => "envoi complet, listes vides",
@@ -493,6 +498,7 @@ fn experiment_name(exp: u8) -> &'static str {
     }
 }
 
+/// Expériences qui retirent la liste des objets, ou l'état du joueur.
 fn experiment_skips_items(exp: u8) -> bool {
     exp == 3 || exp == 4
 }
@@ -557,6 +563,7 @@ fn text_of(out: &Option<Json>, key: &str, max: usize) -> Option<String> {
     Some(s.chars().filter(|c| !c.is_control()).take(max).collect())
 }
 
+/// Hauteur des yeux au-dessus des pieds.
 fn player_eye_height() -> f32 {
     crate::player::EYE_HEIGHT
 }
@@ -598,6 +605,7 @@ struct ChunkPool {
 }
 
 impl ChunkPool {
+    /// Fils qui encodent et compressent les chunks à envoyer.
     fn new() -> ChunkPool {
         let (jobs, inbox) = mpsc::channel::<ChunkJob>();
         let (outbox, done) = mpsc::channel();
@@ -623,6 +631,7 @@ impl ChunkPool {
     }
 }
 
+/// Paquet LevelChunk complet, selon ce que gère la version du joueur.
 fn build_chunk(exp: u8, x: i32, z: i32, payload: (u32, Vec<u8>), features: crate::versions::Features) -> Vec<u8> {
     if features.chunk_biome_update_flag && (exp == 1 || exp == 4) {
         // Expérience de mise au point : aucun sous-chunk, seulement les biomes et l'octet des
@@ -641,11 +650,13 @@ fn build_chunk(exp: u8, x: i32, z: i32, payload: (u32, Vec<u8>), features: crate
     bedrock::level_chunk_counted(x, z, sections, &payload, features)
 }
 
+/// Paquets propres à Bedrock, que la version Java ne connaît pas.
 fn bedrock_extra(id: u32) -> bool {
     bedrock::EXTRA_IDS.contains(&id)
 }
 
 impl Server {
+    /// Ouvre le réseau, charge les données du jeu et le monde, puis les plugins.
     pub fn new(cfg: Config) -> std::io::Result<Server> {
         let rak = RakServer::bind(
             &format!("{}:{}", cfg.ip, cfg.port),
@@ -760,6 +771,7 @@ impl Server {
         self.key_fetcher = Some(KeyFetcher::spawn(self.cfg.game_version.clone(), cache.to_path_buf()));
     }
 
+    /// Clés Xbox téléchargées en arrière-plan : à prendre si elles sont arrivées.
     fn poll_auth(&mut self) {
         let result = match &self.key_fetcher {
             Some(f) => f.poll(),
@@ -788,14 +800,17 @@ impl Server {
         }
     }
 
+    /// Adresse réellement ouverte (utile quand le port 0 laisse le système choisir).
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
         self.rak.socket.local_addr()
     }
 
+    /// Pseudos des joueurs connectés.
     fn players(&self) -> Vec<String> {
         self.clients.values().filter_map(|c| c.name.clone()).collect()
     }
 
+    /// Photo de l'état du serveur donnée aux plugins à chaque appel.
     fn info(&self) -> Info {
         let mut info = Info {
             motd: self.motd.clone(),
@@ -921,10 +936,12 @@ impl Server {
         }
     }
 
+    /// Heure en secondes depuis 1970.
     fn now_unix() -> u64 {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
     }
 
+    /// Adresse réseau du joueur qui porte ce pseudo.
     fn addr_of(&self, name: &str) -> Option<SocketAddr> {
         self.clients.iter().find(|(_, c)| c.name.as_deref() == Some(name)).map(|(a, _)| *a)
     }
@@ -1130,6 +1147,7 @@ impl Server {
         coords.into_iter().map(|(_, x, z)| (x, z)).collect()
     }
 
+    /// Vitesse maximale acceptée par le contrôle des déplacements.
     fn max_speed(&self, creative: bool) -> f32 {
         if creative {
             SPEED_CREATIVE
@@ -1644,6 +1662,7 @@ impl Server {
         }
     }
 
+    /// Réponse au ping de la liste des serveurs (nom, joueurs, version).
     fn update_pong(&mut self) {
         let clean = |s: &str| s.replace(';', ",").replace('\n', " ");
         let port = self.local_addr().map(|a| a.port()).unwrap_or(self.cfg.port);
@@ -1662,6 +1681,7 @@ impl Server {
         );
     }
 
+    /// Charge les plugins avec les constantes du serveur (version, protocole…).
     fn load_plugins(&mut self) {
         let info = self.info();
         let constants = [
@@ -1674,6 +1694,7 @@ impl Server {
         self.apply_actions();
     }
 
+    /// Applique ce que les plugins ont demandé pendant leurs appels.
     fn apply_actions(&mut self) {
         for a in self.plugins.take_actions() {
             match a {
@@ -1796,6 +1817,8 @@ impl Server {
         self.refresh_after_edit(&outcome);
     }
 
+    /// Après une édition de plugin : envoie les blocs changés, ou les chunks entiers s'ils
+    /// sont nombreux.
     fn refresh_after_edit(&mut self, outcome: &Outcome) {
         if !outcome.blocks.is_empty() {
             for ((x, y, z), block) in &outcome.blocks {
@@ -1911,12 +1934,12 @@ impl Server {
         }
     }
 
+    /// Pseudo du joueur à cette adresse (vide avant le login).
     fn name_at(&self, addr: &SocketAddr) -> String {
         self.clients.get(addr).and_then(|c| c.name.clone()).unwrap_or_default()
     }
 
-    /// Change le mode de jeu d'un joueur et l'en informe.
-    /// Change le mode de jeu d'un joueur. Faux si un plugin s'y oppose.
+    /// Change le mode de jeu d'un joueur et l'en informe. Faux si un plugin s'y oppose.
     fn set_gamemode(&mut self, addr: &SocketAddr, mode: GameMode) -> bool {
         let out = self.fire("PlayerGameModeChangeEvent", vec![("player", self.name_json(addr)), ("newGamemode", Json::Num(mode.save_id() as f64))]);
         if cancelled(&out) {
@@ -2207,7 +2230,7 @@ impl Server {
                         (Some(v), Wanted::Structure(t)) => match st::locate(v, t, x, z) {
                             Some((px, py, pz)) => {
                                 let d = (((px - x) as f64).powi(2) + ((pz - z) as f64).powi(2)).sqrt().round();
-                                format!("{} se trouve en {}, {}, {} (à {} blocs)", t.label(), px, py, pz, d)
+                                format!("{} {} en {}, {}, {} (à {} blocs)", t.label(), t.verb(), px, py, pz, d)
                             }
                             None => "§cAucune structure de ce type dans un rayon de 10 000 blocs".to_string(),
                         },
@@ -2558,6 +2581,7 @@ impl Server {
         cancelled(&out)
     }
 
+    /// Événement simple vers les plugins (server.on) ; renvoie leurs réponses.
     fn emit(&mut self, event: &str, args: &[LVal]) -> Vec<LVal> {
         let _t = timings::scope_with(|| format!("Plugins — événement {}", event));
         let info = self.info();
@@ -2567,6 +2591,7 @@ impl Server {
         res
     }
 
+    /// Envoie un paquet de jeu à un joueur (compressé si sa session le demande).
     fn send(&mut self, addr: &SocketAddr, id: u32, body: &[u8]) {
         let compression = self.clients.get(addr).map(|c| c.compression).unwrap_or(false);
         if self.cfg.debug {
@@ -2602,6 +2627,7 @@ impl Server {
         }
     }
 
+    /// Message de déconnexion, puis fermeture un peu plus tard pour qu'il arrive.
     fn kick(&mut self, addr: &SocketAddr, message: &str) {
         self.send(addr, bedrock::ID_DISCONNECT, &bedrock::disconnect(message));
         self.net_close(addr, Duration::from_millis(1500));
@@ -2996,6 +3022,7 @@ impl Server {
         }
     }
 
+    /// Bloc de feuilles ?
     fn is_leaves(&self, state: u32) -> bool {
         self.data.as_ref().and_then(|d| d.block_name(state)).map(|n| n.contains("leaves")).unwrap_or(false)
     }
@@ -3926,6 +3953,8 @@ impl Server {
             .unwrap_or(1)
     }
 
+    /// Applique une demande d'inventaire sur une copie ; le joueur n'est modifié que si
+    /// tout est valide.
     fn run_stack_request(inv: &mut PlayerWindows, request: &bedrock::StackRequest, created: Option<i16>, craft: Option<&crate::data::Craft>, dropped: &mut Vec<(i16, u8)>) -> Option<Vec<(u8, u8, u8, i32)>> {
         let mut work = inv.clone();
         let mut thrown: Vec<(i16, u8)> = Vec::new();
@@ -4224,6 +4253,7 @@ impl Server {
         }
     }
 
+    /// Clic droit sur un bloc : ouvrir, utiliser un objet ou poser un bloc.
     fn on_place(&mut self, addr: &SocketAddr, target: (i32, i32, i32), face: u8, click: (f32, f32, f32)) {
         let (x, y, z) = target;
         let (near, item, looks, yaw) = match self.clients.get(addr) {
@@ -4612,6 +4642,7 @@ impl Server {
             )
     }
 
+    /// Change un bloc, prévient l'eau et la lave voisines, et l'envoie à tout le monde.
     fn change_block(&mut self, pos: (i32, i32, i32), state: u32) {
         if self.world.set(pos.0, pos.1, pos.2, state) {
             self.liquid_neighbours(pos);
@@ -4718,6 +4749,7 @@ impl Server {
         }
     }
 
+    /// Joueurs bloqués trop longtemps à une étape de la connexion : déconnectés.
     fn check_deadlines(&mut self) {
         let now = Instant::now();
         let late: Vec<SocketAddr> = self
@@ -4893,6 +4925,7 @@ impl Server {
         }
     }
 
+    /// Paquet reçu d'un joueur : décodage, puis traitement selon l'étape de sa connexion.
     fn on_packet(&mut self, addr: SocketAddr, data: Vec<u8>) {
         let (stage, compression) = match self.clients.get(&addr) {
             Some(c) => (c.stage, c.compression),
@@ -5545,6 +5578,7 @@ impl Server {
         }
     }
 
+    /// Événements réseau RakNet : connexion, paquet, déconnexion.
     fn on_event(&mut self, ev: RakEvent) {
         match ev {
             RakEvent::Connected(addr) => {
@@ -5701,6 +5735,7 @@ impl Server {
         }
     }
 
+    /// Commande de la console (ou d'un plugin).
     pub fn command(&mut self, line: &str) {
         let out = self.fire("ServerCommandEvent", vec![("command", Json::Str(line.trim().trim_start_matches('/').to_string()))]);
         if cancelled(&out) {
@@ -5892,6 +5927,7 @@ impl Server {
         }
     }
 
+    /// Envoi par RakNet ou NetherNet, selon la connexion du joueur.
     fn net_send(&mut self, addr: &SocketAddr, packet: &[u8]) {
         // Session chiffrée : le lot (après l'octet 0xfe) reçoit sa somme de contrôle puis est
         // chiffré. Tous les envois passent par ici, dans l'ordre : le flux reste cohérent.
@@ -5912,6 +5948,7 @@ impl Server {
         }
     }
 
+    /// Fermeture, coupure et limites de jeu : même chose, sur le bon réseau.
     fn net_close(&mut self, addr: &SocketAddr, delay: Duration) {
         match self.nether.as_mut() {
             Some(n) if n.has(addr) => n.close(addr, delay),
@@ -6239,12 +6276,14 @@ impl Server {
         }
     }
 
+    /// Ce paquet relevé sur un vrai serveur peut-il être envoyé à ce joueur ?
     fn has_captured(&self, addr: &SocketAddr, id: u32) -> bool {
         self.items_level == 2
             && !self.refused_captured.contains(&id)
             && self.clients.get(addr).and_then(|c| self.captured.get(&c.protocol)).map(|m| m.contains_key(&id)).unwrap_or(false)
     }
 
+    /// Paquet relevé, si le jeu ne l'a pas refusé et que la version du joueur correspond.
     fn captured(&self, addr: &SocketAddr, id: u32) -> Option<Vec<u8>> {
         if self.items_level != 2 || self.refused_captured.contains(&id) {
             return None;

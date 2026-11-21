@@ -38,6 +38,7 @@ pub struct Scope {
 }
 
 impl Drop for Scope {
+    /// Fin de la mesure : le temps passé est ajouté à l'étape.
     fn drop(&mut self) {
         if let Some((name, start)) = self.name.take() {
             record(&name, start.elapsed());
@@ -61,6 +62,7 @@ pub fn scope_with(name: impl FnOnce() -> String) -> Scope {
     Scope { name: Some((std::borrow::Cow::Owned(name()), Instant::now())) }
 }
 
+/// Ajoute un temps à l'étape `name`.
 fn record(name: &str, spent: Duration) {
     let mut guard = match STATE.lock() {
         Ok(g) => g,
@@ -94,6 +96,7 @@ pub fn tick() {
     }
 }
 
+/// Les mesures sont-elles en cours (/timings on) ?
 pub fn is_enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }

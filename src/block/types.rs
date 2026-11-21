@@ -11,6 +11,7 @@ pub struct GenericBlock {
 }
 
 impl Block for GenericBlock {
+    /// Tout le reste vient des valeurs par défaut du trait Block.
     fn base(&self) -> &BaseBlock {
         &self.base
     }
@@ -23,6 +24,7 @@ pub struct Air {
 }
 
 impl Block for Air {
+    /// Les réponses ci-dessous font de l'air un bloc qu'on traverse et qu'on remplace.
     fn base(&self) -> &BaseBlock {
         &self.base
     }
@@ -47,6 +49,7 @@ pub struct Liquid {
 }
 
 impl Block for Liquid {
+    /// Même chose pour l'eau et la lave : un bloc posé dedans les remplace.
     fn base(&self) -> &BaseBlock {
         &self.base
     }
@@ -75,6 +78,7 @@ pub struct DropsOther {
 }
 
 impl Block for DropsOther {
+    /// Un seul objet, en `count` exemplaires, quel que soit l'outil.
     fn base(&self) -> &BaseBlock {
         &self.base
     }
@@ -93,6 +97,7 @@ pub struct Fragile {
 }
 
 impl Block for Fragile {
+    /// Rien, ou le bloc lui-même s'il est coupé aux cisailles et que c'est permis.
     fn base(&self) -> &BaseBlock {
         &self.base
     }
@@ -112,12 +117,14 @@ pub struct Cobweb {
 }
 
 impl Block for Cobweb {
+    /// Récoltable seulement à l'épée ou aux cisailles.
     fn base(&self) -> &BaseBlock {
         &self.base
     }
     fn can_harvest(&self, tool: &dyn Item) -> bool {
         matches!(tool.tool_type(), ToolType::Sword | ToolType::Shears)
     }
+    /// Cisailles : la toile ; épée : du fil.
     fn drops_with_tool(&self, tool: &dyn Item) -> Vec<Drop> {
         if tool.tool_type() == ToolType::Shears {
             vec![Drop::new(self.name(), 1)]
@@ -137,12 +144,14 @@ pub struct Crop {
 }
 
 impl Block for Crop {
+    /// Une plante se traverse.
     fn base(&self) -> &BaseBlock {
         &self.base
     }
     fn is_solid(&self) -> bool {
         false
     }
+    /// La graine ou le fruit, un seul pour l'instant.
     fn drops_with_tool(&self, _tool: &dyn Item) -> Vec<Drop> {
         vec![Drop::new(self.item, 1)]
     }
@@ -161,6 +170,7 @@ pub struct Interactive {
 }
 
 impl Block for Interactive {
+    /// Ce que fait le clic, et les données éventuelles du bloc.
     fn base(&self) -> &BaseBlock {
         &self.base
     }
@@ -170,6 +180,7 @@ impl Block for Interactive {
     fn tile(&self) -> Option<TileType> {
         self.tile
     }
+    /// L'objet prévu, sinon le bloc lui-même.
     fn drops_with_tool(&self, _tool: &dyn Item) -> Vec<Drop> {
         if self.item.is_empty() {
             vec![Drop::new(self.name(), 1)]
@@ -189,12 +200,14 @@ pub struct WithTile {
 }
 
 impl Block for WithTile {
+    /// Données du bloc (texte d'un panneau, couleur d'un lit…).
     fn base(&self) -> &BaseBlock {
         &self.base
     }
     fn tile(&self) -> Option<TileType> {
         Some(self.tile)
     }
+    /// L'objet prévu, sinon le bloc lui-même.
     fn drops_with_tool(&self, _tool: &dyn Item) -> Vec<Drop> {
         if self.item.is_empty() {
             vec![Drop::new(self.name(), 1)]

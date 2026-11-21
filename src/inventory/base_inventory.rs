@@ -11,12 +11,14 @@ pub struct BaseInventory {
 }
 
 impl BaseInventory {
+    /// Inventaire vide de `size` cases.
     pub fn new(name: &'static str, size: usize) -> BaseInventory {
         BaseInventory { name, slots: vec![ItemStack::EMPTY; size] }
     }
 }
 
 impl Inventory for BaseInventory {
+    /// Accès aux cases, pour le trait Inventory.
     fn name(&self) -> &'static str {
         self.name
     }
@@ -41,12 +43,14 @@ macro_rules! inventory_type {
         impl $name {
             pub const SIZE: usize = $size;
 
+            /// Inventaire vide, aux nom et taille donnés à la macro.
             pub fn new() -> $name {
                 $name { base: $crate::inventory::BaseInventory::new($label, $size) }
             }
         }
 
         impl Default for $name {
+            /// Même chose que new().
             fn default() -> $name {
                 $name::new()
             }
@@ -54,6 +58,7 @@ macro_rules! inventory_type {
 
         impl std::ops::Deref for $name {
             type Target = $crate::inventory::BaseInventory;
+            /// Les méthodes de BaseInventory sont accessibles directement.
             fn deref(&self) -> &Self::Target {
                 &self.base
             }
@@ -72,6 +77,7 @@ pub(crate) use inventory_type;
 macro_rules! plain_inventory {
     ($name:ident) => {
         impl $crate::inventory::Inventory for $name {
+            /// Le trait Inventory passe par l'inventaire de base.
             fn name(&self) -> &'static str {
                 $crate::inventory::Inventory::name(&self.base)
             }

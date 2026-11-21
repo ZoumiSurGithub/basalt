@@ -139,6 +139,7 @@ pub fn sdp_insert_identity(sdp: &str, identity: &str) -> String {
     }
 }
 
+/// Position d'une suite d'octets dans une autre.
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
@@ -151,6 +152,7 @@ enum Parsed {
     Complete { method: String, path: String, query: String, body: Vec<u8> },
 }
 
+/// Lit une requête HTTP (signalisation NetherNet) : incomplète, invalide ou complète.
 fn parse(buf: &[u8]) -> Parsed {
     // Une tentative HTTPS commence par un enregistrement TLS (0x16) : le serveur ne
     // parle pas TLS, on ferme et le jeu réessaie aussitôt en HTTP simple.

@@ -47,6 +47,7 @@ const H384: [u64; 8] = [
     0x67332667ffc00b31, 0x8eb44a8768581511, 0xdb0c2e0d64f98fa7, 0x47b5481dbefa4fa4,
 ];
 
+/// Remplissage SHA-2 : un bit 1, des zéros, puis la longueur en bits.
 fn pad(data: &[u8], block: usize) -> Vec<u8> {
     let mut m = data.to_vec();
     m.push(0x80);
@@ -59,6 +60,7 @@ fn pad(data: &[u8], block: usize) -> Vec<u8> {
     m
 }
 
+/// SHA-256 (somme de contrôle des paquets chiffrés, UUID des joueurs).
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     let mut h = H256;
     for chunk in pad(data, 64).chunks(64) {
@@ -92,6 +94,7 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     out
 }
 
+/// SHA-384 (signatures ES384 des jetons Xbox).
 pub fn sha384(data: &[u8]) -> [u8; 48] {
     let mut h = H384;
     for chunk in pad(data, 128).chunks(128) {
@@ -137,6 +140,7 @@ pub fn os_random(buf: &mut [u8]) -> bool {
     std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(buf)).is_ok()
 }
 
+/// Octets aléatoires du système ; faux si le système n'en fournit pas.
 #[cfg(windows)]
 pub fn os_random(buf: &mut [u8]) -> bool {
     #[link(name = "advapi32")]
@@ -147,6 +151,7 @@ pub fn os_random(buf: &mut [u8]) -> bool {
     unsafe { SystemFunction036(buf.as_mut_ptr(), buf.len() as u32) != 0 }
 }
 
+/// Système sans source d'aléa connue : pas de chiffrement possible.
 #[cfg(not(any(unix, windows)))]
 pub fn os_random(_: &mut [u8]) -> bool {
     false
@@ -171,10 +176,12 @@ fn from_be(bytes: &[u8], k: usize) -> Option<Num> {
     Some(out)
 }
 
+/// Grand nombre (mots de 64 bits, poids faible d'abord) -> octets gros-boutistes.
 fn to_be(n: &[u64]) -> Vec<u8> {
     n.iter().rev().flat_map(|w| w.to_be_bytes().to_vec()).collect()
 }
 
+/// a >= b
 fn ge(a: &[u64], b: &[u64]) -> bool {
     for i in (0..a.len()).rev() {
         if a[i] != b[i] {
@@ -184,6 +191,7 @@ fn ge(a: &[u64], b: &[u64]) -> bool {
     true
 }
 
+/// a == 0
 fn is_zero(a: &[u64]) -> bool {
     a.iter().all(|w| *w == 0)
 }
@@ -221,6 +229,7 @@ struct Mont {
 }
 
 impl Mont {
+    /// Prépare l'arithmétique de Montgomery pour le module m.
     fn new(m: &[u64]) -> Mont {
         let k = m.len();
         // inverse de m[0] modulo 2^64 par itération de Newton
@@ -249,6 +258,7 @@ impl Mont {
         mont
     }
 
+    /// Produit de Montgomery : a * b / R mod m.
     fn mul(&self, a: &[u64], b: &[u64]) -> Num {
         let k = self.m.len();
         let mut t = vec![0u64; k + 2];
@@ -282,6 +292,7 @@ impl Mont {
         t
     }
 
+    /// Passage en représentation de Montgomery, et retour.
     fn enter(&self, a: &[u64]) -> Num {
         self.mul(a, &self.r2)
     }
@@ -292,6 +303,7 @@ impl Mont {
         self.mul(a, &one)
     }
 
+    /// Addition et soustraction modulo m.
     fn add(&self, a: &[u64], b: &[u64]) -> Num {
         let mut t = a.to_vec();
         let carry = add_assign(&mut t, b);
@@ -414,12 +426,14 @@ struct Curve {
 }
 
 impl Curve {
+    /// Courbe P-384 (celle des clés Xbox).
     fn new() -> Curve {
         let f = Mont::new(&P);
         let b = f.enter(&B);
         Curve { f, b }
     }
 
+    /// Le point (x, y) est-il sur la courbe ?
     fn on_curve(&self, x: &[u64], y: &[u64]) -> bool {
         let f = &self.f;
         let (xm, ym) = (f.enter(x), f.enter(y));
@@ -428,6 +442,7 @@ impl Curve {
         f.mul(&ym, &ym) == rhs
     }
 
+    /// Doublement d'un point (coordonnées jacobiennes).
     fn double(&self, p: &Point) -> Point {
         let f = &self.f;
         if is_zero(&p.z) || is_zero(&p.y) {
@@ -451,6 +466,7 @@ impl Curve {
         Point { x: x3, y: y3, z: z3 }
     }
 
+    /// Somme de deux points.
     fn add(&self, p: &Point, q: &Point) -> Point {
         let f = &self.f;
         if is_zero(&p.z) {
@@ -482,6 +498,7 @@ impl Curve {
         Point { x: x3, y: y3, z: z3 }
     }
 
+    /// k * P, bit par bit.
     fn scalar_mul(&self, k: &[u64], p: &Point) -> Point {
         let mut acc = Point { x: self.f.one.clone(), y: self.f.one.clone(), z: vec![0; 6] };
         for i in (0..384).rev() {
@@ -566,6 +583,7 @@ fn affine(c: &Curve, p: &Point) -> (Num, Num) {
     (c.f.leave(&c.f.mul(&p.x, &zi2)), c.f.leave(&c.f.mul(&p.y, &zi3)))
 }
 
+/// Nombre -> 48 octets gros-boutistes.
 fn fixed48(n: &[u64]) -> [u8; 48] {
     let v = to_be(n);
     let mut out = [0u8; 48];
@@ -574,6 +592,7 @@ fn fixed48(n: &[u64]) -> [u8; 48] {
     out
 }
 
+/// Clé privée tirée au hasard, dans l'intervalle valide.
 fn random_scalar() -> Option<Num> {
     for _ in 0..32 {
         let mut bytes = [0u8; 48];
@@ -597,6 +616,7 @@ pub struct EcSecret {
 }
 
 impl EcSecret {
+    /// Nouvelle paire de clés pour l'échange de clés avec le client.
     pub fn generate() -> Option<EcSecret> {
         let d = random_scalar()?;
         let c = Curve::new();
@@ -605,6 +625,7 @@ impl EcSecret {
         Some(EcSecret { d, public: EcKey { x, y } })
     }
 
+    /// Clé publique envoyée au client.
     pub fn public(&self) -> &EcKey {
         &self.public
     }
@@ -668,11 +689,13 @@ pub struct Aes256 {
     sbox: [u8; 256],
 }
 
+/// Multiplication par 2 dans GF(2^8).
 fn xtime(b: u8) -> u8 {
     (b << 1) ^ if b & 0x80 != 0 { 0x1b } else { 0 }
 }
 
 impl Aes256 {
+    /// Prépare les sous-clés d'AES-256.
     pub fn new(key: &[u8; 32]) -> Aes256 {
         // Table de substitution calculée (inverse dans GF(2^8) puis transformation affine)
         let mut sbox = [0u8; 256];
@@ -717,6 +740,7 @@ impl Aes256 {
         Aes256 { round_keys, sbox }
     }
 
+    /// Chiffre un bloc de 16 octets.
     pub fn encrypt_block(&self, block: &[u8; 16]) -> [u8; 16] {
         let mut s = *block;
         for i in 0..16 {
@@ -757,6 +781,7 @@ pub struct BedrockCipher {
 }
 
 impl BedrockCipher {
+    /// Chiffrement des paquets Bedrock : AES-256 en mode CTR, compteur tiré de la clé.
     pub fn new(key: &[u8; 32]) -> BedrockCipher {
         let mut counter = [0u8; 16];
         counter[..12].copy_from_slice(&key[..12]);
@@ -795,10 +820,13 @@ pub struct Crypt {
 }
 
 impl Crypt {
+    /// Chiffrement d'une session : un flux dans chaque sens, et un compteur de paquets
+    /// pour la somme de contrôle.
     pub fn new(key: [u8; 32]) -> Crypt {
         Crypt { key, enc: BedrockCipher::new(&key), dec: BedrockCipher::new(&key), sent: 0, received: 0 }
     }
 
+    /// Somme de contrôle d'un paquet : SHA-256(compteur, données, clé), 8 premiers octets.
     fn checksum(&self, counter: u64, data: &[u8]) -> [u8; 8] {
         let mut h = Vec::with_capacity(data.len() + 40);
         h.extend_from_slice(&counter.to_le_bytes());

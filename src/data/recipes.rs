@@ -21,6 +21,7 @@ enum Ingredient {
 }
 
 impl Ingredient {
+    /// Ingrédient d'une recette : un objet précis, ou une famille (« planches »).
     fn read(v: &Value) -> Option<Ingredient> {
         match v.get("type").and_then(|t| t.as_str())? {
             "name" => Some(Ingredient::Item(v.get("itemId")?.as_str()?.to_string())),
@@ -29,6 +30,7 @@ impl Ingredient {
         }
     }
 
+    /// Cet objet convient-il ?
     fn accepts(&self, item: &str) -> bool {
         match self {
             Ingredient::Item(name) => name == item,
@@ -65,6 +67,7 @@ pub struct Recipes {
 }
 
 impl Recipes {
+    /// Lit les recettes de data/ et les range par objet fabriqué.
     pub fn parse(doc: &Value) -> Recipes {
         let mut by_output: HashMap<String, Vec<Recipe>> = HashMap::new();
         for r in doc.get("recipes").and_then(|v| v.as_arr()).unwrap_or(&[]) {
@@ -120,6 +123,7 @@ impl Recipes {
         Recipes { by_output }
     }
 
+    /// Nombre de recettes.
     pub fn len(&self) -> usize {
         self.by_output.values().map(|v| v.len()).sum()
     }

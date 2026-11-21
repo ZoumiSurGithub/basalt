@@ -4,10 +4,12 @@
 use super::*;
 use crate::json::{self, Value};
 
+/// PlayStatus : 0 login accepté, 3 joueur prêt à apparaître, autres valeurs : refus.
 pub fn play_status(status: i32) -> Vec<u8> {
     status.to_be_bytes().to_vec()
 }
 
+/// NetworkSettings : seuil et méthode de compression.
 pub fn network_settings(f: crate::versions::Features) -> Vec<u8> {
     let mut b = Vec::new();
     b.extend_from_slice(&256u16.to_le_bytes()); // seuil de compression
@@ -21,6 +23,7 @@ pub fn network_settings(f: crate::versions::Features) -> Vec<u8> {
     b
 }
 
+/// Message de déconnexion affiché au joueur.
 pub fn disconnect(message: &str) -> Vec<u8> {
     let mut b = vec![0]; // raison (varint) : inconnue
     b.push(0); // le message est affiché
@@ -41,6 +44,7 @@ pub struct Login {
     pub client_jwt: String,
 }
 
+/// Texte non vide d'un champ JSON.
 pub(crate) fn text(v: Option<&Value>) -> Option<String> {
     v.and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string())
 }

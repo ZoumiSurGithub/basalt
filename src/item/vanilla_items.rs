@@ -36,6 +36,7 @@ fn stack_size(short: &str) -> u8 {
     }
 }
 
+/// Outil d'après son nom (« iron_pickaxe »), ou None.
 fn tool(short: &str) -> Option<Tool> {
     if short == "shears" {
         return Some(Tool::new(short, ToolType::Shears, None));

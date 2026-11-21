@@ -14,6 +14,7 @@ pub struct CommandDef {
     pub op: bool,
 }
 
+/// Raccourci pour écrire la table des commandes.
 const fn def(name: &'static str, description: &'static str, usage: &'static str, op: bool) -> CommandDef {
     CommandDef { name, description, usage, op }
 }
@@ -22,6 +23,7 @@ const fn def(name: &'static str, description: &'static str, usage: &'static str,
 pub struct VanillaCommands;
 
 impl VanillaCommands {
+    /// Commandes intégrées, telles qu'annoncées au jeu (description traduite par le client).
     pub fn all() -> &'static [CommandDef] {
         static ALL: [CommandDef; 26] = [
             def("help", "commands.help.description", "/help", false),
@@ -60,6 +62,7 @@ impl VanillaCommands {
         &ALL
     }
 
+    /// Commande intégrée de ce nom.
     pub fn get(name: &str) -> Option<&'static CommandDef> {
         Self::all().iter().find(|c| c.name == name)
     }

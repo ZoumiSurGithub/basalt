@@ -56,6 +56,7 @@ pub fn add_item_actor_recorded() -> Vec<u8> {
     p
 }
 
+/// Données d'entité d'un objet au sol, relevées sur un vrai serveur.
 fn item_metadata() -> Vec<u8> {
     let h = ITEM_METADATA_HEX.as_bytes();
     (0..h.len() / 2).map(|i| u8::from_str_radix(std::str::from_utf8(&h[2 * i..2 * i + 2]).unwrap_or("00"), 16).unwrap_or(0)).collect()

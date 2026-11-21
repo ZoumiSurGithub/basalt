@@ -2,6 +2,7 @@
 local editor = require("src.editor")
 local command = require("src.commands.util").command
 
+-- Rejoue la dernière opération de la pile `which` (undo ou redo).
 local function replay(player, which, kind, label)
   local h = editor.history(player:getName())
   local entry = table.remove(h[which])

@@ -46,6 +46,7 @@ impl Skin {
         Skin::from_client_data(&json::parse(text).ok()?)
     }
 
+    /// Skin envoyé par le client à la connexion ; None si les données sont invalides.
     pub fn from_client_data(doc: &Value) -> Option<Skin> {
         let text = |key: &str, max: usize| -> String { doc.get(key).and_then(|v| v.as_str()).filter(|s| s.len() <= max && !s.chars().any(|c| c.is_control())).unwrap_or("").to_string() };
         let blob = |key: &str, max: usize| -> Option<Vec<u8>> {

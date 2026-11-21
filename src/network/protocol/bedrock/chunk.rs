@@ -29,6 +29,7 @@ pub fn flat_chunk_payload() -> Vec<u8> {
     flat_chunk_payload_with(true)
 }
 
+/// Chunk plat minimal (une seule section), pour les tests de compatibilité.
 pub fn flat_chunk_payload_with(biomes: bool) -> Vec<u8> {
     let mut w = W::default();
     // Un seul sous-chunk (y = -64 à -49), format 9, une couche de blocs
@@ -59,6 +60,7 @@ pub const CHUNK_VARIANTS: u8 = 7;
 /// Variante sans données de biomes dans le contenu.
 pub const CHUNK_VARIANT_NO_BIOMES: u8 = 6;
 
+/// Description des variantes du paquet LevelChunk essayées selon les versions.
 pub fn chunk_variant_name(variant: u8) -> &'static str {
     match variant {
         0 => "comme avant 1.26.60, plus l'indicateur de biomes",
@@ -71,6 +73,7 @@ pub fn chunk_variant_name(variant: u8) -> &'static str {
     }
 }
 
+/// LevelChunk dans la forme par défaut.
 pub fn level_chunk(x: i32, z: i32, payload: &[u8], f: crate::versions::Features) -> Vec<u8> {
     level_chunk_variant(x, z, payload, f, 0)
 }
@@ -104,6 +107,7 @@ pub fn level_chunk_variant(x: i32, z: i32, payload: &[u8], f: crate::versions::F
     w.0
 }
 
+/// Formes plus anciennes du paquet, pour les versions qui les attendent.
 pub(crate) fn level_chunk_old(x: i32, z: i32, payload: &[u8]) -> Vec<u8> {
     let f = crate::versions::Features { chunk_biome_update_flag: false, ..crate::versions::features(0) };
     level_chunk_legacy(x, z, payload, f)

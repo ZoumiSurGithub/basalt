@@ -11,6 +11,7 @@ pub enum Value {
 }
 
 impl Value {
+    /// Accès typés : champ d'un objet, texte, tableau, nombre, booléen.
     pub fn get(&self, key: &str) -> Option<&Value> {
         match self {
             Value::Obj(items) => items.iter().find(|(k, _)| k == key).map(|(_, v)| v),
@@ -56,6 +57,7 @@ impl Value {
         self.write(&mut out);
         out
     }
+    /// Écrit la valeur en JSON compact.
     fn write(&self, out: &mut String) {
         match self {
             Value::Null => out.push_str("null"),
@@ -95,6 +97,7 @@ impl Value {
     }
 }
 
+/// Texte JSON avec échappements.
 fn write_str(s: &str, out: &mut String) {
     out.push('"');
     for c in s.chars() {

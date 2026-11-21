@@ -77,10 +77,12 @@ pub fn step(face: u8) -> (i32, i32) {
     }
 }
 
+/// Face opposée (le bit faible distingue les deux faces d'un même axe).
 pub fn opposite(face: u8) -> u8 {
     face ^ 1
 }
 
+/// Nom d'une face, pour les messages.
 fn word(face: u8) -> &'static str {
     match face {
         DOWN => "down",

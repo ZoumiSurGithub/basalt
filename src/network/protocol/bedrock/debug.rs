@@ -10,6 +10,7 @@ use super::*;
 
 pub const PROBES: u8 = 6;
 
+/// Description d'une expérience de mise au point des chunks.
 pub fn probe_name(probe: u8) -> &'static str {
     match probe {
         1 => "chunks normaux, indicateur de biomes à vrai",

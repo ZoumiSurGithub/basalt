@@ -12,6 +12,7 @@ __basalt_protected = nil
 local io_open = io.open
 local os_time, os_date, os_clock = os.time, os.date, os.clock
 local real_loadfile = loadfile
+local real_load = load
 
 -- Nom de fichier donné par le plugin -> chemin dans son dossier, ou nil s'il en sort
 local function inside(name)
@@ -33,6 +34,7 @@ function server.read(name)
   return text
 end
 
+-- Écrit ou complète un fichier du plugin ; faux si le nom sort de son dossier.
 local function put(name, text, mode)
   local path = inside(name)
   if not path then return false end
@@ -43,23 +45,28 @@ local function put(name, text, mode)
   return true
 end
 
+-- Fichiers du plugin : `write` remplace le contenu, `append` ajoute à la fin.
 function server.write(name, text) return put(name, text, "wb") end
 function server.append(name, text) return put(name, text, "ab") end
 
 -- Heure
 function server.time() return os_time() end
+-- Temps processeur, pour chronométrer un bout de code.
 function server.clock() return os_clock() end
+-- Date en texte ; format de os.date, « 2026-11-21 12:00:00 » par défaut.
 function server.date(format, time)
   if format ~= nil and type(format) ~= "string" then return nil end
   return os_date(format or "%Y-%m-%d %H:%M:%S", time)
 end
 
--- server.connect est un autre nom de server.on
-server.connect = server.on
+-- Fonctions brutes du serveur, gardées ici et retirées de `server` : les plugins passent par
+-- les objets joueur et les minuteries en secondes définis plus bas.
+local raw_players, raw_kick, raw_after, raw_every = server._players, server._kick, server._after, server._every
+server._players, server._kick, server._after, server._every = nil, nil, nil, nil
 
 -- Objet joueur. Il ne contient que le pseudo : chaque lecture interroge le serveur, donc
 -- un objet gardé dans une variable reste juste, et `isOnline` dit si le joueur est là.
-local pget, pset, pdo, kick = server._pget, server._pset, server._pdo, server.kick
+local pget, pset, pdo, kick = server._pget, server._pset, server._pdo, raw_kick
 local Player = {}
 Player.__index = Player
 Player.__name = "Player"
@@ -67,6 +74,8 @@ Player.__tostring = function(p) return p.name end
 Player.__concat = function(a, b) return tostring(a) .. tostring(b) end
 Player.__eq = function(a, b) return a.name == b.name end
 
+-- Lectures et écritures simples : chaque appel demande la valeur au serveur, ou lui
+-- transmet la nouvelle (appliquée à la fin de l'appel du plugin).
 function Player:getName() return self.name end
 function Player:isOnline() return pget(self.name, "online") == true end
 function Player:getDisplayName() return pget(self.name, "display") or self.name end
@@ -83,9 +92,12 @@ function Player:getXpLevel() return pget(self.name, "xp_level") end
 function Player:setXpLevel(value) pset(self.name, "xp_level", value) end
 function Player:getXpProgress() return pget(self.name, "xp_progress") end
 function Player:setXpProgress(value) pset(self.name, "xp_progress", value) end
+-- Position des pieds ; `teleport` attend elle aussi les pieds.
 function Player:getPosition() return pget(self.name, "pos") end
 function Player:teleport(x, y, z) pdo(self.name, "teleport", x, y, z) end
+-- Date de première connexion, en secondes comme server.time().
 function Player:getFirstPlayed() return pget(self.name, "first_played") end
+-- Actions sur le joueur, exécutées par le serveur quand l'appel du plugin se termine.
 function Player:sendMessage(text) pdo(self.name, "message", tostring(text)) end
 function Player:kick(reason) kick(self.name, reason) end
 function Player:save() pdo(self.name, "save") end
@@ -93,10 +105,13 @@ function Player:save() pdo(self.name, "save") end
 function Player:give(item, count) pdo(self.name, "give", tostring(item), count or 1) end
 -- Regard et objet tenu
 function Player:getYaw() return pget(self.name, "yaw") or 0 end
+-- Angle vertical du regard : négatif vers le haut, positif vers le bas.
 function Player:getPitch() return pget(self.name, "pitch") or 0 end
+-- Nom de l'objet tenu en main (texte vide si la main est vide).
 function Player:getItemInHand() return pget(self.name, "held") or "" end
 -- Mode de jeu : 0 survie, 1 créatif, 2 aventure, 3 spectateur (numéros de PocketMine)
 function Player:getGamemode() return pget(self.name, "gamemode") or 0 end
+-- Le changement passe par PlayerGameModeChangeEvent, qu'un plugin peut annuler.
 function Player:setGamemode(mode) pset(self.name, "gamemode", mode) end
 -- Direction du regard, en décalage de blocs : (dx, dy, dz) parmi les six directions
 function Player:getDirection()
@@ -112,13 +127,16 @@ end
 -- répond lui-même au joueur
 -- Permissions : réglage propre au joueur, sinon règle par défaut déclarée dans plugin.yml
 function Player:isOp() return pget(self.name, "op") == true end
+-- Permissions : réglage propre au joueur, sinon la règle par défaut de plugin.yml.
 function Player:setOp(value) pset(self.name, "op", value == true) end
 function Player:hasPermission(node) return pget(self.name, "perm", tostring(node)) == true end
+-- `nil` efface le réglage propre au joueur (la règle par défaut s'applique de nouveau).
 function Player:setPermission(node, value)
   if value ~= nil then value = (value == true) end
   pset(self.name, "perm:" .. tostring(node):lower(), value)
 end
 
+-- Objet joueur : il ne garde que le pseudo, tout le reste est lu au moment voulu.
 local function wrap(name)
   return setmetatable({ name = name }, Player)
 end
@@ -131,10 +149,267 @@ function server.getPlayer(name)
   if pget(name, "online") then return wrap(name) end
   return nil
 end
+-- Tous les joueurs acceptés au login, y compris ceux qui n'ont pas fini d'apparaître.
 function server.getOnlinePlayers()
   local list = {}
-  for i, name in ipairs(server.players()) do list[i] = wrap(name) end
+  for i, name in ipairs(raw_players()) do list[i] = wrap(name) end
   return list
+end
+
+-- ---------------------------------------------------------------------------------------
+-- Outils simples, pour écrire un plugin sans connaître la programmation : messages à tous,
+-- couleurs, minuteries en secondes (qu'on peut arrêter), données enregistrées, config.yml.
+-- ---------------------------------------------------------------------------------------
+
+-- Joueur en jeu, sans tenir compte des majuscules (« steve » trouve « Steve »)
+function server.getPlayer(name)
+  name = tostring(name)
+  if pget(name, "online") then return wrap(name) end
+  local lower = name:lower()
+  for _, n in ipairs(raw_players()) do
+    if n:lower() == lower then return wrap(n) end
+  end
+  return nil
+end
+
+-- Message à tous les joueurs en jeu
+function server.broadcast(text)
+  text = tostring(text)
+  for _, p in ipairs(server.getOnlinePlayers()) do p:sendMessage(text) end
+end
+
+-- Couleurs et styles du chat, comme TextFormat dans PocketMine : TextFormat.GREEN .. "Salut"
+TextFormat = {
+  BLACK = "§0", DARK_BLUE = "§1", DARK_GREEN = "§2", DARK_AQUA = "§3", DARK_RED = "§4", DARK_PURPLE = "§5",
+  GOLD = "§6", GRAY = "§7", DARK_GRAY = "§8", BLUE = "§9", GREEN = "§a", AQUA = "§b", RED = "§c",
+  LIGHT_PURPLE = "§d", YELLOW = "§e", WHITE = "§f", MINECOIN_GOLD = "§g",
+  OBFUSCATED = "§k", BOLD = "§l", ITALIC = "§o", RESET = "§r",
+}
+
+-- Minuteries en secondes, qu'on peut arrêter :
+--   local annonce = server.everySeconds(600, function() server.broadcast("Pensez à voter !") end)
+--   annonce:stop()
+local Timer = {}
+Timer.__index = Timer
+-- Minuterie rendue par afterSeconds / everySeconds.
+function Timer:stop() self.stopped = true end
+function Timer:isRunning() return not self.stopped end
+-- Secondes -> ticks (20 par seconde), au moins 1. Erreur si ce n'est pas un nombre positif.
+local function ticks_of(seconds, what)
+  seconds = tonumber(seconds)
+  if not seconds or seconds ~= seconds or seconds <= 0 then
+    error(what .. " : un nombre de secondes plus grand que 0 est attendu", 3)
+  end
+  return math.max(1, math.floor(seconds * 20 + 0.5))
+end
+-- Appelle `fn` une fois après tant de secondes, sauf si la minuterie a été arrêtée avant.
+function server.afterSeconds(seconds, fn)
+  if type(fn) ~= "function" then error("server.afterSeconds(secondes, fonction) : la fonction manque", 2) end
+  local timer = setmetatable({}, Timer)
+  raw_after(ticks_of(seconds, "server.afterSeconds"), function()
+    if timer.stopped then return end
+    timer.stopped = true
+    fn()
+  end)
+  return timer
+end
+-- Appelle `fn` toutes les tant de secondes, en lui passant la minuterie (pour qu'elle
+-- puisse s'arrêter d'elle-même).
+function server.everySeconds(seconds, fn)
+  if type(fn) ~= "function" then error("server.everySeconds(secondes, fonction) : la fonction manque", 2) end
+  local timer = setmetatable({}, Timer)
+  raw_every(ticks_of(seconds, "server.everySeconds"), function()
+    if not timer.stopped then fn(timer) end
+  end)
+  return timer
+end
+-- Données enregistrées : n'importe quelle table (nombres, textes, vrai/faux, tables),
+-- gardée dans plugins/<plugin>/<nom>.data et retrouvée après un redémarrage.
+--   local points = server.loadData("points", {})
+--   points["Steve"] = (points["Steve"] or 0) + 1
+--   server.saveData("points", points)
+local function serialize(v, indent, depth)
+  depth = depth + 1
+  if depth > 32 then error("server.saveData : données trop imbriquées", 4) end
+  local t = type(v)
+  if t == "string" then return string.format("%q", v) end
+  if t == "number" then
+    if v ~= v or v == math.huge or v == -math.huge then return "0" end
+    if math.type(v) == "integer" then return tostring(v) end
+    return string.format("%.17g", v)
+  end
+  if t == "boolean" then return tostring(v) end
+  if t == "table" then
+    local keys = {}
+    for k in pairs(v) do
+      if type(k) == "string" or type(k) == "number" then keys[#keys + 1] = k end
+    end
+    table.sort(keys, function(a, b)
+      if type(a) == type(b) then return a < b end
+      return type(a) == "number"
+    end)
+    local inner = indent .. "  "
+    local parts = {}
+    for _, k in ipairs(keys) do
+      local x = v[k]
+      local tx = type(x)
+      if tx == "string" or tx == "number" or tx == "boolean" or tx == "table" then
+        local key = type(k) == "string" and k:match("^[%a_][%w_]*$") and k or ("[" .. serialize(k, inner, depth) .. "]")
+        parts[#parts + 1] = inner .. key .. " = " .. serialize(x, inner, depth)
+      end
+    end
+    if #parts == 0 then return "{}" end
+    return "{\n" .. table.concat(parts, ",\n") .. "\n" .. indent .. "}"
+  end
+  return "nil"
+end
+
+-- Nom de fichier des données : <nom>.data, nom limité aux lettres, chiffres, _ et -.
+local function data_file(name, what)
+  name = tostring(name or "")
+  if not name:match("^[%w_%-]+$") then
+    error(what .. " : nom invalide « " .. name .. " » (lettres, chiffres, _ et - seulement)", 3)
+  end
+  return name .. ".data"
+end
+
+-- Écrit la valeur en Lua (« return { ... } »), lisible et modifiable à la main.
+function server.saveData(name, value)
+  local file = data_file(name, "server.saveData")
+  return server.write(file, "return " .. serialize(value, "", 0) .. "\n")
+end
+
+-- Relit la valeur enregistrée, ou `default` si rien n'existe ou si le fichier est abîmé.
+function server.loadData(name, default)
+  local file = data_file(name, "server.loadData")
+  local text = server.read(file)
+  if not text then return default end
+  -- Lu sans aucun accès au serveur : un fichier de données ne contient que des données
+  local chunk = real_load(text, "=" .. file, "t", {})
+  if not chunk then
+    server.warn(file .. " est illisible : valeurs par défaut utilisées")
+    return default
+  end
+  local ok, value = pcall(chunk)
+  if not ok or value == nil then return default end
+  return value
+end
+
+-- config.yml du plugin : réglages que l'administrateur modifie sans toucher au code.
+--   local config = server.getConfig({ message = "Bienvenue !", kit = true, diamants = 3 })
+-- Le fichier est créé avec ces valeurs s'il n'existe pas ; les réglages ajoutés plus tard
+-- y sont complétés. Forme reconnue : « clé: valeur » (texte, nombre, true/false, [liste]).
+local function yaml_value(raw)
+  raw = raw:gsub("%s+#.*$", ""):match("^%s*(.-)%s*$")
+  if raw == "true" or raw == "yes" or raw == "on" then return true end
+  if raw == "false" or raw == "no" or raw == "off" then return false end
+  if raw:match("^%-?%d+%.?%d*$") then return tonumber(raw) end
+  local quoted = raw:match('^"(.*)"$') or raw:match("^'(.*)'$")
+  if quoted then return (quoted:gsub('\\"', '"')) end
+  local list = raw:match("^%[(.*)%]$")
+  if list then
+    local out = {}
+    for item in list:gmatch("[^,]+") do
+      if item:match("%S") then out[#out + 1] = yaml_value(item) end
+    end
+    return out
+  end
+  return raw
+end
+
+-- Valeur -> texte YAML, pour écrire config.yml.
+local function yaml_text(v)
+  local t = type(v)
+  if t == "boolean" or t == "number" then return tostring(v) end
+  if t == "table" then
+    local parts = {}
+    for i, x in ipairs(v) do parts[i] = yaml_text(x) end
+    return "[" .. table.concat(parts, ", ") .. "]"
+  end
+  return '"' .. tostring(v):gsub('"', '\\"') .. '"'
+end
+
+-- Lit config.yml et complète le fichier avec les réglages qui y manquent.
+function server.getConfig(defaults)
+  defaults = defaults or {}
+  if type(defaults) ~= "table" then error("server.getConfig(valeurs par défaut) : une table est attendue", 2) end
+  local values, order = {}, {}
+  local text = server.read("config.yml")
+  if text then
+    for line in text:gmatch("[^\r\n]+") do
+      local key, raw = line:match("^([%w_%-%.]+)%s*:%s*(.-)%s*$")
+      if key and not line:match("^%s*#") then
+        values[key] = yaml_value(raw)
+        order[#order + 1] = key
+      end
+    end
+  end
+  -- Réglages manquants : ajoutés au fichier avec leur valeur par défaut
+  local missing = {}
+  for key, value in pairs(defaults) do
+    if values[key] == nil then
+      values[key] = value
+      missing[#missing + 1] = key
+    end
+  end
+  if #missing > 0 then
+    table.sort(missing)
+    local add = {}
+    if not text then add[1] = "# Réglages du plugin : modifiez les valeurs, puis tapez « reload » dans la console." end
+    for _, key in ipairs(missing) do add[#add + 1] = key .. ": " .. yaml_text(defaults[key]) end
+    local body = table.concat(add, "\n") .. "\n"
+    if text and text ~= "" and text:sub(-1) ~= "\n" then body = "\n" .. body end
+    server.append("config.yml", body)
+  end
+  return values
+end
+
+-- Événements de server.on : un nom inconnu est signalé (avec le nom le plus proche), au lieu
+-- de ne jamais rien recevoir sans savoir pourquoi.
+local KNOWN = {
+  "enable", "disable", "connect", "login", "load", "join", "quit", "chat", "save", "block_break",
+  "block_click", "death", "respawn", "disconnect",
+}
+-- Distance de Levenshtein, pour proposer l'événement au nom le plus proche.
+local function distance(a, b)
+  local d = {}
+  for i = 0, #a do d[i] = { [0] = i } end
+  for j = 0, #b do d[0][j] = j end
+  for i = 1, #a do
+    for j = 1, #b do
+      local cost = a:sub(i, i) == b:sub(j, j) and 0 or 1
+      d[i][j] = math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
+    end
+  end
+  return d[#a][#b]
+end
+local raw_on = server.on
+-- server.on avec deux aides : un nom inconnu est signalé, et « quit » donne l'objet joueur
+-- au lieu de l'adresse.
+function server.on(name, fn)
+  if type(name) == "string" and not name:find("#", 1, true) then
+    local known = false
+    for _, k in ipairs(KNOWN) do
+      if k == name then known = true end
+    end
+    if not known then
+      local best, score = nil, 99
+      for _, k in ipairs(KNOWN) do
+        local s = distance(name:lower(), k)
+        if s < score then best, score = k, s end
+      end
+      local hint = (best and score <= 3) and (" (vouliez-vous dire « " .. best .. " » ?)") or ""
+      server.warn("événement inconnu « " .. name .. " »" .. hint .. " : le serveur ne l'émet pas, cette fonction ne sera pas appelée")
+    end
+    -- « quit » : le joueur est parti ; la fonction reçoit l'objet joueur
+    if name == "quit" then
+      if type(fn) ~= "function" then return raw_on(name, fn) end
+      return raw_on("disconnect", function(_, who)
+        if who then return fn(wrap(who)) end
+      end)
+    end
+  end
+  return raw_on(name, fn)
 end
 
 
@@ -212,12 +487,14 @@ local function encode(v, depth)
   return "null"
 end
 
+-- « message » -> « Message » (noms des méthodes get/set des événements).
 local function capital(s) return s:sub(1, 1):upper() .. s:sub(2) end
 
 -- Bloc vu par un écouteur
 local Block = {}
 Block.__index = Block
 Block.__name = "Block"
+-- Accès en lecture au bloc d'un événement.
 function Block:getName() return self.name end
 function Block:getPosition() return self.x, self.y, self.z end
 function Block:getX() return self.x end
@@ -237,8 +514,10 @@ function Block:getZ() return self.z end
 -- à la fin de l'appel, et visibles à l'appel suivant.
 -- ---------------------------------------------------------------------------------------
 local raw_block, raw_blocks, raw_setblocks = server._block, server._blocks, server._setblocks
+-- État exact du bloc (orientation, couleur…), à garder pour le recopier à l'identique.
 function Block:getState() return self.state end
 
+-- Accepte un nom, un état ou un bloc, et renvoie l'état ; nil si le bloc n'existe pas.
 local function state_of(block)
   local t = type(block)
   if t == "number" then return math.tointeger(block) end
@@ -251,7 +530,9 @@ end
 local World = {}
 World.__index = World
 World.__name = "World"
+-- État seul, sans créer d'objet : le plus rapide pour lire beaucoup de blocs.
 function World:getBlockState(x, y, z) return raw_block(x, y, z) end
+-- Le bloc avec son nom et sa position, ou nil hors du monde.
 function World:getBlock(x, y, z)
   x, y, z = math.floor(x), math.floor(y), math.floor(z)
   local state = raw_block(x, y, z)
@@ -260,6 +541,7 @@ function World:getBlock(x, y, z)
 end
 -- États de tout un volume, dans une table plate rangée par y, puis x, puis z
 function World:getBlocks(x1, y1, z1, x2, y2, z2) return raw_blocks(x1, y1, z1, x2, y2, z2) end
+-- Pose un bloc (appliqué à la fin de l'appel du plugin).
 function World:setBlock(x, y, z, block)
   local state = state_of(block)
   if not state then error("bloc inconnu : " .. tostring(block), 2) end
@@ -267,21 +549,24 @@ function World:setBlock(x, y, z, block)
 end
 -- Pose en une fois : table plate { x, y, z, état, x, y, z, état, … } (1 000 000 blocs au plus)
 function World:setBlocks(list) raw_setblocks(list) end
-World.getBlockAt = World.getBlock
 local the_world = setmetatable({}, World)
+-- Il n'y a qu'un monde pour l'instant : toujours le même objet.
 function server.getWorld() return the_world end
 server._block, server._blocks, server._setblocks = nil, nil, nil
 
 local Event = {}
 Event.__index = Event
 Event.__name = "Event"
+-- Méthodes communes à tous les événements.
 function Event:getEventName() return self._name end
 function Event:isCancellable() return self._spec.cancellable == true end
 function Event:isCancelled() return self._data.cancelled == true end
+-- Erreur si l'événement ne s'annule pas (PlayerJoinEvent par exemple).
 function Event:cancel()
   if not self._spec.cancellable then error(self._name .. " ne peut pas être annulé", 2) end
   self._data.cancelled = true
 end
+-- `setCancelled(false)` revient à `uncancel()`, toute autre valeur annule.
 function Event:uncancel() self._data.cancelled = false end
 function Event:setCancelled(value)
   if value == false then self:uncancel() else self:cancel() end
@@ -387,9 +672,6 @@ function server.registerEvents(listener)
   return count
 end
 
-local PluginManager = { registerEvents = function(_, listener) return server.registerEvents(listener) end,
-  registerEvent = function(_, ...) return server.registerEvent(...) end }
-function server.getPluginManager() return PluginManager end
 
 if not protected then return end
 
@@ -399,6 +681,7 @@ if not protected then return end
 -- require("plugins.<nom>.config"), texte Lua uniquement.
 local loaded = {}
 local standard = { string = string, table = table, math = math, utf8 = utf8, coroutine = coroutine }
+-- require limité aux fichiers du plugin (et aux bibliothèques standard autorisées).
 local function own_require(name)
   name = tostring(name)
   if standard[name] then return standard[name] end
@@ -419,14 +702,17 @@ end
 -- Les dépassements de limites ne peuvent pas être interceptés par le plugin
 local real_pcall, real_xpcall, real_error, real_resume = pcall, xpcall, error, coroutine.resume
 local pack, unpack = table.pack, table.unpack
+-- Erreur levée par une limite du serveur (temps, mémoire) ?
 local function limit(e)
   return type(e) == "string" and e:sub(1, 15) == "basalt: limite "
 end
+-- pcall qui laisse passer les erreurs de limite : un plugin ne peut pas les étouffer.
 local function safe_pcall(f, ...)
   local r = pack(real_pcall(f, ...))
   if not r[1] and limit(r[2]) then real_error(r[2], 0) end
   return unpack(r, 1, r.n)
 end
+-- Même chose pour xpcall : le gestionnaire d'erreur ne voit pas les erreurs de limite.
 local function safe_xpcall(f, handler, ...)
   local r = pack(real_xpcall(f, function(e)
     if limit(e) then return e end
@@ -450,7 +736,7 @@ local keep = {
   setmetatable = true, getmetatable = true,
   rawget = true, rawset = true, rawequal = true, rawlen = true,
   _G = true, _VERSION = true,
-  EventPriority = true, EntityDamageEvent = true, PlayerInteractEvent = true, GameMode = true,
+  EventPriority = true, EntityDamageEvent = true, PlayerInteractEvent = true, GameMode = true, TextFormat = true,
 }
 local names = {}
 for k in pairs(_G) do names[#names + 1] = k end

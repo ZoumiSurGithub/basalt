@@ -32,6 +32,7 @@ pub(crate) struct Perlin {
 pub struct Rng(u64);
 
 impl Rng {
+    /// Générateur pseudo-aléatoire (splitmix64) : même graine, même suite.
     pub fn new(seed: u64) -> Rng {
         Rng(seed)
     }
@@ -58,11 +59,13 @@ pub(crate) fn mix(seed: u64, a: i64, b: i64, salt: u64) -> u64 {
     r.next()
 }
 
+/// Courbe de lissage du bruit de Perlin (6t^5 - 15t^4 + 10t^3).
 #[inline(always)]
 pub(crate) fn fade(t: f64) -> f64 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
 
+/// Interpolation linéaire de a vers b.
 #[inline(always)]
 pub(crate) fn lerp(t: f64, a: f64, b: f64) -> f64 {
     a + t * (b - a)
@@ -80,6 +83,7 @@ pub(crate) fn ffloor(x: f64) -> f64 {
     }
 }
 
+/// Produit scalaire avec l'un des 12 gradients de Perlin.
 #[inline(always)]
 fn grad3(hash: u8, x: f64, y: f64, z: f64) -> f64 {
     let h = hash & 15;
@@ -95,6 +99,7 @@ fn grad3(hash: u8, x: f64, y: f64, z: f64) -> f64 {
 }
 
 impl Perlin {
+    /// Table de permutation mélangée d'après la graine.
     pub(crate) fn new(seed: u64) -> Perlin {
         let mut p: Vec<u8> = (0..=255u8).collect();
         let mut rng = Rng::new(seed);
@@ -133,6 +138,7 @@ impl Perlin {
         )
     }
 
+    /// Bruit 2D : une tranche du bruit 3D.
     pub(crate) fn noise2(&self, x: f64, z: f64) -> f64 {
         self.noise3(x, 0.5, z)
     }
@@ -315,6 +321,7 @@ impl Palette {
         .with_water_sets()
     }
 
+    /// Note les plantes aquatiques et les blocs gorgés d'eau de la palette.
     fn with_water_sets(mut self) -> Palette {
         for (name, state) in &self.named {
             let base = name.split('[').next().unwrap_or(name);
@@ -342,6 +349,7 @@ pub enum Section {
 }
 
 impl Section {
+    /// État d'un bloc de la section.
     pub fn get(&self, x: usize, y: usize, z: usize) -> u32 {
         match self {
             Section::Uniform(b) => *b,
@@ -433,6 +441,7 @@ impl Kind {
             _ => Kind::Vanilla,
         }
     }
+    /// Nom de la sorte de terrain dans server.properties.
     pub fn name(self) -> &'static str {
         match self {
             Kind::Flat => "flat",
@@ -476,6 +485,7 @@ impl Generator {
         self.vanilla.as_ref()
     }
 
+    /// Générateur de cette sorte, avec une graine.
     pub fn new(kind: Kind, seed: u64, blocks: Palette) -> Generator {
         let p = |salt: u64| Perlin::new(mix(seed, 0, 0, salt));
         Generator {
@@ -529,6 +539,7 @@ impl Generator {
         (h.round() as i32).clamp(MIN_Y + 8, MAX_Y - 40)
     }
 
+    /// Climat simple (température, humidité) des terrains non vanilla.
     fn climate(&self, x: i32, z: i32) -> (f64, f64) {
         let t = self.temperature.fbm2(x as f64 / 700.0, z as f64 / 700.0, 3);
         let h = self.humidity.fbm2(x as f64 / 500.0, z as f64 / 500.0, 3);
@@ -778,6 +789,7 @@ impl Generator {
         }
     }
 
+    /// Grottes : creuse le chunk sous la surface.
     fn carve(&self, blocks: &mut [u32], at: impl Fn(usize, usize, i32) -> usize, bx: i32, bz: i32, heights: &[[i32; 16]; 16]) {
         let b = &self.blocks;
         let top = heights.iter().flatten().copied().max().unwrap_or(0).min(MAX_Y - 8);
@@ -855,6 +867,7 @@ impl Generator {
         out
     }
 
+    /// Pose un arbre dont le tronc est en (wx, wz), coupé aux limites du chunk.
     #[allow(clippy::too_many_arguments)]
     fn place_tree(&self, blocks: &mut [u32], at: impl Fn(usize, usize, i32) -> usize, bx: i32, bz: i32, wx: i32, wz: i32, tree: Tree) {
         let b = &self.blocks;

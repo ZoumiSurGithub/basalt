@@ -4,6 +4,7 @@
 use super::*;
 use crate::inflate::inflate;
 
+/// Entier variable non signé (7 bits par octet), comme dans tout le protocole Bedrock.
 pub fn read_varu32(d: &[u8], pos: &mut usize) -> Option<u32> {
     let mut v = 0u32;
     for shift in (0..35).step_by(7) {
@@ -17,6 +18,7 @@ pub fn read_varu32(d: &[u8], pos: &mut usize) -> Option<u32> {
     None
 }
 
+/// Écrit un entier variable non signé.
 pub fn write_varu32(out: &mut Vec<u8>, mut v: u32) {
     loop {
         let b = (v & 0x7f) as u8;
@@ -29,6 +31,7 @@ pub fn write_varu32(out: &mut Vec<u8>, mut v: u32) {
     }
 }
 
+/// Texte précédé de sa longueur en entier variable.
 pub(crate) fn write_string(out: &mut Vec<u8>, s: &str) {
     write_varu32(out, s.len() as u32);
     out.extend_from_slice(s.as_bytes());
@@ -77,6 +80,7 @@ pub const COMPRESS_FROM: usize = 512;
 /// Compression de ce qui part (réglage `network-compression`, actif par défaut).
 pub static COMPRESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
+/// Compression autorisée par la configuration (network-compression) ?
 fn compressing() -> bool {
     COMPRESS.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -124,6 +128,7 @@ fn seal_batch(inner: Vec<u8>, compression: bool, level: crate::utils::deflate::L
 pub struct W(pub Vec<u8>);
 
 impl W {
+    /// Valeurs simples, en petit-boutiste.
     pub fn u8(&mut self, v: u8) {
         self.0.push(v);
     }
@@ -145,6 +150,7 @@ impl W {
     pub fn f32(&mut self, v: f32) {
         self.0.extend_from_slice(&v.to_le_bytes());
     }
+    /// Entiers variables ; la version signée passe par le codage zigzag.
     pub fn varu32(&mut self, v: u32) {
         write_varu32(&mut self.0, v);
     }
@@ -166,11 +172,13 @@ impl W {
     pub fn vari64(&mut self, v: i64) {
         self.varu64(((v << 1) ^ (v >> 63)) as u64);
     }
+    /// Texte précédé de sa longueur.
     pub fn string(&mut self, s: &str) {
         write_string(&mut self.0, s);
     }
 }
 
+/// Entier variable signé (zigzag).
 pub fn read_vari32(d: &[u8], pos: &mut usize) -> Option<i32> {
     let v = read_varu32(d, pos)?;
     Some(((v >> 1) as i32) ^ -((v & 1) as i32))
@@ -204,6 +212,7 @@ pub fn encode_batch(packets: &[(u32, Vec<u8>)], compression: bool) -> Vec<u8> {
     out
 }
 
+/// Entier variable non signé sur 64 bits.
 pub(crate) fn read_varu64(d: &[u8], pos: &mut usize) -> Option<u64> {
     let mut v = 0u64;
     for shift in (0..70).step_by(7) {

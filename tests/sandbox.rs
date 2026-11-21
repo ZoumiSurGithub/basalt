@@ -40,7 +40,7 @@ for _, name in ipairs({{"io", "os", "debug", "package", "load", "loadfile", "dof
 end
 say("dump", string.dump)
 say("time", type(server.time()))
-say("connect", server.connect == server.on)
+say("anciennes", tostring(server.connect) .. tostring(server.players) .. tostring(server.kick) .. tostring(server.after) .. tostring(server.every) .. tostring(server.position))
 say("outside", server.read([[{secret}]]))
 say("parent", server.read("../essai.lua"))
 say("drive", server.write("C:/x.txt", "x"))
@@ -53,7 +53,7 @@ local globals = {{}}
 for k in pairs(_G) do globals[#globals + 1] = k end
 table.sort(globals)
 say("globals", table.concat(globals, ","))
-server.set_motd(table.concat(out, ";"))
+server.setMotd(table.concat(out, ";"))
 "#,
         secret = secret.display()
     );
@@ -70,9 +70,9 @@ server.set_motd(table.concat(out, ";"))
     let text: String = m.take_actions().into_iter().filter_map(|a| if let Action::SetMotd(s) = a { Some(s) } else { None }).collect();
     for expected in [
         "io=nil", "os=nil", "debug=nil", "package=nil", "load=nil", "loadfile=nil", "dofile=nil", "collectgarbage=nil",
-        "dump=nil", "time=number", "connect=true", "outside=nil", "parent=nil", "drive=false", "require=false",
+        "dump=nil", "time=number", "anciennes=nilnilnilnilnilnil", "outside=nil", "parent=nil", "drive=false", "require=false",
         "written=true", "appended=true", "inside=bonjour", "module=42",
-        "globals=EntityDamageEvent,EventPriority,GameMode,PlayerInteractEvent,_G,_VERSION,assert,coroutine,error,getmetatable,ipairs,math,next,pairs,pcall,print,rawequal,rawget,rawlen,rawset,require,select,server,setmetatable,string,table,tonumber,tostring,type,utf8,xpcall",
+        "globals=EntityDamageEvent,EventPriority,GameMode,PlayerInteractEvent,TextFormat,_G,_VERSION,assert,coroutine,error,getmetatable,ipairs,math,next,pairs,pcall,print,rawequal,rawget,rawlen,rawset,require,select,server,setmetatable,string,table,tonumber,tostring,type,utf8,xpcall",
     ] {
         assert!(text.contains(expected), "attendu « {} » dans : {}", expected, text);
     }
@@ -89,7 +89,7 @@ end)
 server.on("coroutine", function()
   while true do coroutine.resume(coroutine.create(function() while true do end end)) end
 end)
-server.on("sain", function() server.set_motd("vivant") end)
+server.on("sain", function() server.setMotd("vivant") end)
 "#;
     let (_, mut m, _d) = match run("loop", code, true) {
         Some(r) => r,
@@ -120,7 +120,7 @@ server.on("petits", function()
   local t = {}
   for i = 1, 100000000 do t[i] = "morceau numero " .. i end
 end)
-server.on("sain", function() server.set_motd("vivant") end)
+server.on("sain", function() server.setMotd("vivant") end)
 "#;
     let (_, mut m, _d) = match run("mem", code, true) {
         Some(r) => r,
@@ -136,7 +136,7 @@ server.on("sain", function() server.set_motd("vivant") end)
 
 #[test]
 fn trusted_plugins_keep_full_access() {
-    let (said, m, _d) = match run("trust", r#"server.set_motd(type(os.execute) .. "," .. type(package) .. "," .. type(server.read))"#, false) {
+    let (said, m, _d) = match run("trust", r#"server.setMotd(type(os.execute) .. "," .. type(package) .. "," .. type(server.read))"#, false) {
         Some(r) => r,
         None => return,
     };
@@ -150,7 +150,7 @@ fn player_objects_reach_plugins_and_change_the_player() {
     let code = r#"
 server.on("join", function(player)
   local x, y, z = player:getPosition()
-  server.set_motd(table.concat({
+  server.setMotd(table.concat({
     "Bienvenue " .. player, player.name, player:getName(), player:getDisplayName(),
     player:getHealth(), player:getMaxHealth(), player:getXpLevel(), x, y, z,
     tostring(player:isOnline()), tostring(player == server.getPlayer("Enzo")),
@@ -193,14 +193,14 @@ end)
     assert_eq!(
         actions,
         vec![
-            Action::SetMotd("Bienvenue Enzo|Enzo|Enzo|Enzo|12.0|20.0|3|1.5|-58.0|7.0|true|true|1|nil".into()),
+            Action::SetMotd("Bienvenue Enzo|Enzo|Enzo|Enzo|12.0|20.0|3|1.5|-59.62|7.0|true|true|1|nil".into()),
             Action::PlayerSet("Enzo".into(), "max_health".into(), LVal::Num(40.0)),
             Action::PlayerSet("Enzo".into(), "health".into(), LVal::Num(40.0)),
             Action::PlayerSet("Enzo".into(), "xp_level".into(), LVal::Num(8.0)),
             Action::PlayerSet("Enzo".into(), "display".into(), LVal::Str("Enzo le Grand".into())),
             Action::PlayerSet("Enzo".into(), "tag".into(), LVal::Str("[Admin] Enzo".into())),
             Action::PlayerMessage("Enzo".into(), "salut".into()),
-            Action::PlayerTeleport("Enzo".into(), 1.0, 2.0, 3.0),
+            Action::PlayerTeleport("Enzo".into(), 1.0, 2.0 + 1.62, 3.0),
             Action::PlayerSave("Enzo".into()),
             Action::Kick("Enzo".into(), "au revoir".into()),
         ]
@@ -224,24 +224,24 @@ fn plugins_with_a_manifest_load_in_dependency_order() {
     );
     write("a-gardien/src", "demarrage.lua", r#"
 local outil = require("src.outil")
-server.command("expulser", function(args) server.set_motd("expulsion de " .. args[1]) end)
+server.command("expulser", function(args) server.setMotd("expulsion de " .. args[1]) end)
 server.on("enable", function()
-  server.set_motd(server.plugin.name .. " " .. server.plugin.version .. " par " .. server.plugin.authors[1] .. " : " .. outil.message)
+  server.setMotd(server.plugin.name .. " " .. server.plugin.version .. " par " .. server.plugin.authors[1] .. " : " .. outil.message)
 end)
 server.on("join", function(joueur)
-  server.set_motd(tostring(joueur:hasPermission("gardien.voir")) .. "," .. tostring(joueur:hasPermission("gardien.expulser")) .. "," .. tostring(joueur:isOp()))
+  server.setMotd(tostring(joueur:hasPermission("gardien.voir")) .. "," .. tostring(joueur:hasPermission("gardien.expulser")) .. "," .. tostring(joueur:isOp()))
   joueur:setPermission("gardien.expulser", true)
   server.log("après réglage : " .. tostring(joueur:hasPermission("gardien.expulser")))
 end)
 "#);
     write("a-gardien/src", "outil.lua", r#"return { message = "prêt" }"#);
     write("z-economie", "plugin.yml", "name: Economie\nversion: 0.3\n");
-    write("z-economie", "main.lua", r#"server.set_motd("economie chargée")"#);
+    write("z-economie", "main.lua", r#"server.setMotd("economie chargée")"#);
     // Fiches refusées : dépendance absente, interface inconnue, fichier principal hors du dossier
     write("orphelin", "plugin.yml", "name: Orphelin\nversion: 1\ndepend: [Absent]\n");
-    write("orphelin", "main.lua", r#"server.set_motd("ne doit pas tourner")"#);
+    write("orphelin", "main.lua", r#"server.setMotd("ne doit pas tourner")"#);
     write("futur", "plugin.yml", "name: Futur\nversion: 1\napi: 99\n");
-    write("futur", "main.lua", r#"server.set_motd("ne doit pas tourner")"#);
+    write("futur", "main.lua", r#"server.setMotd("ne doit pas tourner")"#);
     write("evade", "plugin.yml", "name: Evade\nversion: 1\nmain: ../z-economie/main.lua\n");
 
     let mut m = PluginManager::new(&d);
@@ -292,9 +292,9 @@ fn a_stuck_plugin_never_holds_the_server() {
     std::fs::write(
         d.join("essai.lua"),
         r#"
-server.on("lent", function() string.find(string.rep("a", 300), ".-.-.-b") server.set_motd("lent fini") end)
+server.on("lent", function() string.find(string.rep("a", 300), ".-.-.-b") server.setMotd("lent fini") end)
 server.on("boucle", function() while true do end end)
-server.on("sain", function(n) server.set_motd("sain " .. n) end)
+server.on("sain", function(n) server.setMotd("sain " .. n) end)
 server.on("login", function() return "refusé par le plugin" end)
 "#,
     )
@@ -489,4 +489,118 @@ fn easyedit_edits_the_world_by_itself() {
     m.run_command_as("wand", &[], Some("Enzo"));
     assert!(m.take_actions().contains(&Action::PlayerGive("Enzo".into(), "minecraft:wooden_axe".into(), 1)));
     let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Les outils simples : config.yml, données enregistrées, minuteries en secondes qu'on
+/// arrête, message à tous, couleurs, joueur trouvé sans tenir compte des majuscules, et un
+/// événement mal écrit signalé avec le bon nom.
+#[test]
+fn simple_tools_for_beginners() {
+    use basalt::lua::PlayerSnap;
+    let code = r#"
+local config = server.getConfig({ message = "Bienvenue !", kit = true, diamants = 3, mondes = { "a", "b" } })
+local points = server.loadData("points", {})
+points.Steve = (points.Steve or 0) + 1
+server.saveData("points", points)
+local relu = server.loadData("points", {})
+local compte = 0
+local boucle = server.everySeconds(0.1, function(t) compte = compte + 1 if compte == 3 then t:stop() end end)
+local plus_tard = server.afterSeconds(1, function() server.log("jamais") end)
+plus_tard:stop()
+server.on("joinn", function() end)
+server.on("quit", function(joueur) server.setMotd("parti:" .. joueur:getName()) end)
+server.command("etat", function()
+  server.broadcast(TextFormat.GREEN .. config.message)
+  server.setMotd(table.concat({ config.message, tostring(config.kit), config.diamants, #config.mondes,
+    relu.Steve, compte, tostring(boucle:isRunning()), tostring(plus_tard:isRunning()),
+    tostring(server.getPlayer("enzo")) }, "|"))
+end)
+"#;
+    let (_, mut m, d) = match run("simple", code, true) {
+        Some(r) => r,
+        None => return,
+    };
+    let yml = std::fs::read_to_string(d.join("essai").join("config.yml")).unwrap();
+    assert!(yml.contains("message: \"Bienvenue !\"") && yml.contains("kit: true") && yml.contains("diamants: 3") && yml.contains("mondes: [\"a\", \"b\"]"), "{}", yml);
+    let mut info = Info::default();
+    info.players.push("Enzo".into());
+    info.pdata.push(PlayerSnap { name: "Enzo".into(), ..Default::default() });
+    m.set_info(&info, 1);
+    for tick in 1..=20 {
+        m.run_timers(tick);
+    }
+    m.take_actions();
+    m.run_command("etat", &[]);
+    let actions = m.take_actions();
+    assert!(actions.contains(&Action::PlayerMessage("Enzo".into(), "§aBienvenue !".into())), "{:?}", actions);
+    assert!(actions.contains(&Action::SetMotd("Bienvenue !|true|3|2|1|3|false|false|Enzo".into())), "{:?}", actions);
+    m.dispatch("disconnect", &[LVal::Str("1.2.3.4:5".into()), LVal::Str("Enzo".into())]);
+    assert!(m.take_actions().contains(&Action::SetMotd("parti:Enzo".into())));
+    // L'administrateur change un réglage : il est relu, et les autres restent
+    std::fs::write(d.join("essai").join("config.yml"), "message: Salut\ndiamants: 5 # commentaire\n").unwrap();
+    let mut m2 = PluginManager::new(&d);
+    m2.set_sandbox(true, "", 16);
+    m2.load_all(&Info::default(), &[]);
+    m2.set_info(&info, 1);
+    m2.take_actions();
+    m2.run_command("etat", &[]);
+    let actions = m2.take_actions();
+    assert!(actions.iter().any(|a| matches!(a, Action::SetMotd(s) if s.starts_with("Salut|true|5|2|2|"))), "{:?}", actions);
+    let yml = std::fs::read_to_string(d.join("essai").join("config.yml")).unwrap();
+    assert!(yml.contains("kit: true"), "réglage manquant ajouté : {}", yml);
+}
+
+/// Les exemples du guide du débutant (docs/exemples) se chargent et font ce qu'ils disent.
+#[test]
+fn beginner_examples_work() {
+    use basalt::lua::PlayerSnap;
+    let d = dir("exemples");
+    for f in ["bienvenue", "spawn", "annonces", "protection", "points"] {
+        std::fs::copy(format!("{}/docs/exemples/{}.lua", env!("CARGO_MANIFEST_DIR"), f), d.join(format!("{}.lua", f))).unwrap();
+    }
+    let mut m = PluginManager::new(&d);
+    if !m.available() {
+        return;
+    }
+    m.set_sandbox(true, "", 16);
+    m.load_all(&Info::default(), &[]);
+    let mut info = Info::default();
+    for (name, op) in [("Admin", true), ("Lea", false)] {
+        info.players.push(name.into());
+        info.pdata.push(PlayerSnap { name: name.into(), op, pos: (100.5, 65.62, 200.5), ..Default::default() });
+    }
+    m.set_info(&info, 1);
+    m.take_actions();
+    // Bienvenue : message, annonce, kit pour un nouveau
+    m.dispatch("join", &[LVal::Player("Lea".into())]);
+    m.dispatch("load", &[LVal::Player("Lea".into()), LVal::Bool(true)]);
+    let a = m.take_actions();
+    assert!(a.contains(&Action::PlayerMessage("Lea".into(), "§aBienvenue sur le serveur !".into())), "{:?}", a);
+    assert!(a.contains(&Action::PlayerMessage("Admin".into(), "§eLea vient d'arriver".into())), "{:?}", a);
+    assert!(a.iter().any(|x| matches!(x, Action::PlayerGive(n, i, 8) if n == "Lea" && i == "minecraft:bread")), "{:?}", a);
+    // Spawn : refusé à un non-opérateur, enregistré puis utilisé
+    m.run_command_as("setspawn", &[], Some("Lea"));
+    m.run_command_as("setspawn", &[], Some("Admin"));
+    m.run_command_as("spawn", &[], Some("Lea"));
+    let a = m.take_actions();
+    assert!(a.contains(&Action::PlayerMessage("Lea".into(), "§cRéservé aux opérateurs.".into())), "{:?}", a);
+    assert!(a.contains(&Action::PlayerTeleport("Lea".into(), 100.5, 65.62, 200.5)), "{:?}", a);
+    assert!(std::fs::read_to_string(d.join("spawn").join("spawn.data")).unwrap().contains("y = 64"));
+    // Protection : près du centre, Léa ne casse pas, l'administrateur si
+    let r = m.dispatch("block_break", &[LVal::Player("Lea".into()), LVal::Num(3.0), LVal::Num(64.0), LVal::Num(-5.0), LVal::Str("minecraft:stone".into())]);
+    assert!(r.contains(&LVal::Bool(false)), "{:?}", r);
+    let r = m.dispatch("block_break", &[LVal::Player("Admin".into()), LVal::Num(3.0), LVal::Num(64.0), LVal::Num(-5.0), LVal::Str("minecraft:stone".into())]);
+    assert!(!r.contains(&LVal::Bool(false)), "{:?}", r);
+    // Points : un bloc cassé par Léa dans la zone protégée (compté avant le refus), un autre plus loin
+    m.dispatch("block_break", &[LVal::Player("Lea".into()), LVal::Num(300.0), LVal::Num(64.0), LVal::Num(300.0), LVal::Str("minecraft:dirt".into())]);
+    m.take_actions();
+    m.run_command_as("points", &[], Some("Lea"));
+    let a = m.take_actions();
+    assert!(a.iter().any(|x| matches!(x, Action::PlayerMessage(n, t) if n == "Lea" && t.contains("Vous avez 2 points"))), "{:?}", a);
+    // Annonces : toutes les 10 minutes
+    for tick in 1..=12_000 {
+        m.run_timers(tick);
+    }
+    let a = m.take_actions();
+    assert!(a.iter().any(|x| matches!(x, Action::PlayerMessage(n, t) if n == "Lea" && t.contains("Pensez à lire les règles"))), "{:?}", a);
 }

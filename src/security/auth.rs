@@ -67,6 +67,7 @@ impl KeySet {
         KeySet::from_jwks(issuer, &doc)
     }
 
+    /// Nombre de clés de confiance.
     pub fn len(&self) -> usize {
         self.keys.len()
     }
@@ -102,6 +103,7 @@ struct Jwt<'a> {
     signature: Vec<u8>,
 }
 
+/// Découpe un jeton JWT en en-tête, contenu et signature.
 fn split_jwt(token: &str) -> Result<Jwt<'_>, AuthError> {
     let bad = AuthError::Invalid("jeton mal formé");
     if token.len() > 4 * 1024 * 1024 {
@@ -124,6 +126,7 @@ fn split_jwt(token: &str) -> Result<Jwt<'_>, AuthError> {
     })
 }
 
+/// Nombre entier positif d'un champ JSON (dates des jetons).
 fn number(v: Option<&Value>) -> Option<u64> {
     match v {
         Some(Value::Num(n)) if *n >= 0.0 && *n < 1e15 => Some(*n as u64),
@@ -312,6 +315,7 @@ fn trusted_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Télécharge du JSON avec curl (adresses de confiance seulement).
 fn curl(url: &str) -> Result<Value, String> {
     trusted_url(url)?;
     let out = Command::new("curl")
@@ -383,6 +387,7 @@ pub struct KeyFetcher {
 }
 
 impl KeyFetcher {
+    /// Fil qui récupère les clés Xbox au démarrage puis les rafraîchit.
     pub fn spawn(game_version: String, cache: PathBuf) -> KeyFetcher {
         let (tx, rx) = mpsc::channel();
         let (trigger, wake) = mpsc::channel::<()>();

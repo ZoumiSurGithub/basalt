@@ -22,6 +22,7 @@ pub enum Level {
 }
 
 impl Level {
+    /// Longueur de recherche des répétitions : plus courte en Fast, plus longue en Best.
     fn chain(self) -> usize {
         match self {
             Level::Fast => 4,
@@ -46,6 +47,7 @@ struct Bits {
 }
 
 impl Bits {
+    /// Écrit des bits, poids faible d'abord (ordre de DEFLATE).
     #[inline]
     fn put(&mut self, value: u32, bits: u32) {
         self.acc |= (value as u64) << self.n;
@@ -56,6 +58,7 @@ impl Bits {
             self.n -= 8;
         }
     }
+    /// Termine l'octet en cours et rend le résultat.
     fn finish(mut self) -> Vec<u8> {
         if self.n > 0 {
             self.out.push(self.acc as u8);
@@ -71,6 +74,7 @@ enum Sym {
     Copy(u16, u16),
 }
 
+/// Code de longueur (0 à 28) pour une répétition de cette taille.
 fn len_code(len: usize) -> usize {
     // Dernier code dont la base ne dépasse pas la longueur
     if len == 258 {
@@ -83,6 +87,7 @@ fn len_code(len: usize) -> usize {
     i
 }
 
+/// Code de distance (0 à 29).
 fn dist_code(dist: usize) -> usize {
     let mut i = 29;
     while DIST_BASE[i] as usize > dist {
@@ -108,6 +113,7 @@ fn code_lengths(freq: &[u32], limit: u8) -> Vec<u8> {
     }
 }
 
+/// Longueurs des codes de Huffman, limitées à 15 bits.
 fn huffman_lengths(freq: &[u64]) -> Vec<u8> {
     let n = freq.len();
     let mut lens = vec![0u8; n];

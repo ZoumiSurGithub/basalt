@@ -21,4 +21,4 @@ require("src.commands.move")
 require("src.commands.history")
 require("src.commands.help")
 
-server.getPluginManager():registerEvents(require("src.wand"))
+server.registerEvents(require("src.wand"))

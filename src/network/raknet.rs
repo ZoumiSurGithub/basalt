@@ -64,6 +64,7 @@ pub struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
+    /// Lecture pas à pas d'un datagramme ; chaque lecture renvoie None s'il manque des octets.
     pub fn new(d: &'a [u8]) -> Self {
         Reader { d, pos: 0 }
     }
@@ -73,6 +74,7 @@ impl<'a> Reader<'a> {
         self.pos = end;
         Some(s)
     }
+    /// Entiers : RakNet écrit en gros-boutiste, sauf les numéros sur 3 octets (petit-boutiste).
     pub fn u8(&mut self) -> Option<u8> {
         self.take(1).map(|b| b[0])
     }
@@ -92,15 +94,18 @@ impl<'a> Reader<'a> {
             i64::from_be_bytes(a)
         })
     }
+    /// Octets restants.
     pub fn left(&self) -> usize {
         self.d.len() - self.pos
     }
 }
 
+/// Entier sur 3 octets, petit-boutiste (numéros de datagramme et de frame).
 fn put_u24le(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes()[..3]);
 }
 
+/// Adresse au format RakNet : version IP, puis adresse et port (IPv4 inversée bit à bit).
 pub fn put_addr(buf: &mut Vec<u8>, a: &SocketAddr) {
     match a.ip() {
         IpAddr::V4(ip) => {
@@ -121,6 +126,7 @@ pub fn put_addr(buf: &mut Vec<u8>, a: &SocketAddr) {
     }
 }
 
+/// Passe une adresse sans la lire.
 fn skip_addr(r: &mut Reader) -> Option<()> {
     match r.u8()? {
         4 => r.take(6).map(|_| ()),
@@ -186,6 +192,7 @@ pub struct Session {
 }
 
 impl Session {
+    /// Nouvelle session, après la poignée de main hors connexion.
     fn new(addr: SocketAddr, guid: i64, mtu: usize, now: Instant) -> Session {
         Session {
             addr,
@@ -220,6 +227,7 @@ impl Session {
         }
     }
 
+    /// Une frame fiable et ordonnée, éventuellement morceau d'un paquet découpé.
     fn frame(&mut self, body: &[u8], order: u32, split: Option<(u32, u16, u32)>) -> Vec<u8> {
         let mut f = Vec::with_capacity(body.len() + 20);
         f.push((3 << 5) | if split.is_some() { 0x10 } else { 0 });
@@ -259,6 +267,7 @@ impl Session {
         }
     }
 
+    /// Datagramme reçu : limite de débit, accusé de réception, puis lecture des frames.
     fn on_datagram(&mut self, d: &[u8], now: Instant, start: Instant) {
         self.last_recv = now;
         if now.duration_since(self.rate_window) >= Duration::from_secs(1) {
@@ -299,6 +308,7 @@ impl Session {
         }
     }
 
+    /// Coupe la session pour une erreur de protocole ; la première raison est gardée.
     fn abort(&mut self, reason: &'static str) {
         if self.fault.is_none() {
             self.fault = Some(reason);
@@ -312,6 +322,7 @@ impl Session {
         self.inbox.clear();
     }
 
+    /// ACK ou NACK : libère les datagrammes reçus, renvoie les perdus.
     fn on_ack(&mut self, r: &mut Reader, nack: bool, now: Instant) -> Option<()> {
         let count = r.u16()?;
         let mut budget = 8192u32;
@@ -349,6 +360,7 @@ impl Session {
         Some(())
     }
 
+    /// Une frame : fiabilité, ordre, morceaux d'un paquet découpé.
     fn read_frame(&mut self, r: &mut Reader, start: Instant) -> Option<()> {
         let flags = r.u8()?;
         let rel = flags >> 5;
@@ -441,6 +453,7 @@ impl Session {
         Some(())
     }
 
+    /// Paquet complet : messages internes à RakNet, ou paquet de jeu pour le serveur.
     fn deliver(&mut self, p: Vec<u8>, start: Instant) {
         let now_ms = start.elapsed().as_millis() as i64;
         match p[0] {
@@ -481,6 +494,7 @@ impl Session {
         }
     }
 
+    /// Envoie les accusés de réception, les renvois et les nouveaux datagrammes.
     fn flush(&mut self, sock: &UdpSocket, now: Instant) {
         // Accusés de réception
         if !self.ack_queue.is_empty() {
@@ -608,6 +622,7 @@ fn grow_buffers(sock: &UdpSocket) {
     use std::os::raw::{c_int, c_void};
     use std::os::unix::io::AsRawFd;
     extern "C" {
+        /// Agrandit les tampons du socket : un pic de chunks à envoyer ne doit rien perdre.
         fn setsockopt(fd: c_int, level: c_int, name: c_int, value: *const c_void, len: u32) -> c_int;
     }
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -622,6 +637,7 @@ fn grow_buffers(sock: &UdpSocket) {
     }
 }
 
+/// Même chose sous Windows.
 #[cfg(windows)]
 fn grow_buffers(sock: &UdpSocket) {
     use std::os::raw::{c_char, c_int};
@@ -638,9 +654,11 @@ fn grow_buffers(sock: &UdpSocket) {
     }
 }
 
+/// Autres systèmes : tailles par défaut.
 #[cfg(not(any(unix, windows)))]
 fn grow_buffers(_: &UdpSocket) {}
 
+/// GUID du serveur, différent à chaque démarrage.
 fn random_guid() -> i64 {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
@@ -650,6 +668,7 @@ fn random_guid() -> i64 {
 }
 
 impl RakServer {
+    /// Ouvre le port IPv4 ; l'IPv6 s'ajoute ensuite sur son propre port (voir plus bas).
     pub fn bind(addr: &str, max_sessions: usize, timeout: Duration) -> std::io::Result<RakServer> {
         let socket = UdpSocket::bind(addr)?;
         // Socket non bloquant : la boucle principale ne dépend jamais du réseau pour avancer.
@@ -700,10 +719,12 @@ impl RakServer {
         }
     }
 
+    /// Écoute aussi en IPv6 ?
     pub fn has_v6(&self) -> bool {
         self.socket6.is_some()
     }
 
+    /// Envoi d'un datagramme sur le socket de la bonne famille d'adresses.
     fn send_raw<A: std::borrow::Borrow<SocketAddr>>(&self, data: &[u8], addr: A) {
         let addr = addr.borrow();
         let sock = match (&self.socket6, addr.is_ipv6()) {
@@ -812,6 +833,7 @@ impl RakServer {
         read
     }
 
+    /// Retire une session et prévient le serveur si elle était en jeu.
     fn drop_session(&mut self, addr: &SocketAddr, events: &mut Vec<RakEvent>) {
         if let Some(s) = self.sessions.remove(addr) {
             if s.state != State::Closed || s.fault.is_some() {
@@ -831,6 +853,7 @@ impl RakServer {
         }
     }
 
+    /// Datagramme brut : session en cours, ou message hors connexion (ping, ouverture).
     fn on_raw(&mut self, d: &[u8], addr: SocketAddr, events: &mut Vec<RakEvent>) {
         if d[0] & 0x80 != 0 {
             if let Some(s) = self.sessions.get_mut(&addr) {
@@ -962,6 +985,7 @@ impl RakServer {
         }
     }
 
+    /// Met un paquet de jeu en file pour ce joueur (envoyé au prochain flush).
     pub fn send(&mut self, addr: &SocketAddr, payload: &[u8]) {
         if let Some(s) = self.sessions.get_mut(addr) {
             s.send(payload);
@@ -992,6 +1016,7 @@ impl RakServer {
         }
     }
 
+    /// Envoie tout ce qui attend, pour toutes les sessions.
     pub fn flush(&mut self) {
         let now = Instant::now();
         let (s4, s6) = (&self.socket, &self.socket6);

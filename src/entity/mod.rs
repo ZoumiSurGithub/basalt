@@ -26,6 +26,7 @@ macro_rules! extends {
     ($child:ty, $field:ident, $parent:ty) => {
         impl std::ops::Deref for $child {
             type Target = $parent;
+            /// Une entité « hérite » des champs de son parent (Human -> Living -> Entity).
             fn deref(&self) -> &$parent {
                 &self.$field
             }

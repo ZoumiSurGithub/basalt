@@ -5,6 +5,7 @@ local pattern = require("src.pattern")
 local editor = require("src.editor")
 local command = require("src.commands.util").command
 
+-- /sphere et /hsphere (creuse).
 local function sphere(hollow)
   return function(player, args)
     local radius = tonumber(args[2])
@@ -27,6 +28,7 @@ local function sphere(hollow)
   end
 end
 
+-- /cyl et /hcyl (creux).
 local function cylinder(hollow)
   return function(player, args)
     local radius, height = tonumber(args[2]), tonumber(args[3]) or 1

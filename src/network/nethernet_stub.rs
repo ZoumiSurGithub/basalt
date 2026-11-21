@@ -14,6 +14,8 @@ pub struct NetherNet {
 impl NetherNet {
     pub const AVAILABLE: bool = false;
 
+    /// Version vide, compilée quand la fonction nethernet est désactivée : le serveur tourne
+    /// alors en RakNet seulement, et toutes ces méthodes ne font rien.
     pub fn bind(_ip: &str, _port: u16, _public_ip: &str, _domain: &str, _cpk_as_jwk: bool) -> Result<NetherNet, String> {
         Err("Basalt a été compilé sans le transport NetherNet".into())
     }

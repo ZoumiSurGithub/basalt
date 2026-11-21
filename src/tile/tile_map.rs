@@ -20,10 +20,12 @@ pub struct TileMap {
 }
 
 impl TileMap {
+    /// Aucun bloc à données.
     pub fn new() -> TileMap {
         TileMap::default()
     }
 
+    /// Nombre de blocs à données.
     pub fn len(&self) -> usize {
         self.tiles.len()
     }
@@ -32,6 +34,7 @@ impl TileMap {
         self.tiles.is_empty()
     }
 
+    /// Données du bloc à cette position.
     pub fn get(&self, pos: Pos) -> Option<&dyn Tile> {
         self.tiles.get(&pos).map(|t| t.as_ref())
     }

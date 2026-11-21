@@ -54,6 +54,7 @@ pub struct Manifest {
     pub permissions: Vec<PermDecl>,
 }
 
+/// Texte d'une clé de plugin.yml (un nombre est accepté), limité en longueur.
 fn text(v: Option<&Value>, max: usize) -> Option<String> {
     let s = match v? {
         Value::Str(s) => s.clone(),
@@ -101,6 +102,7 @@ impl Manifest {
         }
     }
 
+    /// Lit et vérifie plugin.yml ; l'erreur dit quelle ligne corriger.
     pub fn parse(source: &str) -> Result<Manifest, String> {
         let doc = yaml::parse(source)?;
         if !matches!(doc, Value::Obj(_)) {

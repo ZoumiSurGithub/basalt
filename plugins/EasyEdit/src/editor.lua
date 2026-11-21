@@ -9,6 +9,7 @@ local world = server.getWorld()
 local queue = {}
 local histories = {} -- pseudo -> { undo = {…}, redo = {…} }
 
+-- Historique annuler / refaire d'un joueur.
 function editor.history(name)
   histories[name] = histories[name] or { undo = {}, redo = {} }
   return histories[name]
@@ -35,6 +36,7 @@ function editor.enqueue(player, label, keys, news, kind)
   end
 end
 
+-- Range une opération terminée dans l'historique de son joueur.
 local function remember(op)
   if #op.done_keys == 0 then return end
   local h = editor.history(op.player)
@@ -92,8 +94,9 @@ local function tick()
   end
 end
 
+-- Lance le travail par tranches, à chaque tick.
 function editor.start()
-  server.every(1, tick)
+  server.everySeconds(0.05, tick)
 end
 
 -- Liste des positions d'un volume (avec un filtre facultatif) et de leurs nouveaux états

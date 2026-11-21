@@ -116,6 +116,7 @@ fn decode_all(d: &[u8], compression: bool, max: usize) -> Result<Vec<(u32, Vec<u
     Ok(out)
 }
 
+/// Base64 pour les URL, sans remplissage.
 fn b64url(data: &[u8]) -> String {
     base64_encode(data, true, false)
 }
@@ -359,6 +360,7 @@ fn disconnect_reason(code: i32) -> &'static str {
 }
 
 impl Capture {
+    /// Capture qui démarre au réglage du réseau.
     pub fn new(protocol: i32, login: Vec<u8>) -> Capture {
         Capture {
             protocol,

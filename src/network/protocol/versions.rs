@@ -39,6 +39,7 @@ pub struct Features {
     pub voxel_shapes: bool,
 }
 
+/// Ce que gère une version du jeu, d'après son numéro de protocole.
 pub fn features(protocol: i32) -> Features {
     Features {
         jigsaw_before_start: protocol >= 2177,

@@ -92,6 +92,7 @@ pub fn gunzip(data: &[u8], limit: usize) -> Result<Vec<u8>, &'static str> {
     inflate(body, limit)
 }
 
+/// Lecture des fichiers de data/, avec le nom du fichier dans le message d'erreur.
 fn read_file(dir: &Path, name: &str) -> Result<Vec<u8>, String> {
     std::fs::read(dir.join(name)).map_err(|e| format!("{} : {}", name, e))
 }
@@ -107,6 +108,7 @@ fn read_nbt(dir: &Path, name: &str) -> Result<Tag, String> {
     nbt::read_be(&raw).ok_or_else(|| format!("{} : NBT illisible", name))
 }
 
+/// Nombre d'une valeur JSON.
 fn num(v: Option<&Value>) -> Option<f64> {
     match v {
         Some(Value::Num(n)) => Some(*n),
@@ -240,6 +242,7 @@ impl GameData {
         names
     }
 
+    /// Nombre de blocs différents, et d'états de blocs.
     pub fn block_count(&self) -> usize {
         self.block_states.len()
     }
@@ -254,6 +257,7 @@ impl GameData {
         self.item_by_name.get(&full).map(|i| &self.items[*i])
     }
 
+    /// Objet d'après son identifiant numérique.
     pub fn item_by_id(&self, id: i16) -> Option<&ItemDef> {
         self.item_by_id.get(&id).map(|i| &self.items[*i])
     }
@@ -313,6 +317,7 @@ impl GameData {
         }
     }
 
+    /// Nom du bloc d'un état (« minecraft:stone »).
     pub fn block_name(&self, state: u32) -> Option<&str> {
         self.block_names.get(&state).map(|s| s.as_str())
     }
@@ -350,6 +355,7 @@ impl GameData {
         crate::block::BlockRegistry::new(self.props.iter().map(|(name, props)| (name.clone(), *props)))
     }
 
+    /// Dureté d'un bloc, si elle est connue.
     pub fn hardness(&self, state: u32) -> Option<f32> {
         self.hardness.get(self.block_name(state)?).copied()
     }

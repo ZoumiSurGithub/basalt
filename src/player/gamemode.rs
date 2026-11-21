@@ -42,6 +42,7 @@ impl GameMode {
         }
     }
 
+    /// Mode d'après son numéro enregistré (0 survie par défaut).
     pub fn from_save_id(id: i32) -> GameMode {
         match id {
             1 => GameMode::Creative,
@@ -51,6 +52,7 @@ impl GameMode {
         }
     }
 
+    /// Nom affiché en français.
     pub fn label(self) -> &'static str {
         match self {
             GameMode::Survival => "Survie",

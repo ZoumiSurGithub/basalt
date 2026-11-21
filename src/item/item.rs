@@ -13,6 +13,7 @@ pub struct BaseItem {
 }
 
 impl BaseItem {
+    /// Valeurs communes d'un objet ; le préfixe minecraft: est ajouté s'il manque.
     pub fn new(name: &str, max_stack_size: u8) -> BaseItem {
         let name = if name.contains(':') { name.to_string() } else { format!("minecraft:{}", name) };
         BaseItem { name, max_stack_size: max_stack_size.clamp(1, 64) }
@@ -33,6 +34,7 @@ pub trait Item {
 
     // ---- hérité par tous les objets, redéfini au besoin -------------------------
 
+    /// Nom complet (minecraft:diamond).
     fn name(&self) -> &str {
         &self.base().name
     }
@@ -43,6 +45,7 @@ pub trait Item {
         name.strip_prefix("minecraft:").unwrap_or(name)
     }
 
+    /// Taille maximale d'une pile (64, 16 ou 1).
     fn max_stack_size(&self) -> u8 {
         self.base().max_stack_size
     }
@@ -52,10 +55,12 @@ pub trait Item {
         0
     }
 
+    /// Sorte d'outil (None pour un objet ordinaire).
     fn tool_type(&self) -> ToolType {
         ToolType::None
     }
 
+    /// Matériau de l'outil.
     fn tool_tier(&self) -> Option<ToolTier> {
         None
     }
@@ -75,6 +80,7 @@ pub trait Item {
         0
     }
 
+    /// Valeur nutritive, si l'objet se mange.
     fn food(&self) -> Option<FoodValues> {
         None
     }
@@ -84,6 +90,7 @@ pub trait Item {
         None
     }
 
+    /// Est-ce un outil ?
     fn is_tool(&self) -> bool {
         self.tool_type() != ToolType::None
     }
@@ -96,6 +103,7 @@ pub struct GenericItem {
 }
 
 impl Item for GenericItem {
+    /// Objet sans comportement particulier.
     fn base(&self) -> &BaseItem {
         &self.base
     }
@@ -109,6 +117,7 @@ pub struct BlockItem {
 }
 
 impl Item for BlockItem {
+    /// Objet qui pose un bloc.
     fn base(&self) -> &BaseItem {
         &self.base
     }

@@ -6,12 +6,14 @@ use crate::nbt::Tag;
 
 /// Ce dont une tile a besoin du serveur : le catalogue des objets et des numéros de pile.
 pub trait TileContext {
+    /// Ce dont un bloc à données a besoin du serveur : noms et identifiants des objets.
     fn name_of(&self, id: i16) -> Option<String>;
     fn id_of(&self, name: &str) -> Option<i16>;
     fn next_net_id(&mut self) -> i32;
 }
 
 pub trait Tile {
+    /// Sorte de données (coffre, four, panneau…).
     fn tile_type(&self) -> TileType;
 
     /// Identifiant de ces données dans le jeu (« Chest », « Furnace », « Sign »…).
@@ -24,6 +26,7 @@ pub trait Tile {
         None
     }
 
+    /// Version modifiable de `inventory`.
     fn inventory_mut(&mut self) -> Option<&mut dyn Inventory> {
         None
     }
@@ -55,6 +58,7 @@ pub struct ContainerTile {
 }
 
 impl ContainerTile {
+    /// Conteneur vide de la bonne taille pour cette sorte de bloc.
     pub fn new(kind: TileType) -> ContainerTile {
         let (label, size) = match kind {
             TileType::Hopper => ("entonnoir", 5),
@@ -70,6 +74,7 @@ impl ContainerTile {
 }
 
 impl Tile for ContainerTile {
+    /// Les conteneurs simples ne gardent rien d'autre que leur inventaire.
     fn tile_type(&self) -> TileType {
         self.kind
     }
@@ -99,10 +104,12 @@ pub struct SignTile {
 }
 
 impl SignTile {
+    /// Panneau vide.
     pub fn new() -> SignTile {
         SignTile::default()
     }
 
+    /// Texte du panneau.
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -115,6 +122,7 @@ impl SignTile {
 }
 
 impl Tile for SignTile {
+    /// Un panneau ne garde que son texte.
     fn tile_type(&self) -> TileType {
         TileType::Sign
     }
@@ -138,6 +146,7 @@ pub struct GenericTile {
 }
 
 impl Tile for GenericTile {
+    /// Coffre (ou coffre de l'Ender, qui a un autre nom dans le jeu).
     fn tile_type(&self) -> TileType {
         self.kind
     }
@@ -183,6 +192,7 @@ pub(super) fn type_name(kind: TileType) -> &'static str {
     }
 }
 
+/// Sorte de données d'après leur nom dans le jeu (« Chest », « Furnace »…).
 pub(super) fn type_from(name: &str) -> Option<TileType> {
     const ALL: [TileType; 12] = [
         TileType::Chest, TileType::Barrel, TileType::ShulkerBox, TileType::EnderChest, TileType::Furnace, TileType::BlastFurnace, TileType::Smoker,

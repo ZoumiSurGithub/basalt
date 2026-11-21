@@ -25,6 +25,7 @@ pub enum Tag {
 }
 
 impl Tag {
+    /// Numéro du type dans le format NBT.
     fn id(&self) -> u8 {
         match self {
             Tag::Byte(_) => 1,
@@ -42,6 +43,7 @@ impl Tag {
         }
     }
 
+    /// Accès pratiques : valeur d'un compound, ou contenu d'un tag s'il est du bon type.
     pub fn get(&self, key: &str) -> Option<&Tag> {
         match self {
             Tag::Compound(entries) => entries.iter().find(|(k, _)| k == key).map(|(_, v)| v),
@@ -79,6 +81,7 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
+    /// Lecture NBT gros-boutiste (fichiers du monde) ; None si le fichier est tronqué.
     fn take(&mut self, n: usize) -> Option<&'a [u8]> {
         let s = self.d.get(self.pos..self.pos.checked_add(n)?)?;
         self.pos += n;
@@ -101,10 +104,12 @@ impl<'a> Reader<'a> {
         a.copy_from_slice(b);
         Some(i64::from_be_bytes(a))
     }
+    /// Texte précédé de sa longueur sur 2 octets.
     fn string(&mut self) -> Option<String> {
         let len = self.i16()? as u16 as usize;
         String::from_utf8(self.take(len)?.to_vec()).ok()
     }
+    /// Longueur d'une liste ou d'un tableau, refusée si elle dépasse le fichier.
     fn len(&mut self) -> Option<usize> {
         let n = self.i32()?;
         if n < 0 || n as usize > self.d.len() {
@@ -112,6 +117,7 @@ impl<'a> Reader<'a> {
         }
         Some(n as usize)
     }
+    /// Lit un tag de ce type ; profondeur et nombre de tags limités contre les fichiers piégés.
     fn value(&mut self, id: u8, depth: u32) -> Option<Tag> {
         if depth > 64 || self.budget == 0 {
             return None;
@@ -179,6 +185,7 @@ pub fn read_be(data: &[u8]) -> Option<Tag> {
     r.value(id, 0)
 }
 
+/// Écrit la valeur d'un tag (sans son nom ni son type).
 fn write_value(w: &mut W, tag: &Tag) {
     match tag {
         Tag::Byte(v) => w.u8(*v as u8),
@@ -243,10 +250,12 @@ impl Tag {
         Tag::List(elem, items)
     }
 
+    /// Raccourci pour un tag texte.
     pub fn string(text: &str) -> Tag {
         Tag::Str(text.to_string())
     }
 
+    /// Autres accès typés.
     pub fn as_byte(&self) -> Option<i8> {
         match self {
             Tag::Byte(v) => Some(*v),
@@ -287,12 +296,14 @@ impl Tag {
     }
 }
 
+/// Nom d'un tag dans un fichier gros-boutiste.
 fn write_be_name(out: &mut Vec<u8>, name: &str) {
     let bytes = &name.as_bytes()[..name.len().min(u16::MAX as usize)];
     out.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
     out.extend_from_slice(bytes);
 }
 
+/// Valeur d'un tag dans un fichier gros-boutiste.
 fn write_be_value(out: &mut Vec<u8>, tag: &Tag) {
     match tag {
         Tag::Byte(v) => out.push(*v as u8),
@@ -344,6 +355,7 @@ pub fn write_be(tag: &Tag) -> Vec<u8> {
     out
 }
 
+/// CRC-32 (somme de contrôle des fichiers enregistrés).
 fn crc32(data: &[u8]) -> u32 {
     let mut crc = 0xffff_ffffu32;
     for byte in data {

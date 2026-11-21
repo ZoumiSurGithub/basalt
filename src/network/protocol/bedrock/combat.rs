@@ -90,6 +90,7 @@ pub fn read_attack(body: &[u8]) -> Option<(u64, u32)> {
     read_attack_at(body, false).or_else(|| read_attack_at(body, true))
 }
 
+/// Même lecture, avec ou sans le champ ajouté dans les versions récentes.
 fn read_attack_at(body: &[u8], slots_flag: bool) -> Option<(u64, u32)> {
     let mut pos = 0;
     let legacy = read_vari32(body, &mut pos)?;

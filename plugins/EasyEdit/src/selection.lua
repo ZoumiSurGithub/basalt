@@ -5,16 +5,19 @@ local positions = require("src.positions")
 local selection = {}
 local selections = {}
 
+-- Sélection du joueur (créée vide au besoin).
 function selection.of(player)
   local name = player:getName()
   selections[name] = selections[name] or {}
   return selections[name]
 end
 
+-- Oublie la sélection d'un joueur parti.
 function selection.forget(name)
   selections[name] = nil
 end
 
+-- Nombre de blocs de la sélection.
 function selection.volume(sel)
   return (math.abs(sel.p1[1] - sel.p2[1]) + 1) * (math.abs(sel.p1[2] - sel.p2[2]) + 1) * (math.abs(sel.p1[3] - sel.p2[3]) + 1)
 end

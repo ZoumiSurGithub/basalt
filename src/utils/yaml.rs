@@ -42,6 +42,7 @@ fn strip_comment(line: &str) -> &str {
     line
 }
 
+/// Texte entre guillemets, sans eux ; None s'il n'est pas entre guillemets.
 fn unquote(text: &str) -> Option<String> {
     let t = text.trim();
     let bytes = t.as_bytes();
@@ -126,6 +127,7 @@ fn split_key(text: &str) -> Option<(String, &str)> {
     None
 }
 
+/// Valeur simple : texte, nombre, booléen, ou liste entre crochets.
 fn scalar(text: &str, depth: usize) -> Result<Value, String> {
     let t = text.trim();
     if depth > MAX_DEPTH {
@@ -170,6 +172,7 @@ pub fn format_number(n: f64) -> String {
     }
 }
 
+/// Bloc indenté : liste de « - » ou suite de « clé: valeur ».
 fn block(lines: &mut Vec<Line>, pos: &mut usize, indent: usize, depth: usize) -> Result<Value, String> {
     if depth > MAX_DEPTH {
         return Err("imbrication trop profonde".into());

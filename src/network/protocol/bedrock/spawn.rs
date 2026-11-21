@@ -21,6 +21,7 @@ pub fn resource_packs_info(features: crate::versions::Features) -> Vec<u8> {
     w.0
 }
 
+/// Pile de packs de ressources : aucun pack.
 pub fn resource_pack_stack() -> Vec<u8> {
     let mut w = W::default();
     w.bool(false); // packs obligatoires
@@ -166,6 +167,7 @@ pub fn voxel_shapes() -> Vec<u8> {
     vec![0, 0, 0, 0]
 }
 
+/// Listes vides, utilisées quand les vraies données ne sont pas disponibles.
 pub fn item_registry() -> Vec<u8> {
     vec![0]
 }
@@ -174,12 +176,14 @@ pub fn biome_definition_list() -> Vec<u8> {
     vec![0, 0]
 }
 
+/// Distance de vue accordée au joueur.
 pub fn chunk_radius_updated(radius: i32) -> Vec<u8> {
     let mut w = W::default();
     w.vari32(radius);
     w.0
 }
 
+/// Centre et rayon des chunks que le joueur doit afficher.
 pub fn chunk_publisher_update(x: i32, y: i32, z: i32, radius_blocks: u32) -> Vec<u8> {
     let mut w = W::default();
     w.vari32(x);

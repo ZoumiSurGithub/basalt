@@ -28,6 +28,7 @@ pub fn fuel_time(short: &str) -> u32 {
     }
 }
 
+/// Objet en bois (bon combustible) ?
 fn is_wood(short: &str) -> bool {
     ["oak", "spruce", "birch", "jungle", "acacia", "mangrove", "cherry", "bamboo", "pale_oak", "wooden"].iter().any(|w| short.contains(w))
 }
@@ -86,10 +87,12 @@ pub struct FurnaceTile {
 }
 
 impl FurnaceTile {
+    /// Four éteint et vide.
     pub fn new(kind: TileType) -> FurnaceTile {
         FurnaceTile { kind, inventory: FurnaceInventory::new(), burn_left: 0, cook: 0, burn_total: 0 }
     }
 
+    /// Le feu brûle-t-il encore ?
     pub fn is_burning(&self) -> bool {
         self.burn_left > 0
     }
@@ -135,6 +138,7 @@ impl FurnaceTile {
 }
 
 impl Tile for FurnaceTile {
+    /// Four, haut fourneau ou fumoir.
     fn tile_type(&self) -> TileType {
         self.kind
     }
@@ -145,6 +149,7 @@ impl Tile for FurnaceTile {
             _ => "Furnace",
         }
     }
+    /// Inventaire du four.
     fn inventory(&self) -> Option<&dyn Inventory> {
         Some(&self.inventory)
     }
@@ -152,6 +157,7 @@ impl Tile for FurnaceTile {
         Some(&mut self.inventory)
     }
 
+    /// Un tick de cuisson ; vrai si quelque chose a changé (à envoyer aux joueurs).
     fn tick(&mut self, ctx: &mut dyn TileContext) -> bool {
         let before = (self.burn_left, self.cook);
         let result = self.pending(ctx);
@@ -189,14 +195,17 @@ impl Tile for FurnaceTile {
         before != (self.burn_left, self.cook)
     }
 
+    /// Jauges affichées : cuisson et combustible restant.
     fn gauges(&self) -> Option<(u32, u32, u32, u32)> {
         Some((self.cook, self.cook_time(), self.burn_left, self.burn_total.max(self.burn_left).max(1)))
     }
 
+    /// Temps de feu et de cuisson, enregistrés avec le monde.
     fn save_extra(&self) -> Vec<(&'static str, Tag)> {
         vec![("BurnTime", Tag::Int(self.burn_left as i32)), ("CookTime", Tag::Int(self.cook as i32))]
     }
 
+    /// Relit ces temps (bornés au cas où le fichier serait faux).
     fn load_extra(&mut self, key: &str, value: &Tag) {
         let ticks = value.as_i64().unwrap_or(0).clamp(0, 40_000) as u32;
         match key {

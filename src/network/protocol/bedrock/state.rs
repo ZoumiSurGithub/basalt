@@ -17,12 +17,14 @@ pub const ID_INVENTORY_CONTENT: u32 = 49;
 pub const ID_CREATIVE_CONTENT: u32 = 145;
 pub const ID_UPDATE_ABILITIES: u32 = 187;
 
+/// SetTime : heure du jour.
 pub fn set_time(time: i32) -> Vec<u8> {
     let mut w = W::default();
     w.vari32(time);
     w.0
 }
 
+/// Inventaire créatif vide.
 pub fn creative_content_empty() -> Vec<u8> {
     vec![0, 0]
 }
@@ -45,6 +47,7 @@ pub fn update_vitals(runtime_id: u64, health: f32, max_health: f32, food: f32, l
 
 const VITALS: [&str; 4] = ["minecraft:health", "minecraft:player.hunger", "minecraft:player.level", "minecraft:player.experience"];
 
+/// Attributs du joueur (vie, faim, expérience…) ; `full` envoie aussi ceux qui ne changent pas.
 fn attributes(runtime_id: u64, health: f32, max_health: f32, food: f32, level: i32, progress: f32, full: bool) -> Vec<u8> {
     const BIG: f32 = 3.402_823_5e38;
     // (nom, minimum, maximum, valeur, valeur par défaut)
@@ -78,6 +81,7 @@ fn attributes(runtime_id: u64, health: f32, max_health: f32, food: f32, level: i
     w.0
 }
 
+/// Capacités selon le mode de jeu (voler, construire, attaquer…).
 pub fn update_abilities(unique_id: i64, mode: crate::player::GameMode) -> Vec<u8> {
     use crate::player::GameMode;
     let mut w = W::default();
@@ -127,6 +131,7 @@ pub fn set_actor_flags(runtime_id: u64, flags: i64) -> Vec<u8> {
     w.0
 }
 
+/// Données d'entité du joueur.
 pub fn set_actor_data_player(runtime_id: u64) -> Vec<u8> {
     let mut w = W::default();
     w.varu64(runtime_id);
@@ -164,6 +169,7 @@ pub fn inventory_content_empty(container: u32, slots: u32, f: crate::versions::F
     w.0
 }
 
+/// Case sélectionnée dans la barre d'objets.
 pub fn player_hotbar(slot: u32) -> Vec<u8> {
     let mut w = W::default();
     w.varu32(slot);
@@ -208,6 +214,7 @@ pub fn available_actor_identifiers_empty() -> Vec<u8> {
     out
 }
 
+/// Réglages d'aventure (combat entre joueurs, monde modifiable).
 pub fn update_adventure_settings() -> Vec<u8> {
     // pas de dégâts joueur contre joueur désactivés, créatures et joueurs peuvent se battre,
     // monde modifiable, noms affichés, compétences automatiques

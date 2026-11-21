@@ -10,18 +10,22 @@ pub struct Entity {
 }
 
 impl Entity {
+    /// Entité à l'origine, avec son nom affiché.
     pub fn new(name_tag: &str) -> Entity {
         Entity { pos: (0.0, 0.0, 0.0), name_tag: name_tag.to_string() }
     }
 
+    /// Position utilisable (pas de NaN ni d'infini) ?
     pub fn has_valid_position(&self) -> bool {
         self.pos.0.is_finite() && self.pos.1.is_finite() && self.pos.2.is_finite()
     }
 
+    /// Nom affiché au-dessus de la tête, nettoyé et limité à 64 caractères.
     pub fn set_name_tag(&mut self, text: &str) {
         self.name_tag = clean_text(text, 64);
     }
 
+    /// Distance au carré (évite une racine quand on compare des distances).
     pub fn distance_squared(&self, other: (f32, f32, f32)) -> f32 {
         let (dx, dy, dz) = (self.pos.0 - other.0, self.pos.1 - other.1, self.pos.2 - other.2);
         dx * dx + dy * dy + dz * dz

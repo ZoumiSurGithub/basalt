@@ -50,6 +50,7 @@ pub const EYE_HEIGHT: f32 = 1.62;
 /// Ancien nom de `Player`.
 pub type PlayerData = Player;
 
+/// Nom de fichier sûr pour un pseudo (caractères limités, 32 au plus).
 fn file_name(name: &str) -> String {
     let safe: String = name
         .chars()
@@ -77,6 +78,7 @@ impl Player {
         }
     }
 
+    /// Fichier de sauvegarde d'un joueur.
     pub fn path(dir: &Path, name: &str) -> PathBuf {
         dir.join("players").join(file_name(name))
     }

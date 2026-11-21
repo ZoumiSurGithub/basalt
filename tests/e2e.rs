@@ -17,8 +17,8 @@ const PLUGIN: &str = r#"
 server.on("login", function(p)
   if p.name == "Banni" then return "Tu es banni, " .. p.name end
 end)
-server.on("join", function(name) server.set_motd("Bienvenue " .. name) end)
-server.after(1, function() server.set_motd("Motd Lua") end)
+server.on("join", function(name) server.setMotd("Bienvenue " .. name) end)
+server.afterSeconds(0.05, function() server.setMotd("Motd Lua") end)
 "#;
 
 fn b64(data: &[u8]) -> String {
@@ -1705,6 +1705,8 @@ fn locate_answers_in_the_chat() {
     expect(&mut steve, "Le village le plus proche se trouve en");
     command(&mut steve, "/locate biome desert");
     expect(&mut steve, "Le biome desert le plus proche");
+    command(&mut steve, "/locate structure trial_chambers");
+    expect(&mut steve, "Les chambres des épreuves les plus proches se trouvent en");
     command(&mut steve, "/locate structure stronghold");
     expect(&mut steve, "ne génère pas encore");
     drop(steve);

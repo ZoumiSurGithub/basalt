@@ -85,6 +85,7 @@ fn json_number(text: &str, key: &str) -> Option<i64> {
     digits.parse().ok()
 }
 
+/// Écrit un message sur le canal WebRTC, découpé en morceaux si besoin.
 fn write_message(rtc: &mut Rtc, channel: ChannelId, message: &[u8]) -> Result<(), String> {
     for frame in framing::split(message).map_err(|e| e.to_string())? {
         let mut ch = rtc.channel(channel).ok_or("canal fermé")?;

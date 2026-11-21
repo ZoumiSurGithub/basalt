@@ -27,10 +27,12 @@ pub struct Queue {
 }
 
 impl Queue {
+    /// File de travail nommée ; son fil démarre au premier envoi.
     pub const fn new(name: &'static str) -> Queue {
         Queue { name, tx: Mutex::new(None), started: Mutex::new(false), pending: AtomicUsize::new(0) }
     }
 
+    /// Canal vers le fil, démarré si besoin.
     fn sender(&'static self) -> Option<Sender<Msg>> {
         let mut tx = self.tx.lock().unwrap_or_else(|e| e.into_inner());
         if tx.is_none() {

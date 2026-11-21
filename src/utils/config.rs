@@ -64,6 +64,7 @@ pub struct Config {
 }
 
 impl Default for Config {
+    /// Valeurs par défaut, celles du fichier server.properties créé au premier démarrage.
     fn default() -> Self {
         Config {
             server_name: "Serveur Basalt".into(),
@@ -197,6 +198,7 @@ timeout=10
 ";
 
 impl Config {
+    /// Lit server.properties ; s'il n'existe pas, le crée avec les valeurs par défaut.
     pub fn load(path: &Path) -> Config {
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
@@ -260,6 +262,7 @@ impl Config {
         std::fs::write(path, lines.join("\n") + "\n")
     }
 
+    /// Lit le texte de server.properties (« clé=valeur » par ligne).
     pub fn parse(text: &str) -> Config {
         let mut map = HashMap::new();
         for line in text.lines() {

@@ -256,6 +256,7 @@ pub fn move_actor_absolute(id: i64, pos: (f32, f32, f32), pitch: f32, yaw: f32, 
     w.0
 }
 
+/// RemoveActor : fait disparaître une entité chez le joueur.
 pub fn remove_actor(id: i64) -> Vec<u8> {
     let mut w = W::default();
     w.vari64(id);

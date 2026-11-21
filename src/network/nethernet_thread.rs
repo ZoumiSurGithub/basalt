@@ -59,10 +59,12 @@ impl NetherNetHandle {
         NetherNetHandle { commands, outputs, thread, peers: HashMap::new(), prepared: Vec::new(), fingerprint }
     }
 
+    /// Empreinte de la clé du serveur.
     pub fn key_fingerprint(&self) -> &str {
         &self.fingerprint
     }
 
+    /// Nombre de connexions NetherNet.
     pub fn len(&self) -> usize {
         self.peers.len()
     }
@@ -78,6 +80,7 @@ impl NetherNetHandle {
             .map_err(|_| (503, "server busy"))
     }
 
+    /// Réponses aux offres WebRTC préparées par le fil.
     pub fn prepared(&mut self) -> Vec<(SocketAddr, Result<String, (u16, &'static str)>)> {
         std::mem::take(&mut self.prepared)
     }
@@ -104,14 +107,17 @@ impl NetherNetHandle {
     /// Les envois partent depuis le fil, sans attendre : rien à faire ici.
     pub fn flush(&mut self, _events: &mut Vec<RakEvent>) {}
 
+    /// Cette adresse est-elle une connexion NetherNet ?
     pub fn has(&self, key: &SocketAddr) -> bool {
         self.peers.contains_key(key)
     }
 
+    /// Clé publique du client liée à la connexion, si elle a été vérifiée.
     pub fn bound_cpk(&self, key: &SocketAddr) -> Option<String> {
         self.peers.get(key).cloned().flatten()
     }
 
+    /// Ordres transmis au fil NetherNet : envoi, fermeture, coupure, limites de jeu.
     pub fn send(&mut self, key: &SocketAddr, message: &[u8]) {
         let _ = self.commands.send(Command::Send(*key, message.to_vec()));
     }
@@ -139,6 +145,7 @@ impl NetherNetHandle {
 }
 
 impl Drop for NetherNetHandle {
+    /// Arrête le fil NetherNet.
     fn drop(&mut self) {
         self.shutdown();
     }

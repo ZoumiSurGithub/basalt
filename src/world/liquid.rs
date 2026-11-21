@@ -30,6 +30,7 @@ pub enum Fluid {
 }
 
 impl Fluid {
+    /// Niveau perdu à chaque bloc parcouru (la lave va moins loin).
     fn step(self) -> u8 {
         match self {
             Fluid::Water => 1,
@@ -37,6 +38,7 @@ impl Fluid {
         }
     }
 
+    /// Ticks entre deux avancées (l'eau est plus rapide que la lave).
     fn delay(self) -> u64 {
         match self {
             Fluid::Water => 5,
@@ -104,6 +106,7 @@ impl Liquids {
         self.states[&(fluid, false)][0]
     }
 
+    /// État du bloc liquide pour ce niveau.
     fn state(&self, fluid: Fluid, depth: u8) -> u32 {
         self.states[&(fluid, depth != 0)][depth as usize & 15]
     }
@@ -127,6 +130,7 @@ impl Liquids {
         }
     }
 
+    /// Programme la mise à jour d'un bloc (une seule fois tant qu'elle n'a pas eu lieu).
     fn plan(&mut self, due: u64, pos: (i32, i32, i32)) {
         if self.planned.len() >= MAX_PENDING || !World::in_bounds(pos.1) || !self.planned.insert(pos) {
             return;
@@ -160,6 +164,7 @@ impl Liquids {
         changed
     }
 
+    /// Change un bloc et programme ses voisins.
     fn set(&mut self, world: &mut World, now: u64, pos: (i32, i32, i32), state: u32, changed: &mut Vec<(i32, i32, i32, u32)>) {
         if world.get(pos.0, pos.1, pos.2) == state || !world.set(pos.0, pos.1, pos.2, state) {
             return;
@@ -199,6 +204,7 @@ impl Liquids {
         }
     }
 
+    /// Met à jour un bloc : il s'écoule, se fige, sèche ou devient une source.
     fn update(&mut self, world: &mut World, now: u64, pos: (i32, i32, i32), washable: &dyn Fn(u32) -> bool, changed: &mut Vec<(i32, i32, i32, u32)>) {
         let (x, y, z) = pos;
         let here = world.get(x, y, z);

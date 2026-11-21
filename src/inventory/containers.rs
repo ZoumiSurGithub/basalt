@@ -13,6 +13,7 @@ inventory_type!(
 plain_inventory!(ArmorInventory);
 
 impl ArmorInventory {
+    /// Cases d'armure : casque, plastron, jambières, bottes.
     pub fn helmet(&self) -> ItemStack {
         self.slots[0]
     }
@@ -52,6 +53,7 @@ inventory_type!(
 );
 
 impl Inventory for CraftingGrid {
+    /// Grille de fabrication et ses cases de sortie.
     fn name(&self) -> &'static str {
         "fabrication"
     }
@@ -61,6 +63,7 @@ impl Inventory for CraftingGrid {
     fn slots_mut(&mut self) -> &mut [ItemStack] {
         &mut self.base.slots
     }
+    /// Seules les cases de la grille (28 à 40) reçoivent des objets.
     fn accepts(&self, slot: usize, _item: &ItemStack) -> bool {
         (28..=40).contains(&slot)
     }
@@ -91,6 +94,7 @@ inventory_type!(
 plain_inventory!(FurnaceInventory);
 
 impl FurnaceInventory {
+    /// Cases du four : à cuire, combustible, résultat.
     pub fn smelting(&self) -> ItemStack {
         self.slots[0]
     }

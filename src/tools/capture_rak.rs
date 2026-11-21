@@ -51,12 +51,14 @@ struct RakClient {
     last_ping: Instant,
 }
 
+/// Entier sur 3 octets, petit-boutiste.
 fn u24(d: &[u8], pos: usize) -> Option<u32> {
     let b = d.get(pos..pos + 3)?;
     Some(b[0] as u32 | (b[1] as u32) << 8 | (b[2] as u32) << 16)
 }
 
 impl RakClient {
+    /// Attend un datagramme du serveur.
     fn recv_raw(&self, wait: Duration) -> Option<Vec<u8>> {
         let _ = self.sock.set_read_timeout(Some(wait.max(Duration::from_millis(1))));
         let mut buf = [0u8; 4096];
@@ -191,10 +193,12 @@ impl RakClient {
         Ok(c)
     }
 
+    /// Millisecondes depuis le début de la capture.
     fn millis(&self) -> i64 {
         self.started.elapsed().as_millis() as i64
     }
 
+    /// Envoie une frame dans un datagramme numéroté.
     fn datagram(&mut self, frame: Vec<u8>) {
         let mut d = Vec::with_capacity(frame.len() + 4);
         d.push(0x84);
@@ -238,6 +242,7 @@ impl RakClient {
         }
     }
 
+    /// ACK ou NACK du serveur : renvoie ce qu'il n'a pas reçu.
     fn on_ack(&mut self, d: &[u8], nack: bool) -> Option<()> {
         let count = u16::from_be_bytes([*d.get(1)?, *d.get(2)?]) as usize;
         let mut pos = 3;
@@ -261,6 +266,7 @@ impl RakClient {
         Some(())
     }
 
+    /// Remet les paquets dans l'ordre d'envoi avant de les traiter.
     fn deliver_ordered(&mut self, index: u32, payload: Vec<u8>) {
         if index < self.next_order {
             return;
@@ -272,6 +278,7 @@ impl RakClient {
         }
     }
 
+    /// Frames d'un datagramme, morceaux de paquets découpés compris.
     fn on_frames(&mut self, d: &[u8]) -> Option<()> {
         let mut pos = 4;
         while pos < d.len() {

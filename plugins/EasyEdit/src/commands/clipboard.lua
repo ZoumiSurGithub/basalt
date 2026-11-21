@@ -8,6 +8,7 @@ local world = server.getWorld()
 local AIR = server.blockState("minecraft:air")
 local clipboards = {} -- pseudo -> { rel = positions relatives rangées, states = états }
 
+-- Copie la sélection, positions relatives aux pieds du joueur (pour /paste).
 local function copy(player, r)
   local px, py, pz = positions.feet(player)
   local states = world:getBlocks(r.x1, r.y1, r.z1, r.x2, r.y2, r.z2)

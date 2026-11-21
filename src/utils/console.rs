@@ -32,10 +32,12 @@ static STATE: Mutex<State> = Mutex::new(State { interactive: false, buffer: Stri
 /// Couleurs acceptées par la console (réglé par `init`).
 static COLORS: AtomicBool = AtomicBool::new(false);
 
+/// La console accepte-t-elle les couleurs ANSI ?
 pub fn colors() -> bool {
     COLORS.load(Ordering::Relaxed)
 }
 
+/// Invite affichée devant la ligne en cours de frappe.
 fn prompt() -> &'static str {
     if colors() {
         PROMPT
@@ -58,6 +60,7 @@ pub fn print_line(text: &str) {
     let _ = out.flush();
 }
 
+/// Réécrit la ligne en cours de frappe, après un message du serveur.
 fn redraw(state: &State) {
     let out = std::io::stdout();
     let mut out = out.lock();
@@ -166,6 +169,7 @@ struct Decoder {
 }
 
 impl Decoder {
+    /// Décode les touches une à une (séquences d'échappement des flèches comprises).
     fn push(&mut self, byte: u8, keys: &mut Vec<Key>) {
         match self.escape {
             1 => {
@@ -256,6 +260,8 @@ fn save_history(history: &[String]) {
     let _ = std::fs::write(&path, text);
 }
 
+/// Lit les commandes tapées et les envoie au serveur ; édition de ligne et historique
+/// si le terminal le permet.
 pub fn read_commands(tx: Sender<String>) {
     let interactive = STATE.lock().map(|s| s.interactive).unwrap_or(false);
     if !interactive {
@@ -344,6 +350,7 @@ mod platform {
     }
 
     extern "C" {
+        /// Fonctions du terminal (termios).
         fn isatty(fd: i32) -> i32;
         fn tcgetattr(fd: i32, termios: *mut Termios) -> i32;
         fn tcsetattr(fd: i32, actions: i32, termios: *const Termios) -> i32;
@@ -356,6 +363,7 @@ mod platform {
 
     static SAVED: Mutex<Option<Termios>> = Mutex::new(None);
 
+    /// Passe le terminal en lecture touche par touche et repère les couleurs.
     pub fn enable() -> Terminal {
         let out_tty = unsafe { isatty(1) } == 1;
         let in_tty = unsafe { isatty(0) } == 1;
@@ -377,6 +385,7 @@ mod platform {
         Terminal { colors: out_tty && !dumb, raw_input }
     }
 
+    /// Remet le terminal comme il était.
     pub fn restore() {
         if let Ok(mut saved) = SAVED.lock() {
             if let Some(t) = saved.take() {
@@ -394,6 +403,7 @@ mod platform {
     type Handle = *mut std::ffi::c_void;
 
     extern "system" {
+        /// Fonctions de la console Windows.
         fn GetStdHandle(which: u32) -> Handle;
         fn GetConsoleMode(handle: Handle, mode: *mut u32) -> i32;
         fn SetConsoleMode(handle: Handle, mode: u32) -> i32;
@@ -413,6 +423,7 @@ mod platform {
     /// Modes d'origine : (entrée, sortie)
     static SAVED: Mutex<(Option<u32>, Option<u32>)> = Mutex::new((None, None));
 
+    /// Active les couleurs, l'UTF-8 et la lecture touche par touche sous Windows.
     pub fn enable() -> Terminal {
         let mut terminal = Terminal { colors: false, raw_input: false };
         unsafe {
@@ -445,6 +456,7 @@ mod platform {
         terminal
     }
 
+    /// Remet la console comme elle était.
     pub fn restore() {
         if let Ok(mut saved) = SAVED.lock() {
             unsafe {
@@ -463,6 +475,7 @@ mod platform {
 mod platform {
     use super::Terminal;
 
+    /// Systèmes sans gestion du terminal : texte simple.
     pub fn enable() -> Terminal {
         Terminal { colors: false, raw_input: false }
     }

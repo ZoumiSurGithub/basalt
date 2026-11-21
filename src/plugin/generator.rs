@@ -108,6 +108,7 @@ struct Buf {
 }
 
 impl Buf {
+    /// Index d'un bloc dans le tampon du chunk : colonne (x, z), puis hauteur.
     fn at(x: usize, z: usize, y: i32) -> usize {
         (x * 16 + z) * HEIGHT + (y - MIN_Y) as usize
     }
@@ -148,6 +149,7 @@ impl LuaGenerator {
         Ok(g)
     }
 
+    /// Erreur du générateur, affichée une seule fois (et 50 messages différents au plus).
     fn report(&self, text: &str) {
         if let Ok(mut seen) = self.reported.lock() {
             if seen.len() < 50 && seen.insert(text.to_string()) {
@@ -300,6 +302,7 @@ impl LuaGenerator {
         })
     }
 
+    /// Exécute le générateur Lua sur un chunk : remplissage, structures proches, décoration.
     unsafe fn run(&self, st: &State, palette: &Palette, cx: i32, cz: i32) -> Column {
         let ctx = &mut *st.ctx;
         let api = ctx.api;
@@ -468,6 +471,7 @@ fn find(plugins_dir: &Path, name: &str) -> Option<(String, PathBuf)> {
     None
 }
 
+/// Message d'erreur en haut de la pile Lua.
 unsafe fn error_text(api: &Api, l: L) -> String {
     let mut len = 0usize;
     let p = (api.tolstring)(l, -1, &mut len);
@@ -479,11 +483,13 @@ unsafe fn error_text(api: &Api, l: L) -> String {
 
 // --- Fonctions offertes aux scripts ---------------------------------------------------
 
+/// Contexte du générateur rangé dans le registre de l'état Lua.
 unsafe fn ctx<'a>(l: L) -> &'a mut Ctx {
     let api = Api::shared().unwrap_or_else(|| unreachable!());
     &mut *((api.touserdata)(l, REGISTRY - 1) as *mut Ctx)
 }
 
+/// Arguments Lua : entier, nombre ou texte à cette position, sinon None.
 unsafe fn int(c: &Ctx, l: L, i: c_int) -> Option<i64> {
     if (c.api.type_)(l, i) != T_NUMBER {
         return None;
@@ -504,6 +510,7 @@ unsafe fn text(c: &Ctx, l: L, i: c_int) -> Option<String> {
     (!p.is_null()).then(|| String::from_utf8_lossy(std::slice::from_raw_parts(p as *const u8, len)).into_owned())
 }
 
+/// Appel invalide : noté pour être affiché, sans interrompre le générateur.
 fn fail(c: &mut Ctx, what: &str) -> c_int {
     if c.errors.len() < 8 {
         c.errors.push(format!("appel invalide : {}", what));
@@ -523,6 +530,7 @@ unsafe fn block_arg(c: &mut Ctx, l: L, i: c_int) -> Option<u32> {
     }
 }
 
+/// Nom de bloc -> état, avec un cache (les plugins demandent souvent les mêmes blocs).
 fn resolve(c: &mut Ctx, name: &str) -> Option<u32> {
     if let Some(id) = c.names.get(name) {
         return Some(*id);
@@ -571,6 +579,7 @@ unsafe extern "C" fn g_noise(l: L) -> c_int {
     1
 }
 
+/// vanillaHeight(x, z) : hauteur du sol du terrain vanilla à cette colonne.
 unsafe extern "C" fn g_vanilla_height(l: L) -> c_int {
     let c = ctx(l);
     match (int(c, l, 1), int(c, l, 2)) {
@@ -582,6 +591,7 @@ unsafe extern "C" fn g_vanilla_height(l: L) -> c_int {
     }
 }
 
+/// vanillaBiome(x, z) : biome vanilla de surface, en texte.
 unsafe extern "C" fn g_vanilla_biome(l: L) -> c_int {
     let c = ctx(l);
     match (int(c, l, 1), int(c, l, 2)) {
@@ -608,6 +618,7 @@ unsafe fn push_random(c: &Ctx, l: L, rng: &mut Rng, first: c_int) -> c_int {
     1
 }
 
+/// math.random des générateurs : tiré de la graine du chunk, donc le même à chaque génération.
 unsafe extern "C" fn g_random(l: L) -> c_int {
     let c = ctx(l);
     let mut rng = match c.buf.as_mut() {
@@ -682,6 +693,7 @@ unsafe fn fill(c: &mut Ctx, l: L, absolute: bool) -> c_int {
     0
 }
 
+/// chunk:fill(x1, y1, z1, x2, y2, z2, bloc)
 unsafe extern "C" fn c_fill(l: L) -> c_int {
     fill(ctx(l), l, false)
 }
@@ -757,6 +769,7 @@ unsafe extern "C" fn c_vanilla(l: L) -> c_int {
     0
 }
 
+/// chunk:random(…) : même tirage que math.random, propre au chunk.
 unsafe extern "C" fn c_random(l: L) -> c_int {
     let c = ctx(l);
     let Some(mut rng) = c.buf.as_mut().map(|b| std::mem::replace(&mut b.rng, Rng::new(0))) else { return 0 };
@@ -784,6 +797,7 @@ unsafe extern "C" fn s_set(l: L) -> c_int {
     0
 }
 
+/// structure:fill(…), en coordonnées du monde.
 unsafe extern "C" fn s_fill(l: L) -> c_int {
     fill(ctx(l), l, true)
 }
@@ -805,6 +819,8 @@ unsafe extern "C" fn s_get(l: L) -> c_int {
     }
 }
 
+/// structure:random(…) : tirage propre à la structure, identique quel que soit le chunk
+/// qui la construit.
 unsafe extern "C" fn s_random(l: L) -> c_int {
     let c = ctx(l);
     let Some(mut rng) = c.buf.as_mut().map(|b| std::mem::replace(&mut b.srng, Rng::new(0))) else { return 0 };

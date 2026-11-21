@@ -31,6 +31,7 @@ pub struct ServerIdentity {
     spki_b64: String,
 }
 
+/// Octets <-> hexadécimal.
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
@@ -100,6 +101,7 @@ impl ServerIdentity {
         signature.to_bytes().to_vec()
     }
 
+    /// Clé publique en base64 (SPKI), annoncée aux clients NetherNet.
     pub fn spki_b64(&self) -> &str {
         &self.spki_b64
     }

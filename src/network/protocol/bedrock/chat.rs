@@ -104,6 +104,7 @@ pub fn command_overloads(usage: &str) -> Vec<Overload> {
     out
 }
 
+/// Arguments d'une commande d'après sa ligne d'usage (« /tp <joueur> [x:float] »).
 fn command_args(usage: &str) -> Overload {
     let mut out: Overload = Vec::new();
     let mut rest = usage;
@@ -184,6 +185,7 @@ struct Enums {
 }
 
 impl Enums {
+    /// Liste de choix partagée entre les commandes ; renvoie son numéro.
     fn list<'a>(&mut self, name: &str, words: impl Iterator<Item = &'a str>) -> u32 {
         if let Some(i) = self.lists.iter().position(|l| l.0 == name) {
             return i as u32;
@@ -280,6 +282,7 @@ pub fn available_commands(commands: &[(String, String, Option<Vec<Overload>>)], 
     w.0
 }
 
+/// Texte précédé de sa longueur, refusé s'il dépasse `max` octets.
 pub(crate) fn read_string<'a>(d: &'a [u8], pos: &mut usize, max: usize) -> Option<&'a str> {
     let len = read_varu32(d, pos)? as usize;
     if len > max {
@@ -305,6 +308,7 @@ pub fn read_chat(body: &[u8]) -> Option<String> {
     Some(message.to_string())
 }
 
+/// UpdateBlock sur la couche principale.
 pub fn update_block(x: i32, y: i32, z: i32, block: u32) -> Vec<u8> {
     update_block_layer(x, y, z, block, 0)
 }

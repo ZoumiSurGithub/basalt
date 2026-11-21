@@ -33,12 +33,14 @@ pub struct PlayerWindows {
 }
 
 impl Default for PlayerWindows {
+    /// Inventaires vides.
     fn default() -> PlayerWindows {
         PlayerWindows::new()
     }
 }
 
 impl PlayerWindows {
+    /// Inventaires d'un joueur qui arrive : principal, curseur, armure, fabrication, main gauche.
     pub fn new() -> PlayerWindows {
         PlayerWindows {
             main: PlayerInventory::new(),
@@ -56,6 +58,7 @@ impl PlayerWindows {
         }
     }
 
+    /// Identifiant réseau pour une pile d'objets créée par le serveur.
     fn fresh_net_id(&mut self) -> i32 {
         let id = self.next_net_id;
         self.next_net_id = if id >= i32::MAX - 1 { 1 } else { id + 1 };
@@ -76,6 +79,7 @@ impl PlayerWindows {
         }
     }
 
+    /// Inventaire désigné par le client dans une demande.
     pub fn inventory_mut(&mut self, target: Target) -> Option<&mut dyn Inventory> {
         match target {
             Target::Player => Some(&mut self.main),
@@ -89,10 +93,12 @@ impl PlayerWindows {
         }
     }
 
+    /// Pile à cet emplacement.
     pub fn get(&self, at: (Target, usize)) -> Option<ItemStack> {
         self.inventory(at.0)?.get_item(at.1)
     }
 
+    /// Pose une pile ; faux si l'emplacement la refuse.
     fn set(&mut self, at: (Target, usize), stack: ItemStack) -> bool {
         // On ne dépose rien dans la case « résultat » d'un four : on ne peut qu'y prendre
         if at == (Target::Block, 2) && self.block_is_furnace && !stack.is_empty() {

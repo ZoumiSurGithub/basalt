@@ -42,6 +42,7 @@ pub enum Step {
     Destroyed,
 }
 
+/// Bloc sous une position à virgule.
 fn cell_at(at: &dyn Fn(i32, i32, i32) -> Cell, x: f32, y: f32, z: f32) -> Cell {
     at(x.floor() as i32, y.floor() as i32, z.floor() as i32)
 }

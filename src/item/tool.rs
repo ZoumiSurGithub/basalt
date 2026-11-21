@@ -54,6 +54,7 @@ impl ToolTier {
         }
     }
 
+    /// Usure maximale par matériau.
     pub fn durability(self) -> u32 {
         match self {
             ToolTier::Wood => 59,
@@ -66,6 +67,7 @@ impl ToolTier {
         }
     }
 
+    /// Vitesse de minage par matériau.
     pub fn efficiency(self) -> f32 {
         match self {
             ToolTier::Wood => 2.0,
@@ -78,6 +80,7 @@ impl ToolTier {
         }
     }
 
+    /// Dégâts ajoutés par le matériau.
     fn damage_bonus(self) -> f32 {
         match self {
             ToolTier::Wood | ToolTier::Gold => 0.0,
@@ -99,12 +102,14 @@ pub struct Tool {
 }
 
 impl Tool {
+    /// Outil d'une sorte et d'un matériau ; ne s'empile pas.
     pub fn new(name: &str, kind: ToolType, tier: Option<ToolTier>) -> Tool {
         Tool { base: BaseItem::new(name, 1), kind, tier }
     }
 }
 
 impl Item for Tool {
+    /// Usure maximale ; les cisailles ont la leur.
     fn base(&self) -> &BaseItem {
         &self.base
     }
@@ -115,12 +120,14 @@ impl Item for Tool {
             _ => 0,
         }
     }
+    /// Sorte et matériau de l'outil.
     fn tool_type(&self) -> ToolType {
         self.kind
     }
     fn tool_tier(&self) -> Option<ToolTier> {
         self.tier
     }
+    /// Vitesse de minage sur un bloc : celle du matériau si c'est le bon outil, 1 sinon.
     fn mining_efficiency(&self, block_tool: ToolType) -> f32 {
         if block_tool == ToolType::None || block_tool != self.kind {
             // L'épée tranche vite ce qui se coupe aux cisailles (toiles) ; sinon, comme à la main
@@ -132,6 +139,7 @@ impl Item for Tool {
             _ => 1.0,
         }
     }
+    /// Dégâts d'un coup avec cet outil.
     fn attack_damage(&self) -> f32 {
         let bonus = self.tier.map(|t| t.damage_bonus()).unwrap_or(0.0);
         match self.kind {

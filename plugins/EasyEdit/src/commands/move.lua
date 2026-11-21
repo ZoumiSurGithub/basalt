@@ -67,6 +67,7 @@ local function move(player, r, states, amount, dx, dy, dz)
   editor.enqueue(player, "Déplacement", keys, news)
 end
 
+-- Commande qui agit dans la direction regardée (/move, /stack).
 local function along(operation)
   return function(player, args)
     local amount, word = tonumber(args[1]), args[2]

@@ -30,7 +30,8 @@ jeu (Bedrock 1.26.63 à 1.26.66 sous Windows, deux comptes Xbox en même temps).
 
 **Écrit et testé automatiquement, pas encore essayé avec le vrai jeu :**
 
-- structures : villages, pyramides du désert, temples de la jungle, mines abandonnées, et
+- structures : villages, pyramides du désert, temples de la jungle, mines abandonnées,
+  avant-postes de pillards, cités antiques, ruines de piste, chambres des épreuves, et
   le butin de leurs coffres (voir « Le monde » ci-dessous) ;
 - `/locate structure` et `/locate biome` ;
 - générateurs de terrain écrits en Lua par les plugins (`level-type=plugin:<nom>`) ;
@@ -89,22 +90,46 @@ les plugins (EasyEdit…) ne déclenchent pas l'écoulement, comme WorldEdit dan
 **Structures** (`src/world/structures.rs`), reconstruites à la main faute des modèles
 officiels du jeu, mais placées comme dans le jeu (une par case d'une grille) :
 
-- **villages** dans les plaines, le désert, la savane, la taïga et les plaines enneigées,
-  aux matériaux du biome : puits central, rues, maisons petites et grandes, fermes,
-  forges, tours, enclos, lampadaires ;
-- **pyramides du désert**, avec leur chambre secrète à quatre coffres piégée de TNT ;
+- **villages** au style du jeu actuel (depuis la 1.14), dans les plaines, le désert, la
+  savane, la taïga et les plaines enneigées, aux matériaux du biome : place centrale avec
+  sa cloche (massifs de fleurs, puits de grès, estrade de terre cuite, feu de camp ou dalle
+  de glace selon le biome), rues qui suivent le relief, maisons avec lits, maisons de
+  métier avec leur bloc (haut fourneau, fumoir, table de cartographie, alambic, tonneau,
+  table d'archerie, chaudron, pupitre, tailleur de pierre, métier à tisser, table de
+  forgeron, meule), bibliothèques, champs avec composteur, enclos, lampadaires, décor de
+  rue ;
+- **pyramides du désert**, avec leur chambre secrète à quatre coffres piégée de TNT, et la
+  pièce enfouie de sable suspect ajoutée en 1.20 ;
 - **temples de la jungle**, sur deux étages, avec coffres, leviers et lianes ;
-- **mines abandonnées** sous terre : galeries étayées, rails, toiles d'araignée, coffres.
+- **mines abandonnées** sous terre : galeries étayées, rails, toiles d'araignée, coffres ;
+- **avant-postes de pillards** (plaines, désert, savane, taïga, neige, prairies) : tour de
+  bouleau et de chêne noir, terrasse et coffre au sommet ; autour, cage, mannequins, tente
+  ou bois empilé. Un emplacement sur cinq, jamais près d'un village, comme le jeu ;
+- **cités antiques** au fond du deep dark (y = -51) : grande caverne, cadre de deepslate
+  renforcé, allée à colonnes et lanternes d'âmes, maisons avec bougies et coffres, sculk
+  avec capteurs et hurleurs ;
+- **ruines de piste** (taïgas, forêt de bouleaux ancienne, jungle) : salles enfouies de
+  briques de boue et de terre cuite, routes colorées, gravier suspect ; seul le haut d'une
+  tour dépasse du sol ;
+- **chambres des épreuves** entre y = -40 et -20 : hall de tuf et de cuivre, couloirs
+  éclairés d'ampoules, salles de générateurs d'épreuves, de coffres-forts (vaults), réserve
+  à tonneaux et salle à balcon.
+
+Les blocs spéciaux sont posés tels quels : les générateurs d'épreuves et les
+coffres-forts ne lancent pas encore de combat ni ne donnent de récompense, le gravier et
+le sable suspects ne cachent pas encore d'objet, et les hurleurs n'appellent pas de Warden (pas encore
+de monstres).
 
 Les coffres se remplissent au premier clic (ou lâchent leur butin si on les casse sans les
 ouvrir), toujours avec le même contenu pour une graine donnée.
 
-`/locate structure <village|temple|desert_pyramid|jungle_temple|mineshaft>` et
+`/locate structure <village|temple|desert_pyramid|jungle_temple|mineshaft|pillager_outpost|
+ancient_city|trail_ruins|trial_chambers>` et
 `/locate biome <nom>` donnent les coordonnées de la plus proche (réservées aux opérateurs).
 La recherche suit les mêmes règles que la génération, sur un fil à part.
 
-Pas encore générés : autres structures (avant-postes, épaves, monuments, cités
-antiques…), lacs, aquifères (l'eau souterraine du jeu), filons géants de fer et de
+Pas encore générés : autres structures (épaves, monuments, forteresse du Nether,
+manoirs, portails en ruine…), lacs, aquifères (l'eau souterraine du jeu), filons géants de fer et de
 cuivre. Les valeurs ne sont pas celles du jeu : le monde a la même allure, mais une graine
 ne redonne pas le même monde que dans Minecraft.
 
@@ -480,6 +505,12 @@ server.command("bonjour", "dit bonjour", function(args)
 end)
 ```
 
+**Jamais programmé ?** Le guide **[Créer un plugin sans savoir programmer](docs/DEBUTER.md)**
+part de zéro : les bases du Lua, les outils simples (`server.broadcast`, couleurs
+`TextFormat`, minuteries en secondes, `server.saveData`, réglages `config.yml`) et cinq
+plugins prêts à copier dans [`docs/exemples`](docs/exemples) (bienvenue et kit, `/spawn`,
+annonces automatiques, zone protégée, points).
+
 La documentation complète (événements, commandes, minuteries, fichiers, exemples)
 est dans **[docs/PLUGINS.md](docs/PLUGINS.md)**.
 
@@ -495,7 +526,7 @@ est dans **[docs/PLUGINS.md](docs/PLUGINS.md)**.
 | `src/block/` | `Block` (base de tous les blocs), types de blocs (`types.rs`), registre `VanillaBlocks` couvrant tous les blocs du jeu |
 | `src/tile/` | `Tile` (base des données attachées aux blocs), `ContainerTile`, `FurnaceTile`, `SignTile`, `TileMap` et sa sauvegarde |
 | `src/item/` | `Item` (base de tous les objets), `Tool`, `Armor`, `Food`, `VanillaItems` ; `ItemStack` (une pile) |
-| `src/world/` | `World` : le monde, ses blocs modifiés et leur sauvegarde ; `vanilla.rs` : terrain à la manière du jeu ; `structures.rs` : villages, temples, mines, butin, `/locate` ; `liquid.rs` : écoulement de l'eau et de la lave ; `generator.rs` : terrain plat, premier terrain, choix du générateur |
+| `src/world/` | `World` : le monde, ses blocs modifiés et leur sauvegarde ; `vanilla.rs` : terrain à la manière du jeu ; `structures.rs` : villages, temples, mines, avant-postes, cités antiques, ruines de piste, chambres des épreuves, butin, `/locate` ; `liquid.rs` : écoulement de l'eau et de la lave ; `generator.rs` : terrain plat, premier terrain, choix du générateur |
 | `src/permission/` | `Permission`, règles par défaut, liste des opérateurs |
 | `src/utils/` | journal (`log.rs`), `server.properties` (`config.rs`), JSON et base64 (`json.rs`), YAML (`yaml.rs`), compression et décompression (`deflate.rs`, `inflate.rs`) |
 | `src/security/` | authentification Xbox (`auth.rs`), SHA-2 et signatures (`crypto.rs`), clé du serveur (`identity.rs`) |
@@ -517,8 +548,7 @@ Tests : `cargo test`
 1. **Le jeu** : animaux et monstres (apparition selon le biome, déplacements, butin),
    faim qui baisse, expérience, temps de minage selon l'outil, jour et nuit, météo.
 2. **Le monde** : Nether et End, gravité du sable et du gravier, redstone (le piège du
-   temple de la jungle en a besoin), autres structures (avant-postes, épaves, cités
-   antiques…), chargement des mondes Minecraft (format LevelDB).
+   temple de la jungle en a besoin), autres structures (épaves, monuments, manoirs…), chargement des mondes Minecraft (format LevelDB).
 3. **Plugins** : coffres remplis par les générateurs, inventaires, entités.
 4. **Montée en charge** : mesure avec 1000 joueurs simulés sur une vraie machine.
 

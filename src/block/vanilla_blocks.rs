@@ -43,6 +43,7 @@ const NO_DROP: [&str; 30] = [
     "piston_arm_collision", "sticky_piston_arm_collision", "sweet_berry_bush",
 ];
 
+/// Outil le plus rapide pour un bloc, deviné d'après son nom (pierre -> pioche, bois -> hache…).
 fn tool_for(short: &str) -> ToolType {
     let has = |list: &[&str]| list.iter().any(|w| short.contains(w));
     if short.contains("wool") || short == "web" || short == "cobweb" || short.contains("vine") {
@@ -211,6 +212,7 @@ fn renamed_drop(short: &str) -> (String, u8) {
     }
 }
 
+/// Ce que donne une plante cultivée.
 fn crop_drop(short: &str) -> Option<&'static str> {
     Some(match short {
         "wheat" => "wheat_seeds",
@@ -414,6 +416,7 @@ impl BlockRegistry {
         self.blocks.get(name).map(|b| b.as_ref())
     }
 
+    /// Nombre de blocs connus, et parcours de tous.
     pub fn len(&self) -> usize {
         self.blocks.len()
     }

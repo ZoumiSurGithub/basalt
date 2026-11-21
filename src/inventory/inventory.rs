@@ -10,6 +10,7 @@ pub trait Inventory {
 
     /// Emplacements, dans l'ordre.
     fn slots(&self) -> &[ItemStack];
+    /// Cases de l'inventaire, à lire et à modifier.
     fn slots_mut(&mut self) -> &mut [ItemStack];
 
     /// Règle propre à l'inventaire : cet objet peut-il aller à cet emplacement ?
@@ -25,6 +26,7 @@ pub trait Inventory {
 
     // ---- hérité par tous les inventaires ----------------------------------------
 
+    /// Nombre de cases.
     fn size(&self) -> usize {
         self.slots().len()
     }
@@ -43,6 +45,7 @@ pub trait Inventory {
         true
     }
 
+    /// Vide une case, ou toutes.
     fn clear(&mut self, slot: usize) -> bool {
         self.set_item(slot, ItemStack::EMPTY)
     }
@@ -58,10 +61,12 @@ pub trait Inventory {
         self.slots().iter().enumerate().filter(|(_, s)| !s.is_empty()).map(|(i, s)| (i, *s)).collect()
     }
 
+    /// Première case vide.
     fn first_empty(&self) -> Option<usize> {
         self.slots().iter().position(|s| s.is_empty())
     }
 
+    /// Rien dans l'inventaire ?
     fn is_empty(&self) -> bool {
         self.slots().iter().all(|s| s.is_empty())
     }
@@ -71,6 +76,7 @@ pub trait Inventory {
         self.slots().iter().filter(|s| !s.is_empty() && s.id == id).map(|s| s.count as u32).sum()
     }
 
+    /// Au moins `count` objets de ce type ?
     fn contains(&self, id: i16, count: u32) -> bool {
         self.count(id) >= count
     }

@@ -11,6 +11,7 @@ static STOP: AtomicBool = AtomicBool::new(false);
 /// Arrêt propre sur Ctrl+C / SIGTERM (Unix). Sous Windows, utilisez la commande `stop`.
 #[cfg(unix)]
 fn install_signals() {
+    /// Ctrl+C ou arrêt du système : le serveur s'arrête proprement au tick suivant.
     extern "C" fn on_signal(_: i32) {
         STOP.store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -23,9 +24,11 @@ fn install_signals() {
     }
 }
 
+/// Autres systèmes : pas de gestion des signaux.
 #[cfg(not(unix))]
 fn install_signals() {}
 
+/// Lit server.properties, démarre le serveur et la console, puis tourne jusqu'à l'arrêt.
 fn main() {
     if std::env::args().any(|a| a == "--version" || a == "-V") {
         println!("basalt {} {}", basalt::VERSION, option_env!("BASALT_BUILD").unwrap_or(""));

@@ -33,6 +33,7 @@ struct Octaves {
 }
 
 impl Octaves {
+    /// Couches de bruit : fréquence doublée et amplitude réduite à chaque octave.
     fn new(seed: u64, salt: u64, first: i32, amps: &[f64]) -> Octaves {
         let n = amps.len() as i32;
         let mut amplitude = 2f64.powi(n - 1) / (2f64.powi(n) - 1.0);
@@ -46,6 +47,7 @@ impl Octaves {
         Octaves { layers }
     }
 
+    /// Somme des octaves en ce point.
     fn sample(&self, x: f64, y: f64, z: f64) -> f64 {
         self.layers.iter().map(|(p, f, a)| p.noise3(x * f, y * f, z * f) * a).sum()
     }
@@ -59,6 +61,7 @@ struct Normal {
 }
 
 impl Normal {
+    /// Deux séries d'octaves décalées, mélangées (comme NormalNoise du jeu).
     fn new(seed: u64, salt: u64, first: i32, amps: &[f64]) -> Normal {
         let nonzero: Vec<usize> = amps.iter().enumerate().filter(|(_, a)| **a != 0.0).map(|(i, _)| i).collect();
         let span = (nonzero.last().unwrap_or(&0) - nonzero.first().unwrap_or(&0)) as f64;
@@ -66,6 +69,7 @@ impl Normal {
         Normal { a: Octaves::new(seed, salt * 2, first, amps), b: Octaves::new(seed, salt * 2 + 1, first, amps), factor: (1.0 / 6.0) / deviation }
     }
 
+    /// Valeur du bruit en ce point.
     fn sample(&self, x: f64, y: f64, z: f64) -> f64 {
         const K: f64 = 1.018_126_888_217_522_7;
         (self.a.sample(x, y, z) + self.b.sample(x * K, y * K, z * K)) * self.factor
@@ -135,6 +139,7 @@ pub enum B {
 }
 
 impl B {
+    /// Identifiant du biome envoyé au client.
     pub fn id(self) -> u8 {
         self as u8
     }
@@ -144,6 +149,7 @@ impl B {
         matches!(self, B::SnowyPlains | B::SnowyTaiga | B::IceSpikes | B::SnowyBeach | B::Grove | B::SnowySlopes | B::JaggedPeaks | B::FrozenPeaks | B::FrozenRiver | B::FrozenOcean | B::DeepFrozenOcean)
     }
 
+    /// Biomes océaniques et badlands (règles de surface particulières).
     fn ocean(self) -> bool {
         matches!(self, B::Ocean | B::DeepOcean | B::WarmOcean | B::LukewarmOcean | B::DeepLukewarmOcean | B::ColdOcean | B::DeepColdOcean | B::FrozenOcean | B::DeepFrozenOcean)
     }
@@ -309,6 +315,7 @@ impl Climate {
     }
 }
 
+/// Rang de `value` parmi des seuils croissants.
 fn index(value: f64, bounds: &[f64]) -> usize {
     bounds.iter().take_while(|b| value > **b).count()
 }
@@ -604,6 +611,7 @@ fn spline(x: f64, points: &[(f64, f64)]) -> f64 {
 }
 
 impl Vanilla {
+    /// Générateur vanilla pour cette graine : tous les bruits sont tirés d'elle.
     pub fn new(seed: u64) -> Vanilla {
         Vanilla {
             seed,
@@ -630,11 +638,19 @@ impl Vanilla {
         }
     }
 
+    /// Graine du monde.
     pub fn seed(&self) -> u64 {
         self.seed
     }
 
     /// Biome de surface d'une colonne, sans calculer sa hauteur (rapide).
+    /// Le deep dark s'étend-il sous cette colonne (vers y = -51) ?
+    pub fn deep_dark_at(&self, x: i32, z: i32) -> bool {
+        let c = self.blended_climate(x, z);
+        c.erosion < -0.225 && c.continentalness > 0.0
+    }
+
+    /// Biome de surface d'une colonne, comme la génération le calcule.
     pub fn surface_biome_at(&self, x: i32, z: i32) -> B {
         surface_biome(&self.blended_climate(x, z))
     }
@@ -669,6 +685,7 @@ impl Vanilla {
         )
     }
 
+    /// Climat exact en un point (les colonnes du chunk utilisent la version interpolée).
     fn climate(&self, x: i32, z: i32) -> Climate {
         // Décalage des coordonnées (comme le jeu) : des frontières moins régulières
         let (fx, fz) = (x as f64, z as f64);
@@ -1970,6 +1987,7 @@ fn blob(blocks: &mut [u32], at: impl Fn(usize, usize, i32) -> usize, center: (i3
     }
 }
 
+/// Chunks sur le bord du carré de rayon r (r = 0 : le centre seul).
 fn ring(r: i32) -> Vec<(i32, i32)> {
     if r == 0 {
         return vec![(0, 0)];

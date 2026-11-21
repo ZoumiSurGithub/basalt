@@ -8,6 +8,7 @@ struct Bits<'a> {
 }
 
 impl<'a> Bits<'a> {
+    /// Lit `n` bits, poids faible d'abord.
     fn bits(&mut self, n: u32) -> Result<u32, &'static str> {
         while self.cnt < n {
             let b = *self.data.get(self.pos).ok_or("flux compressé tronqué")?;
@@ -28,6 +29,7 @@ struct Huffman {
 }
 
 impl Huffman {
+    /// Table de décodage d'après les longueurs des codes.
     fn new(lengths: &[u8]) -> Huffman {
         let mut count = [0u16; 16];
         for &l in lengths {
@@ -47,6 +49,7 @@ impl Huffman {
         Huffman { count, symbol }
     }
 
+    /// Décode un symbole, bit par bit.
     fn decode(&self, b: &mut Bits) -> Result<u16, &'static str> {
         let (mut code, mut first, mut index) = (0i32, 0i32, 0i32);
         for len in 1..16 {
@@ -85,6 +88,7 @@ const DEXT: [u8; 30] = [
 ];
 const ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
 
+/// Décode un bloc compressé jusqu'à son symbole de fin.
 fn codes(
     b: &mut Bits,
     out: &mut Vec<u8>,

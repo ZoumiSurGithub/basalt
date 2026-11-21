@@ -3,6 +3,10 @@
 Les plugins de Basalt sont des scripts **Lua 5.4**. Ce guide décrit tout ce qu'un
 plugin peut faire aujourd'hui, avec des exemples vérifiés sur le serveur.
 
+> **Vous débutez ?** Commencez par [Créer un plugin sans savoir programmer](DEBUTER.md) :
+> les bases du Lua, les outils simples (messages, couleurs, minuteries en secondes, données
+> enregistrées, `config.yml`) et des plugins prêts à l'emploi dans [`exemples`](exemples).
+
 - [Premier plugin](#premier-plugin)
 - [Où placer un plugin](#où-placer-un-plugin)
 - [Cycle de vie](#cycle-de-vie)
@@ -175,7 +179,11 @@ le même événement.
 | `block_click` | `joueur`, `x`, `y`, `z`, `bloc` | un joueur clique sur un bloc (pour poser, ouvrir…) ; répondre `false` annule le geste |
 | `death` | `joueur` | le joueur vient de mourir (chute, coup, `/kill`, vie mise à 0 par un plugin) |
 | `respawn` | `joueur` | le joueur a cliqué sur « Réapparaître » ; il est de retour au point de réapparition, en pleine santé |
+| `quit` | `joueur` | le joueur est parti (comme `disconnect`, avec l'objet joueur) |
 | `disconnect` | `adresse`, `nom` | la connexion est fermée ; `nom` vaut `nil` si le client n'avait pas atteint le login |
+
+Un nom d'événement inconnu est signalé dans la console, avec le nom le plus proche
+(`événement inconnu « joinn » (vouliez-vous dire « join » ?)`).
 
 ## Écouteurs d'événements (comme PocketMine)
 
@@ -203,7 +211,7 @@ end
 Protection.priorities = { onBlockBreak = EventPriority.HIGH }
 Protection.handleCancelled = { onBlockBreak = false }
 
-server.getPluginManager():registerEvents(Protection)   -- ou server.registerEvents(Protection)
+server.registerEvents(Protection)
 ```
 
 Une méthode peut aussi porter le nom exact de l'événement (`function Protection:BlockBreakEvent(event)`).
@@ -250,9 +258,9 @@ pour ce mécanisme.
 
 ## L'objet joueur
 
-Les événements `load`, `join`, `chat`, `save`, `death` et `respawn` reçoivent un objet `joueur`. On peut aussi
-l'obtenir avec `server.getPlayer(pseudo)` (ou `nil` s'il n'est pas en jeu) et
-`server.getOnlinePlayers()` (la liste de tous les joueurs en jeu).
+Les événements `load`, `join`, `quit`, `chat`, `save`, `death` et `respawn` reçoivent un objet `joueur`. On peut aussi
+l'obtenir avec `server.getPlayer(pseudo)` (ou `nil` s'il n'est pas en jeu ; les majuscules
+ne comptent pas) et `server.getOnlinePlayers()` (la liste de tous les joueurs en jeu).
 
 | Lecture | Modification | Donnée |
 |---|---|---|
@@ -265,7 +273,7 @@ l'obtenir avec `server.getPlayer(pseudo)` (ou `nil` s'il n'est pas en jeu) et
 | `joueur:getFood()` | `joueur:setFood(n)` | faim, de 0 à 20 |
 | `joueur:getXpLevel()` | `joueur:setXpLevel(n)` | niveau d'expérience |
 | `joueur:getXpProgress()` | `joueur:setXpProgress(n)` | progression vers le niveau suivant, de 0 à 1 |
-| `joueur:getPosition()` → `x, y, z` | `joueur:teleport(x, y, z)` | position |
+| `joueur:getPosition()` → `x, y, z` | `joueur:teleport(x, y, z)` | position **des pieds** (`teleport(joueur:getPosition())` ne déplace pas) |
 | `joueur:getFirstPlayed()` | — | première visite (secondes, comme `server.time()`) |
 | `joueur:isOnline()` | — | `true` tant que le joueur est en jeu |
 
@@ -322,7 +330,7 @@ l'identique. Un nom désigne le bloc dans son état par défaut.
 La lecture voit le monde tel qu'il était au début de l'appel. Les blocs posés sont appliqués
 par le serveur à la fin de l'appel (envoyés aux joueurs bloc par bloc s'ils sont peu nombreux,
 sinon par chunks entiers) et visibles dès l'appel suivant. Pour un très grand nombre de blocs,
-posez-les par tranches avec `server.every(1, …)` : c'est ce que fait le plugin EasyEdit fourni
+posez-les par tranches avec `server.everySeconds(0.05, …)` (à chaque tick) : c'est ce que fait le plugin EasyEdit fourni
 (`plugins/EasyEdit`), écrit entièrement avec ces fonctions, à lire comme exemple.
 
 Comme WorldEdit dans le jeu, les blocs posés par un plugin ne déclenchent pas l'écoulement
@@ -342,9 +350,14 @@ server.command("expulser", "expulse un joueur : expulser <pseudo> [raison]", fun
     server.warn("usage : expulser <pseudo> [raison]")
     return
   end
+  local cible = server.getPlayer(args[1])
+  if not cible then
+    server.warn(args[1] .. " n'est pas en jeu")
+    return
+  end
   local raison = table.concat(args, " ", 2)
   if raison == "" then raison = "Expulsé par un administrateur." end
-  server.kick(args[1], raison)
+  cible:kick(raison)
 end)
 ```
 
@@ -360,24 +373,24 @@ end)
 
 | Fonction | Effet |
 |---|---|
-| `server.after(ticks, fonction)` | appelle `fonction` une fois, dans `ticks` ticks |
-| `server.every(ticks, fonction)` | appelle `fonction` tous les `ticks` ticks |
+| `server.afterSeconds(secondes, fonction)` | appelle `fonction` une fois, dans tant de secondes (décimales permises) |
+| `server.everySeconds(secondes, fonction)` | appelle `fonction` toutes les tant de secondes |
 
-`ticks` doit être un entier d'au moins 1. Repères : 20 = 1 seconde, 1200 = 1 minute.
+Le serveur tourne à 20 ticks par seconde : une durée est arrondie au tick (0,05 s) le plus
+proche, et vaut au moins un tick.
+
+Chacune renvoie une minuterie : `minuterie:stop()` l'arrête, `minuterie:isRunning()` dit si
+elle tourne encore. Une minuterie répétée reçoit aussi elle-même en argument.
 
 ```lua
-server.every(1200, function()
-  server.log(#server.players() .. " joueur(s) connecté(s)")
+local compte = server.everySeconds(60, function()
+  server.log(#server.getOnlinePlayers() .. " joueur(s) connecté(s)")
 end)
-```
+-- plus tard : compte:stop()
 
-Une minuterie ne peut pas être annulée. Pour la suspendre, testez une variable :
-
-```lua
-local actif = true
-server.every(200, function()
-  if not actif then return end
-  -- travail périodique
+server.everySeconds(1, function(minuterie)
+  -- s'arrête d'elle-même quand le serveur est vide
+  if #server.getOnlinePlayers() == 0 then minuterie:stop() end
 end)
 ```
 
@@ -399,7 +412,7 @@ plugin ne leur donne que leur direction.
 ```lua
 server.command("garde", function(args, joueur)
   local x, y, z = joueur:getPosition()
-  server.spawnNpc("Garde", x, y - 1.62, z) -- getPosition donne la hauteur des yeux
+  server.spawnNpc("Garde", x, y, z)
   server.walkNpc("Garde", 0, 2)            -- vers le sud, 2 blocs par seconde
 end)
 ```
@@ -420,33 +433,25 @@ Tout passe par la table globale `server`.
 |---|---|
 | `server.on(événement, fonction)` | s'abonner à un événement |
 | `server.command(nom, description, fonction)` | déclarer une commande console |
-| `server.after(ticks, fonction)` | minuterie à déclenchement unique |
-| `server.every(ticks, fonction)` | minuterie répétée |
 | `server.log(texte)` | écrire une ligne d'information, préfixée du nom du plugin |
+| `server.broadcast(texte)` | envoyer un message à tous les joueurs en jeu |
+| `server.getPlayer(pseudo)` | le joueur en jeu (majuscules indifférentes), ou `nil` |
+| `server.getOnlinePlayers()` | la liste des joueurs en jeu (objets joueur) |
+| `server.afterSeconds(s, f)`, `server.everySeconds(s, f)` | minuteries en secondes (voir [Minuteries](#minuteries)) |
+| `server.saveData(nom, valeur)`, `server.loadData(nom, défaut)` | données enregistrées (voir [Fichiers et configuration](#fichiers-et-configuration)) |
+| `server.getConfig(défauts)` | réglages du `config.yml` du plugin |
 | `server.warn(texte)` | écrire un avertissement |
-| `server.players()` | liste des pseudos connectés (login accepté), par exemple `{"Steve", "Alex"}` |
-| `server.kick(pseudo, raison)` | expulser un joueur ; `raison` est facultative |
-| `server.position(pseudo)` | position du joueur : renvoie `x, y, z`, ou rien s'il est inconnu |
-| `server.motd()` | nom du serveur affiché dans la liste des serveurs |
-| `server.set_motd(texte)` | changer ce nom (64 caractères au plus) |
+| `server.getMotd()` | nom du serveur affiché dans la liste des serveurs |
+| `server.setMotd(texte)` | changer ce nom (64 caractères au plus) |
 | `server.stop()` | arrêter le serveur proprement |
 
 Précisions :
 
-- `server.kick` cherche le pseudo exact, majuscules comprises. Un pseudo inconnu
-  est ignoré sans erreur.
-- `server.kick`, `server.set_motd` et `server.stop` prennent effet **quand votre
+- `joueur:kick`, `server.setMotd` et `server.stop` prennent effet **quand votre
   fonction se termine**, pas au milieu de son exécution.
-- `server.position` renvoie la dernière position acceptée par le serveur, mise à
+- `joueur:getPosition()` renvoie la dernière position acceptée par le serveur, mise à
   jour à chaque tick. Avec `movement-check=true` (par défaut), les déplacements
   impossibles sont refusés et n'apparaissent donc pas ici.
-
-  ```lua
-  local x, y, z = server.position("Steve")
-  if x then server.log(string.format("Steve est en %.1f, %.1f, %.1f", x, y, z)) end
-  ```
-- `server.players()` inclut les joueurs acceptés au login qui n'ont pas encore
-  fini d'apparaître dans le monde.
 
 ### Constantes
 
@@ -456,6 +461,8 @@ Précisions :
 | `server.game_version` | `"1.26.65"` | version du jeu annoncée par le serveur |
 | `server.protocol` | `2225` | protocole annoncé par le serveur |
 | `server.max_players` | `20` | nombre maximal de joueurs |
+| `TextFormat.GREEN`, `RED`, `GOLD`… | `"§a"` | couleurs et styles du chat, comme dans PocketMine (liste dans [le guide du débutant](DEBUTER.md#5-parler-aux-joueurs-en-couleurs)) |
+| `GameMode.SURVIVAL`, `CREATIVE`, `ADVENTURE`, `SPECTATOR` | `0` à `3` | modes de jeu |
 
 ## Sécurité : un plugin n'a que ce que le serveur lui donne
 
@@ -510,7 +517,6 @@ dossier, et tout nom qui en sort (`..`, chemin absolu) est refusé.
 | `server.time()` | heure en secondes (comme `os.time()`) |
 | `server.date(format)` | date en texte, par défaut `2026-11-18 23:30:00` |
 | `server.clock()` | temps processeur écoulé, pour mesurer une durée |
-| `server.connect(événement, fonction)` | autre nom de `server.on` |
 
 ```lua
 local vus = {}
@@ -523,6 +529,27 @@ server.on("join", function(joueur)
     server.append("vus.txt", nom .. "\n")
   end
 end)
+```
+
+**Données enregistrées.** Plus simple que `read` et `write` : `server.saveData(nom, valeur)`
+garde une valeur (nombre, texte, booléen ou table, même imbriquée) dans `<nom>.data`, et
+`server.loadData(nom, défaut)` la relit (ou renvoie `défaut` si rien n'a encore été
+enregistré). Le nom ne contient que des lettres, des chiffres, `_` et `-`.
+
+```lua
+local scores = server.loadData("scores", {})
+scores.Steve = (scores.Steve or 0) + 1
+server.saveData("scores", scores)
+```
+
+**Réglages (`config.yml`).** `server.getConfig(défauts)` renvoie les réglages du fichier
+`config.yml` du plugin, en le créant avec les valeurs par défaut s'il n'existe pas ; un
+réglage ajouté plus tard dans le code est ajouté au fichier sans toucher aux autres. Forme
+reconnue : `clé: valeur` par ligne (texte, nombre, `true`/`false`, liste `[a, b]`),
+commentaires après `#`.
+
+```lua
+local config = server.getConfig({ message = "Bienvenue !", rayon = 30 })
 ```
 
 Découper un plugin en plusieurs fichiers avec `require` (nom relatif au dossier du plugin) :
@@ -593,9 +620,14 @@ server.command("expulser", "expulse un joueur : expulser <pseudo> [raison]", fun
     server.warn("usage : expulser <pseudo> [raison]")
     return
   end
+  local cible = server.getPlayer(args[1])
+  if not cible then
+    server.warn(args[1] .. " n'est pas en jeu")
+    return
+  end
   local raison = table.concat(args, " ", 2)
   if raison == "" then raison = "Expulsé par un administrateur." end
-  server.kick(args[1], raison)
+  cible:kick(raison)
 end)
 ```
 

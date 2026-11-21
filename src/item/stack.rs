@@ -16,10 +16,12 @@ pub struct ItemStack {
 impl ItemStack {
     pub const EMPTY: ItemStack = ItemStack { id: 0, count: 0, net_id: 0 };
 
+    /// Pile d'objets ; `net_id` l'identifie auprès du client.
     pub fn new(id: i16, count: u8, net_id: i32) -> ItemStack {
         ItemStack { id, count, net_id }
     }
 
+    /// Case vide ?
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }

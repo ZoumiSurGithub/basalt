@@ -212,6 +212,7 @@ fn sdp_candidates(sdp: &str) -> Vec<SocketAddr> {
 }
 
 impl Peer {
+    /// Nouvelle connexion WebRTC, en attente de son canal de données.
     fn new(key: SocketAddr, rtc: Rtc, locals: Vec<SocketAddr>, cpk: Option<String>, debug: bool, now: Instant) -> Peer {
         Peer {
             key,
@@ -318,6 +319,7 @@ impl Peer {
         }
     }
 
+    /// Événements de la connexion WebRTC : canal ouvert, message, fermeture.
     fn on_event(&mut self, event: Event, events: &mut Vec<RakEvent>) {
         match event {
             Event::ChannelOpen(id, label) => {
@@ -401,10 +403,12 @@ impl NetherNet {
         })
     }
 
+    /// Empreinte de la clé du serveur.
     pub fn key_fingerprint(&self) -> &str {
         self.identity.fingerprint()
     }
 
+    /// Nombre de connexions.
     pub fn len(&self) -> usize {
         self.peers.len()
     }
@@ -542,6 +546,7 @@ impl NetherNet {
         read
     }
 
+    /// Datagramme UDP reçu : rattaché à sa connexion par l'adresse, ou reconnu par STUN.
     fn on_datagram(&mut self, data: &[u8], source: SocketAddr, now: Instant, events: &mut Vec<RakEvent>) {
         // Session déjà associée à cette adresse, sinon celle qui reconnaît le paquet (STUN)
         let key = match self.by_remote.get(&source) {
@@ -658,6 +663,7 @@ impl NetherNet {
         self.by_remote.retain(|_, k| peers.contains_key(k));
     }
 
+    /// Cette adresse est-elle une connexion NetherNet ?
     pub fn has(&self, key: &SocketAddr) -> bool {
         self.peers.contains_key(key)
     }
@@ -728,6 +734,7 @@ impl NetherNet {
         }
     }
 
+    /// Ferme toutes les connexions et arrête les fils de préparation.
     pub fn shutdown(&mut self) {
         // Sans file de travail, les fils de préparation s'arrêtent
         self.jobs = None;

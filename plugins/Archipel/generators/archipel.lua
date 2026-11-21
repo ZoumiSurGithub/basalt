@@ -57,6 +57,7 @@ local function palm(chunk, x, y, z)
   end
 end
 
+-- Après le relief : sable des plages, herbe et palmiers.
 function gen.decorate(chunk)
   for x = 0, 15 do
     for z = 0, 15 do
