@@ -1321,11 +1321,17 @@ impl Server {
     /// Le cavalier descend (de lui-même, jeté par une monture sauvage, mort ou parti).
     pub(super) fn dismount(&mut self, addr: &SocketAddr) {
         let tick = self.tick + 1;
+        // Il descend debout à la place de sa monture : la position que donnait son jeu en selle
+        // est sous elle, dans le sol (enregistrée telle quelle, il reviendrait ailleurs)
+        let stand = self.clients.get(addr).and_then(|c| c.riding).and_then(|id| self.mobs.get(&id)).map(|m| (m.pos.0, m.pos.1 + crate::player::EYE_HEIGHT, m.pos.2));
         let (mob, player) = match self.clients.get_mut(addr) {
             Some(c) => match c.riding.take() {
                 // Sa position est de nouveau envoyée aux autres
                 Some(m) => {
                     c.moved_tick = tick;
+                    if let Some(p) = stand {
+                        c.pos = p;
+                    }
                     (m, c.id)
                 }
                 None => return,

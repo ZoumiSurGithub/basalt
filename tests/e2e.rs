@@ -2235,9 +2235,11 @@ fn leaving_while_riding_keeps_player_data() {
         }
     }
     assert!(seated, "Alex voit Steve sur le siège de l'âne");
-    // Puis il part
+    // Puis il part (son jeu le fait d'abord descendre, comme en vrai)
     steve.walk_to(3.5, 3.5);
     std::thread::sleep(Duration::from_millis(300));
+    steve.game(33, &[3, donkey, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], Some(0xff));
+    std::thread::sleep(Duration::from_millis(200));
     steve.send(&[0x15]);
     std::thread::sleep(Duration::from_millis(1500));
     stop.store(true, std::sync::atomic::Ordering::SeqCst);

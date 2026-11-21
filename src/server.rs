@@ -5351,12 +5351,21 @@ impl Server {
                         .filter(|d| d.has_pos && d.pos.0.abs() < 3.0e7 && d.pos.2.abs() < 3.0e7)
                         // Hauteur exacte, même dans un trou creusé sous le niveau du sol
                         .map(|d| (d.pos.0, d.pos.1.clamp(-64.0 + 1.62, 400.0), d.pos.2))
+                        // Un peu enfoncé (parti en selle, bloc posé depuis) : il remonte jusqu'à
+                        // 8 blocs pour trouver de la place, au même endroit
+                        .and_then(|p| {
+                            let (x, z) = (p.0.floor() as i32, p.2.floor() as i32);
+                            let feet = (p.1 - 1.62 + 0.01).floor() as i32;
+                            (0..=8).map(|up| feet + up).find(|&y| !self.blocks_movement(self.world.get(x, y, z)) && !self.blocks_movement(self.world.get(x, y + 1, z))).map(|y| {
+                                if y == feet {
+                                    p
+                                } else {
+                                    (p.0, y as f32 + 1.62, p.2)
+                                }
+                            })
+                        })
                         // Position enregistrée dans un autre monde (ou bouchée depuis) : un joueur
                         // n'apparaît jamais coincé dans la roche
-                        .filter(|p| {
-                            let (x, y, z) = (p.0.floor() as i32, (p.1 - 1.62 + 0.01).floor() as i32, p.2.floor() as i32);
-                            !self.blocks_movement(self.world.get(x, y, z)) && !self.blocks_movement(self.world.get(x, y + 1, z))
-                        })
                         .unwrap_or_else(|| self.spawn_point());
                     // Il regarde aussi dans la direction où il regardait en partant
                     let (yaw, pitch) = self.clients.get(&addr).and_then(|c| c.data.as_ref()).map(|d| d.rotation).unwrap_or((0.0, 0.0));
