@@ -1313,11 +1313,21 @@ impl Server {
         self.mob_changed(id);
     }
 
+    /// Siège d'une monture (pour montrer son cavalier aux autres joueurs).
+    pub(super) fn mob_seat(&self, id: i64) -> Option<(f32, f32, f32)> {
+        self.mobs.get(&id).map(|m| m.species.seat())
+    }
+
     /// Le cavalier descend (de lui-même, jeté par une monture sauvage, mort ou parti).
     pub(super) fn dismount(&mut self, addr: &SocketAddr) {
+        let tick = self.tick + 1;
         let (mob, player) = match self.clients.get_mut(addr) {
             Some(c) => match c.riding.take() {
-                Some(m) => (m, c.id),
+                // Sa position est de nouveau envoyée aux autres
+                Some(m) => {
+                    c.moved_tick = tick;
+                    (m, c.id)
+                }
                 None => return,
             },
             None => return,

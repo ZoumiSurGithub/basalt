@@ -24,6 +24,7 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   reproduisent (carottes et pommes dorées, bottes de foin pour les lamas). Une selle
   posée sur un cheval, un âne ou une mule apprivoisés permet de les diriger ; elle tombe
   à leur mort.
+  Les autres joueurs voient le cavalier assis sur sa monture.
 - Commande `/summon <animal> [position] [minecraft:entity_born]`.
 - Guide d'installation pas à pas pour Windows et Linux : `docs/INSTALLER.md`.
 - `/timings report` indique l'état de la machine pendant les mesures (processeur, temps

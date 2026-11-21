@@ -1448,6 +1448,8 @@ impl Server {
             skin: Option<Arc<crate::player::Skin>>,
             mode: i32,
             npc: bool,
+            /// En selle : la monture et la position du siège (sa position suit la monture)
+            riding: Option<(i64, (f32, f32, f32))>,
         }
         let refresh = self.tick % VISIBILITY_EVERY == 0;
         let mut players: Vec<Seen> = Vec::new();
@@ -1472,6 +1474,7 @@ impl Server {
                     skin: if refresh { c.skin.clone() } else { None },
                     mode: c.mode.bedrock_id(),
                     npc: false,
+                    riding: c.riding.and_then(|m| self.mob_seat(m).map(|seat| (m, seat))),
                     held: {
                         let h = c.inv.held();
                         (h.id, h.count.min(1), if h.is_empty() { 0 } else { self.block_for(h.id).unwrap_or(0) })
@@ -1490,6 +1493,7 @@ impl Server {
                 yaw: n.yaw,
                 head_yaw: n.yaw,
                 moved_tick: n.moved_tick,
+                riding: None,
                 name: if refresh { n.name.clone() } else { String::new() },
                 sneaking: false,
                 sprinting: false,
@@ -1584,6 +1588,15 @@ impl Server {
                                     if o.held.1 > 0 && !no_equipment {
                                         packets.push((bedrock::ID_MOB_EQUIPMENT, bedrock::mob_equipment(o.id, o.held, 0)));
                                     }
+                                    // Déjà en selle : assis sur sa monture
+                                    if let Some((mount, seat)) = o.riding {
+                                        packets.push((bedrock::ID_SET_ACTOR_LINK, bedrock::set_actor_link(mount, o.id, bedrock::LINK_RIDER, true)));
+                                        let flags = Self::remote_flags(o.sneaking, o.sprinting) | bedrock::FLAG_RIDING;
+                                        packets.push((
+                                            bedrock::ID_SET_ACTOR_DATA,
+                                            bedrock::set_actor_data(o.id, &[(0, bedrock::Meta::Long(flags)), (bedrock::META_SEAT_POSITION, bedrock::Meta::Vec3(seat.0, seat.1, seat.2))]),
+                                        ));
+                                    }
                                 }
                             }
                         }
@@ -1601,7 +1614,9 @@ impl Server {
                 for id in c.visible.iter() {
                     if let Some(&i) = by_id.get(id) {
                         let o = &players[i];
-                        if o.moved_tick > c.synced_tick {
+                        // En selle, il suit sa monture chez les autres : sa propre position
+                        // (celle que donne son jeu) le placerait sous elle
+                        if o.moved_tick > c.synced_tick && o.riding.is_none() {
                             if move_player_known(c.protocol) {
                                 packets.push((
                                     bedrock::ID_MOVE_PLAYER,
