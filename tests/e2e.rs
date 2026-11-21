@@ -1121,7 +1121,7 @@ fn a_chest_opens_and_keeps_what_is_put_in_it() {
     expect_text(&mut steve, "ticks/s");
     expect_text(&mut steve, "Joueurs : §f1/");
     command(&mut steve, "/version");
-    expect_text(&mut steve, "Basalt 0.1.0");
+    expect_text(&mut steve, &format!("Basalt {}", env!("CARGO_PKG_VERSION")));
     // Mesures de temps : rien sans les avoir allumées, puis un résumé et un fichier de rapport
     command(&mut steve, "/timings on");
     expect_text(&mut steve, "Mesures allumées");

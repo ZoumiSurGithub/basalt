@@ -141,7 +141,7 @@ if [ -d "$SRC/plugins" ]; then
         cp -r "$d". "plugins/$(basename "$d")/"
     done
 fi
-for f in start.sh update.sh README.md LICENSE LICENCE-Lua.txt liblua5.4.so.0 basalt.service; do
+for f in start.sh update.sh README.md CHANGELOG.md LICENSE LICENCE-Lua.txt liblua5.4.so.0 basalt.service; do
     [ -f "$SRC/$f" ] && cp "$SRC/$f" "./$f"
 done
 [ -f start.sh ] && chmod 755 start.sh
@@ -199,6 +199,20 @@ EOF
             warn "Impossible d'extraire les plans (installez unzip : sudo apt install unzip)."
         fi
         rm -f "$TMP/bds.zip"
+    fi
+fi
+
+# Nouveautés de la version installée (sa section du journal des versions)
+if [ -f CHANGELOG.md ]; then
+    case "$VERSION" in
+        dev-latest) SECTION="Non publié" ;;
+        *) SECTION="${VERSION#v}" ;;
+    esac
+    NOTES=$(awk -v s="$SECTION" 'index($0, "## [" s "]") == 1 { on = 1; next } /^## \[/ { on = 0 } on' CHANGELOG.md | grep -v '^[[:space:]]*$' | head -n 25 || true)
+    if [ -n "$NOTES" ]; then
+        say "Nouveautés :"
+        printf '%s\n' "$NOTES"
+        say "(tout le journal : CHANGELOG.md)"
     fi
 fi
 

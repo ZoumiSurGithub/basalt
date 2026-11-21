@@ -27,3 +27,4 @@ data/*/packets/available_commands.bin
 # Plans de structures de Mojang (non publiés)
 /structures/
 /structures.zip
+notes.md

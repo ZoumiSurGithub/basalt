@@ -652,6 +652,27 @@ Tests : `cargo test`
 3. **Plugins** : coffres remplis par les générateurs, inventaires, entités.
 4. **Montée en charge** : mesure avec 1000 joueurs simulés sur une vraie machine.
 
+## Publier une version
+
+Les changements sont notés au fil de l'eau dans [CHANGELOG.md](CHANGELOG.md), section
+« Non publié » (catégories Ajouté, Modifié, Corrigé, Retiré). Pour publier :
+
+```sh
+sh release.sh 0.0.2       # sous Windows : depuis « Git Bash »
+git add CHANGELOG.md Cargo.toml Cargo.lock
+git commit -m "Version 0.0.2"
+git push
+git tag v0.0.2
+git push origin v0.0.2
+```
+
+`release.sh` date la section « Non publié » sous le numéro donné, en ouvre une nouvelle et
+met à jour le numéro de version du programme. À l'arrivée de l'étiquette, GitHub compile
+Basalt et crée la page de la version avec ces notes ; la compilation s'arrête si
+l'étiquette ne correspond pas au numéro de `Cargo.toml` ou si le journal n'a pas de
+section pour elle. La préversion de la branche `dev` affiche la section « Non publié ».
+`update.sh` montre les nouveautés de la version qu'il vient d'installer.
+
 ## Licence
 
 MIT

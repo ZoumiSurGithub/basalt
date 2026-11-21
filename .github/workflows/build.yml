@@ -37,7 +37,7 @@ jobs:
       - name: Archive
         run: |
           mkdir basalt
-          cp -r target/release/basalt plugins data docs README.md LICENSE basalt.service start.sh update.sh basalt/
+          cp -r target/release/basalt plugins data docs README.md CHANGELOG.md LICENSE basalt.service start.sh update.sh basalt/
           # Lua 5.4 est livre avec le serveur : rien a installer sur la machine d'arrivee
           cp -L /usr/lib/x86_64-linux-gnu/liblua5.4.so.0 basalt/liblua5.4.so.0
           cp /usr/share/doc/liblua5.4-0/copyright basalt/LICENCE-Lua.txt
@@ -52,11 +52,21 @@ jobs:
           path: |
             basalt-linux-x64.tar.gz
             basalt-linux-x64.tar.gz.sha256
+      # Notes de la version : sa section de CHANGELOG.md (la compilation echoue si elle
+      # manque, ou si l'etiquette ne correspond pas a la version de Cargo.toml)
+      - name: Notes de version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: sh .github/notes.sh "${GITHUB_REF_NAME}"
+      - name: Notes de la branche dev
+        if: github.ref == 'refs/heads/dev'
+        run: sh .github/notes.sh dev
       # Publiee des que Linux est pret, sans attendre Windows
       - name: Publication
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          name: Basalt ${{ github.ref_name }}
+          body_path: notes.md
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             basalt-linux-x64.tar.gz
@@ -69,7 +79,7 @@ jobs:
         with:
           tag_name: dev-latest
           name: Version de développement (branche dev)
-          body: "Dernier envoi sur la branche dev (${{ github.sha }}). Remplacée à chaque envoi."
+          body_path: notes.md
           prerelease: true
           files: |
             basalt-linux-x64.tar.gz
@@ -100,7 +110,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory basalt | Out-Null
-          Copy-Item target\release\basalt.exe, lua54.dll, README.md, LICENSE basalt\
+          Copy-Item target\release\basalt.exe, lua54.dll, README.md, CHANGELOG.md, LICENSE basalt\
           Copy-Item plugins basalt\plugins -Recurse
           Copy-Item data basalt\data -Recurse
           Compress-Archive -Path basalt\* -DestinationPath basalt-windows-x64.zip
@@ -108,10 +118,16 @@ jobs:
         with:
           name: basalt-windows-x64
           path: basalt-windows-x64.zip
+      - name: Notes de version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: sh .github/notes.sh "${GITHUB_REF_NAME}"
       - name: Publication
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          name: Basalt ${{ github.ref_name }}
+          body_path: notes.md
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: basalt-windows-x64.zip
       - name: Publication de la branche dev
