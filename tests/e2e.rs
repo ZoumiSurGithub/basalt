@@ -2243,9 +2243,10 @@ fn leaving_while_riding_keeps_player_data() {
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = handle.join();
     let saved = basalt::player::PlayerData::load(&dir, "Steve").expect("fichier lisible").expect("Steve enregistré");
-    // Debout à la place de l'âne (invoqué en -1,5 ; -60 ; -1,5), pas là où son jeu le disait
+    // Debout à la place de l'âne (invoqué en -1,5 ; -60 ; -1,5, il a pu faire quelques pas
+    // avant qu'on monte), pas là où son jeu le disait (3,5 ; 3,5)
     let p = saved.human.pos;
-    assert!((p.0 + 1.5).abs() < 0.6 && (p.2 + 1.5).abs() < 0.6 && (p.1 - (-60.0 + 1.62)).abs() < 0.6, "position enregistrée : {:?}", p);
+    assert!((p.0 + 1.5).abs() < 2.0 && (p.2 + 1.5).abs() < 2.0 && (p.1 - (-60.0 + 1.62)).abs() < 0.6, "position enregistrée : {:?}", p);
     assert!(saved.items.iter().any(|i| i.2.contains("diamond")), "ses objets sont gardés : {:?}", saved.items);
     let _ = std::fs::remove_dir_all(&dir);
 }
