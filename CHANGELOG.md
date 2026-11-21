@@ -23,6 +23,7 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Corrigé
 
+- Les lapins avaient la taille d'un mouton : ils ont maintenant celle du jeu (bébés compris).
 - À-coups du serveur : un animal au bord d'une zone pas encore générée faisait générer
   le terrain dans la boucle du jeu (jusqu'à plusieurs dixièmes de seconde avec une
   grande structure) ; les plans de structures récents ne sont plus tous oubliés d'un

@@ -56,6 +56,16 @@ impl Species {
             Species::Rabbit => (0.4, 0.5),
         }
     }
+    /// Taille d'affichage (« minecraft:scale » des fichiers du jeu) : le lapin est un petit
+    /// modèle réduit (0,6 adulte, 0,4 bébé), les autres bébés font moitié.
+    fn scale(self, baby: bool) -> f32 {
+        match (self, baby) {
+            (Species::Rabbit, false) => 0.6,
+            (Species::Rabbit, true) => 0.4,
+            (_, true) => 0.5,
+            (_, false) => 1.0,
+        }
+    }
     /// Vitesse de marche (blocs par tick)
     fn speed(self) -> f32 {
         match self {
@@ -342,11 +352,10 @@ impl Server {
     fn mob_meta(m: &Mob) -> Vec<(u32, bedrock::Meta)> {
         let (w, h) = m.size();
         let mut meta = bedrock::mob_metadata(w, h, m.variant, m.color, m.flags());
-        if m.baby() {
-            for (k, v) in meta.iter_mut() {
-                if *k == 38 {
-                    *v = bedrock::Meta::Float(0.5);
-                }
+        let scale = m.species.scale(m.baby());
+        for (k, v) in meta.iter_mut() {
+            if *k == 38 {
+                *v = bedrock::Meta::Float(scale);
             }
         }
         meta
@@ -361,7 +370,7 @@ impl Server {
     /// tondu, amoureux).
     fn mob_changed(&mut self, id: i64) {
         let Some(m) = self.mobs.get(&id) else { return };
-        let scale = if m.baby() { 0.5 } else { 1.0 };
+        let scale = m.species.scale(m.baby());
         let (w, h) = m.size();
         let packet = bedrock::set_actor_data(id, &[(0, bedrock::Meta::Long(m.flags())), (38, bedrock::Meta::Float(scale)), (53, bedrock::Meta::Float(w)), (54, bedrock::Meta::Float(h))]);
         self.send_to_viewers(id, bedrock::ID_SET_ACTOR_DATA, &packet);
