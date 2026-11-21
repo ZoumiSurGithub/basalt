@@ -359,6 +359,14 @@ impl Mob {
             (w, h)
         }
     }
+    /// Boîte annoncée au jeu (données 53 et 54) : celle des fichiers du jeu, avant la taille
+    /// d'affichage, que le jeu applique lui-même. Réduite ici aussi, celle d'un petit (ou d'un
+    /// lapin) était réduite deux fois : trop petite pour le viser.
+    fn hitbox(&self) -> (f32, f32) {
+        let (w, h) = self.species.size();
+        let adult = self.species.scale(false);
+        (w / adult, h / adult)
+    }
 }
 
 /// Au plus tant de créatures en mémoire à la fois (au-delà, les terres neuves n'en reçoivent
@@ -742,7 +750,7 @@ impl Server {
 
     /// Données d'entité d'une créature (taille, couleur, bébé, tondu…).
     fn mob_meta(m: &Mob, holder: i64) -> Vec<(u32, bedrock::Meta)> {
-        let (w, h) = m.size();
+        let (w, h) = m.hitbox();
         let mut meta = bedrock::mob_metadata(w, h, m.variant, m.color, m.flags());
         let scale = m.species.scale(m.baby());
         for (k, v) in meta.iter_mut() {
@@ -777,7 +785,7 @@ impl Server {
     fn mob_changed(&mut self, id: i64) {
         let Some(m) = self.mobs.get(&id) else { return };
         let scale = m.species.scale(m.baby());
-        let (w, h) = m.size();
+        let (w, h) = m.hitbox();
         let holder = self.holder_id(m);
         let packet = bedrock::set_actor_data(
             id,
@@ -1213,12 +1221,26 @@ impl Server {
                     Species::Mule => variant = 0,
                     _ => {}
                 }
+                // Qualités des parents (montures) : le petit tient de leur moyenne et d'un tirage
+                let stats = |s: &Self, id: i64| s.mobs.get(&id).map(|m| (m.max_health, m.move_speed, m.jump)).unwrap_or((0.0, 0.0, 0.0));
+                let (pa, pb) = (stats(self, a.0), stats(self, b.0));
                 let baby = self.add_mob(kind, at);
                 if let Some(m) = self.mobs.get_mut(&baby) {
                     m.age = -GROW_TICKS;
                     m.color = color;
                     m.variant = variant;
                     m.mark = if kind == Species::Horse { mark } else { 0 };
+                    if kind.mount() {
+                        // Né de parents apprivoisés : apprivoisé lui aussi, comme dans le jeu
+                        m.tamed = true;
+                        if kind == Species::Horse {
+                            // (vie, vitesse, saut) : la moyenne des deux parents et d'un tirage
+                            m.max_health = ((pa.0 + pb.0 + m.max_health) / 3.0).round().clamp(15.0, 30.0);
+                            m.health = m.max_health;
+                            m.move_speed = ((pa.1 + pb.1 + m.move_speed) / 3.0).clamp(0.1125, 0.3375);
+                            m.jump = ((pa.2 + pb.2 + m.jump) / 3.0).clamp(0.4, 1.0);
+                        }
+                    }
                 }
                 self.send_to_viewers(a.0, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(a.0, bedrock::EVENT_LOVE_PARTICLES, 0));
                 // Un peu d'expérience pour l'éleveur, comme dans le jeu : pas encore gérée

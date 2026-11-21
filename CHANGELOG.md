@@ -62,6 +62,10 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Corrigé
 
+- Boîte de collision des petits et des lapins trop petite (réduite deux fois : par
+  Basalt puis par le jeu, qui applique lui-même la taille d'affichage).
+- Un poulain (ânon, mule, petit lama) naît apprivoisé, comme dans le jeu ; un poulain
+  tient sa vie, sa vitesse et son saut de la moyenne de ses parents et d'un tirage.
 - Une monture apprivoisée mais blessée mangeait la carotte ou la pomme dorée sans devenir
   amoureuse : elle est maintenant soignée et prête à avoir un petit en même temps.
 - Un joueur parti en selle revenait au point d'apparition du monde : il était enregistré

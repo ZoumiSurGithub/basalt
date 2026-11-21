@@ -2338,7 +2338,11 @@ fn tamed_horses_have_a_foal() {
         }
     }
     assert!(foal, "un poulain est né");
+    // Né apprivoisé : enregistré comme tel à l'arrêt
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = handle.join();
+    let saved: String = std::fs::read_dir(dir.join("world").join("entities")).unwrap().filter_map(|e| e.ok()).filter_map(|e| std::fs::read_to_string(e.path()).ok()).collect();
+    let tamed = saved.matches("\"tamed\":true").count();
+    assert_eq!(tamed, 3, "les deux parents et le poulain sont apprivoisés : {}", saved);
     let _ = std::fs::remove_dir_all(&dir);
 }
