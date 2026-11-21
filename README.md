@@ -107,9 +107,12 @@ Les mêmes plans donnent aussi :
   la longue échelle et le laboratoire caché avec son coffre ;
 - des **portails en ruine** partout sur la terre ferme, sur une plaque de netherrack et de
   magma, avec obsidienne pleureuse et coffre ;
-- des **fossiles** enfouis sous les déserts et les marais.
+- des **fossiles** enfouis sous les déserts et les marais ;
+- des **manoirs des bois** dans les forêts sombres : plan d'étages tiré au hasard comme
+  dans le jeu (couloirs à tapis rouge, pièces de 1 × 1, 1 × 2 et 2 × 2, pièces secrètes,
+  escalier vers le troisième étage), murs, fenêtres, toits, coffres et socle de pierre.
 
-Ces cinq-là n'existent qu'avec les plans officiels.
+Ces six-là n'existent qu'avec les plans officiels.
 
 Ces plans appartiennent à Mojang : ils ne sont pas publiés avec Basalt. L'installation
 (`get.sh`, `./update.sh`, ou `Installer.cmd` / `Mettre-a-jour.cmd` sous Windows) les
@@ -158,7 +161,7 @@ Les coffres se remplissent au premier clic (ou lâchent leur butin si on les cas
 ouvrir), toujours avec le même contenu pour une graine donnée.
 
 `/locate structure <village|temple|desert_pyramid|jungle_temple|mineshaft|pillager_outpost|
-ancient_city|trail_ruins|trial_chambers|shipwreck|ocean_ruin|igloo|ruined_portal>` et
+ancient_city|trail_ruins|trial_chambers|shipwreck|ocean_ruin|igloo|ruined_portal|mansion>` et
 `/locate biome <nom>` donnent les coordonnées de la plus proche (réservées aux opérateurs).
 La recherche suit les mêmes règles que la génération, sur un fil à part.
 

@@ -40,6 +40,7 @@ pub enum Loot {
     OceanRuin,
     Igloo,
     RuinedPortal,
+    WoodlandMansion,
 }
 
 /// Une structure calculée : ses blocs et ses coffres, rangés par chunk.
@@ -105,10 +106,11 @@ enum Kind {
     RuinedPortal,
     /// Squelette fossile enfoui (désert, marais) : un chunk sur 64, comme les mines
     Fossil,
+    Mansion,
 }
 
 /// Structures placées sur une grille : (sorte, espacement, séparation, sel, portée en chunks).
-const GRID: [(Kind, i32, i32, u64, i32); 11] = [
+const GRID: [(Kind, i32, i32, u64, i32); 12] = [
     (Kind::Village, 34, 8, 10_387_312, 6),
     (Kind::DesertPyramid, 32, 8, 14_357_617, 2),
     (Kind::JungleTemple, 32, 8, 14_357_619, 2),
@@ -120,6 +122,7 @@ const GRID: [(Kind, i32, i32, u64, i32); 11] = [
     (Kind::OceanRuin, 20, 8, 14_357_621, 3),
     (Kind::Igloo, 32, 8, 14_357_618, 1),
     (Kind::RuinedPortal, 40, 15, 34_222_645, 2),
+    (Kind::Mansion, 80, 20, 10_387_319, 8),
 ];
 
 /// Plans déjà calculés (y compris « rien ici »), partagés par les fils de génération.
@@ -244,9 +247,917 @@ fn build(v: &Vanilla, p: &Palette, (kind, sx, sz): (Kind, i32, i32)) -> Plan {
             }
         }
         // Sans les plans du jeu, pas de version faite à la main
-        Kind::Shipwreck | Kind::OceanRuin | Kind::Igloo | Kind::RuinedPortal | Kind::Fossil => {}
+        Kind::Shipwreck | Kind::OceanRuin | Kind::Igloo | Kind::RuinedPortal | Kind::Fossil | Kind::Mansion => {}
     }
     b.finish()
+}
+
+// --- Manoir des bois --------------------------------------------------------------------
+//
+// Le manoir ne s'emboîte pas par jigsaws : le jeu dessine d'abord un plan d'étages sur une
+// grille de 11 × 11 cases de 8 blocs (couloirs, pièces de 1 × 1, 1 × 2 et 2 × 2), puis pose
+// les murs extérieurs en faisant le tour, les toits, les tapis des couloirs, les cloisons et
+// enfin une pièce tirée au hasard dans chaque emplacement. Ce qui suit reprend ces règles
+// (WoodlandMansionPieces dans le jeu), avec les plans officiels.
+
+/// Directions de la grille du manoir (x vers l'est, y vers le sud).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum M4 {
+    N,
+    E,
+    S,
+    W,
+    /// Pièce sans porte vers un couloir : son entrée est « par le haut » (pièce secrète)
+    Up,
+}
+
+impl M4 {
+    const HORIZONTAL: [M4; 4] = [M4::N, M4::E, M4::S, M4::W];
+    fn step(self) -> (i32, i32) {
+        match self {
+            M4::N => (0, -1),
+            M4::E => (1, 0),
+            M4::S => (0, 1),
+            M4::W => (-1, 0),
+            M4::Up => (0, 0),
+        }
+    }
+    fn cw(self) -> M4 {
+        match self {
+            M4::N => M4::E,
+            M4::E => M4::S,
+            M4::S => M4::W,
+            M4::W => M4::N,
+            M4::Up => M4::Up,
+        }
+    }
+    fn ccw(self) -> M4 {
+        self.cw().cw().cw()
+    }
+    fn opposite(self) -> M4 {
+        self.cw().cw()
+    }
+    /// Direction.from2DDataValue du jeu : 0 sud, 1 ouest, 2 nord, 3 est
+    fn from_2d(n: u32) -> M4 {
+        [M4::S, M4::W, M4::N, M4::E][(n & 3) as usize]
+    }
+    /// Tournée de `r` quarts de tour (sens des aiguilles d'une montre)
+    fn turn(self, r: u8) -> M4 {
+        (0..(r & 3)).fold(self, |d, _| d.cw())
+    }
+}
+
+const M_CLEAR: i32 = 0;
+const M_CORRIDOR: i32 = 1;
+const M_ROOM: i32 = 2;
+const M_START: i32 = 3;
+const M_BLOCKED: i32 = 5;
+const M_1X1: i32 = 65536;
+const M_1X2: i32 = 131072;
+const M_2X2: i32 = 262144;
+const M_ORIGIN: i32 = 1048576;
+const M_DOOR: i32 = 2097152;
+const M_STAIRS: i32 = 4194304;
+const M_CORRIDOR_FLAG: i32 = 8388608;
+const M_TYPE: i32 = 983040;
+const M_ID: i32 = 65535;
+
+/// Grille de 11 × 11 ; hors de la grille, tout est « bloqué ».
+#[derive(Clone)]
+struct MGrid([[i32; 11]; 11]);
+
+impl MGrid {
+    fn new(v: i32) -> MGrid {
+        MGrid([[v; 11]; 11])
+    }
+    fn get(&self, x: i32, y: i32) -> i32 {
+        if (0..11).contains(&x) && (0..11).contains(&y) {
+            self.0[x as usize][y as usize]
+        } else {
+            M_BLOCKED
+        }
+    }
+    fn set(&mut self, x: i32, y: i32, v: i32) {
+        if (0..11).contains(&x) && (0..11).contains(&y) {
+            self.0[x as usize][y as usize] = v;
+        }
+    }
+    fn fill(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, v: i32) {
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                self.set(x, y, v);
+            }
+        }
+    }
+    fn set_if(&mut self, x: i32, y: i32, was: i32, v: i32) {
+        if self.get(x, y) == was {
+            self.set(x, y, v);
+        }
+    }
+    fn edges_to(&self, x: i32, y: i32, v: i32) -> bool {
+        self.get(x - 1, y) == v || self.get(x + 1, y) == v || self.get(x, y + 1) == v || self.get(x, y - 1) == v
+    }
+}
+
+fn is_house(g: &MGrid, x: i32, y: i32) -> bool {
+    matches!(g.get(x, y), 1..=4)
+}
+
+/// Plan d'étages du manoir (MansionGrid du jeu).
+struct MansionGrid {
+    base: MGrid,
+    third: MGrid,
+    rooms: [MGrid; 3],
+    entrance: (i32, i32),
+}
+
+impl MansionGrid {
+    fn new(rng: &mut Rng) -> MansionGrid {
+        let (ex, ey) = (7, 4);
+        let mut base = MGrid::new(M_CLEAR);
+        base.fill(ex, ey, ex + 1, ey + 1, M_START);
+        base.fill(ex - 1, ey, ex - 1, ey + 1, M_ROOM);
+        base.fill(ex + 2, ey - 2, ex + 3, ey + 3, M_BLOCKED);
+        base.fill(ex + 1, ey - 2, ex + 1, ey - 1, M_CORRIDOR);
+        base.fill(ex + 1, ey + 2, ex + 1, ey + 3, M_CORRIDOR);
+        base.set(ex - 1, ey - 1, M_CORRIDOR);
+        base.set(ex - 1, ey + 2, M_CORRIDOR);
+        base.fill(0, 0, 11, 1, M_BLOCKED);
+        base.fill(0, 9, 11, 11, M_BLOCKED);
+        corridor(&mut base, rng, ex, ey - 2, M4::W, 6);
+        corridor(&mut base, rng, ex, ey + 3, M4::W, 6);
+        corridor(&mut base, rng, ex - 2, ey - 1, M4::W, 3);
+        corridor(&mut base, rng, ex - 2, ey + 2, M4::W, 3);
+        while clean_edges(&mut base) {}
+        let mut g = MansionGrid { base, third: MGrid::new(M_BLOCKED), rooms: [MGrid::new(M_CLEAR), MGrid::new(M_CLEAR), MGrid::new(M_CLEAR)], entrance: (ex, ey) };
+        let base = g.base.clone();
+        identify_rooms(&base, &mut g.rooms[0], rng);
+        identify_rooms(&base, &mut g.rooms[1], rng);
+        g.rooms[0].fill(ex + 1, ey, ex + 1, ey + 1, M_CORRIDOR_FLAG);
+        g.rooms[1].fill(ex + 1, ey, ex + 1, ey + 1, M_CORRIDOR_FLAG);
+        g.setup_third_floor(rng);
+        let third = g.third.clone();
+        identify_rooms(&third, &mut g.rooms[2], rng);
+        g
+    }
+
+    fn is_room_id(&self, x: i32, y: i32, floor: usize, id: i32) -> bool {
+        (self.rooms[floor].get(x, y) & M_ID) == id
+    }
+
+    fn room_1x2_direction(&self, x: i32, y: i32, floor: usize, id: i32) -> Option<M4> {
+        M4::HORIZONTAL.into_iter().find(|d| {
+            let (dx, dy) = d.step();
+            self.is_room_id(x + dx, y + dy, floor, id)
+        })
+    }
+
+    fn setup_third_floor(&mut self, rng: &mut Rng) {
+        let mut list = Vec::new();
+        for y in 0..11 {
+            for x in 0..11 {
+                let k = self.rooms[1].get(x, y);
+                if k & M_TYPE == M_1X2 && k & M_DOOR == M_DOOR {
+                    list.push((x, y));
+                }
+            }
+        }
+        if list.is_empty() {
+            self.third.fill(0, 0, 11, 11, M_BLOCKED);
+            return;
+        }
+        let (tx, ty) = list[rng.below(list.len() as u32) as usize];
+        let l1 = self.rooms[1].get(tx, ty);
+        self.rooms[1].set(tx, ty, l1 | M_STAIRS);
+        let Some(d) = self.room_1x2_direction(tx, ty, 1, l1 & M_ID) else {
+            self.third.fill(0, 0, 11, 11, M_BLOCKED);
+            return;
+        };
+        let (sx, sy) = d.step();
+        let (i2, i1) = (tx + sx, ty + sy);
+        for y in 0..11 {
+            for x in 0..11 {
+                if !is_house(&self.base, x, y) {
+                    self.third.set(x, y, M_BLOCKED);
+                } else if x == tx && y == ty {
+                    self.third.set(x, y, M_START);
+                } else if x == i2 && y == i1 {
+                    self.third.set(x, y, M_START);
+                    self.rooms[2].set(x, y, M_CORRIDOR_FLAG);
+                } else {
+                    self.third.set(x, y, M_CLEAR);
+                }
+            }
+        }
+        let free: Vec<M4> = M4::HORIZONTAL
+            .into_iter()
+            .filter(|d| {
+                let (dx, dy) = d.step();
+                self.third.get(i2 + dx, i1 + dy) == M_CLEAR
+            })
+            .collect();
+        if free.is_empty() {
+            self.third.fill(0, 0, 11, 11, M_BLOCKED);
+            self.rooms[1].set(tx, ty, l1);
+        } else {
+            let d2 = free[rng.below(free.len() as u32) as usize];
+            let (dx, dy) = d2.step();
+            corridor(&mut self.third, rng, i2 + dx, i1 + dy, d2, 4);
+            while clean_edges(&mut self.third) {}
+        }
+    }
+}
+
+/// Couloir qui avance et bifurque au hasard, bordé de cases à pièces.
+fn corridor(g: &mut MGrid, rng: &mut Rng, x: i32, y: i32, d: M4, length: i32) {
+    if length <= 0 {
+        return;
+    }
+    let (sx, sy) = d.step();
+    g.set(x, y, M_CORRIDOR);
+    g.set_if(x + sx, y + sy, M_CLEAR, M_CORRIDOR);
+    for _ in 0..8 {
+        let d1 = M4::from_2d(rng.below(4));
+        if d1 != d.opposite() && (d1 != M4::E || rng.below(2) == 0) {
+            let (j, k) = (x + sx, y + sy);
+            let (ax, ay) = d1.step();
+            if g.get(j + ax, k + ay) == M_CLEAR && g.get(j + ax * 2, k + ay * 2) == M_CLEAR {
+                corridor(g, rng, x + sx + ax, y + sy + ay, d1, length - 1);
+                break;
+            }
+        }
+    }
+    let (c, cc) = (d.cw().step(), d.ccw().step());
+    g.set_if(x + c.0, y + c.1, M_CLEAR, M_ROOM);
+    g.set_if(x + cc.0, y + cc.1, M_CLEAR, M_ROOM);
+    g.set_if(x + sx + c.0, y + sy + c.1, M_CLEAR, M_ROOM);
+    g.set_if(x + sx + cc.0, y + sy + cc.1, M_CLEAR, M_ROOM);
+    g.set_if(x + sx * 2, y + sy * 2, M_CLEAR, M_ROOM);
+    g.set_if(x + c.0 * 2, y + c.1 * 2, M_CLEAR, M_ROOM);
+    g.set_if(x + cc.0 * 2, y + cc.1 * 2, M_CLEAR, M_ROOM);
+}
+
+/// Bouche les creux du contour (cases presque entourées de maison).
+fn clean_edges(g: &mut MGrid) -> bool {
+    let mut changed = false;
+    for y in 0..11 {
+        for x in 0..11 {
+            if g.get(x, y) != M_CLEAR {
+                continue;
+            }
+            let k = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().filter(|(dx, dy)| is_house(g, x + dx, y + dy)).count();
+            if k >= 3 {
+                g.set(x, y, M_ROOM);
+                changed = true;
+            } else if k == 2 {
+                let l = [(1, 1), (-1, 1), (1, -1), (-1, -1)].iter().filter(|(dx, dy)| is_house(g, x + dx, y + dy)).count();
+                if l <= 1 {
+                    g.set(x, y, M_ROOM);
+                    changed = true;
+                }
+            }
+        }
+    }
+    changed
+}
+
+/// Regroupe les cases à pièces en pièces de 2 × 2, 1 × 2 ou 1 × 1, avec leur porte.
+fn identify_rooms(g: &MGrid, rooms: &mut MGrid, rng: &mut Rng) {
+    let mut cells = Vec::new();
+    for y in 0..11 {
+        for x in 0..11 {
+            if g.get(x, y) == M_ROOM {
+                cells.push((x, y));
+            }
+        }
+    }
+    for i in (1..cells.len()).rev() {
+        let j = rng.below(i as u32 + 1) as usize;
+        cells.swap(i, j);
+    }
+    let mut id = 10;
+    for (k, l) in cells {
+        if rooms.get(k, l) != 0 {
+            continue;
+        }
+        let (mut x0, mut x1, mut y0, mut y1) = (k, k, l, l);
+        let free = |rooms: &MGrid, x: i32, y: i32| rooms.get(x, y) == 0 && g.get(x, y) == M_ROOM;
+        let kind = if free(rooms, k + 1, l) && free(rooms, k, l + 1) && free(rooms, k + 1, l + 1) {
+            x1 = k + 1;
+            y1 = l + 1;
+            M_2X2
+        } else if free(rooms, k - 1, l) && free(rooms, k, l + 1) && free(rooms, k - 1, l + 1) {
+            x0 = k - 1;
+            y1 = l + 1;
+            M_2X2
+        } else if free(rooms, k - 1, l) && free(rooms, k, l - 1) && free(rooms, k - 1, l - 1) {
+            x0 = k - 1;
+            y0 = l - 1;
+            M_2X2
+        } else if free(rooms, k + 1, l) {
+            x1 = k + 1;
+            M_1X2
+        } else if free(rooms, k, l + 1) {
+            y1 = l + 1;
+            M_1X2
+        } else if free(rooms, k - 1, l) {
+            x0 = k - 1;
+            M_1X2
+        } else if free(rooms, k, l - 1) {
+            y0 = l - 1;
+            M_1X2
+        } else {
+            M_1X1
+        };
+        let mut dx = if rng.below(2) == 0 { x0 } else { x1 };
+        let mut dy = if rng.below(2) == 0 { y0 } else { y1 };
+        let mut door = M_DOOR;
+        if !g.edges_to(dx, dy, M_CORRIDOR) {
+            dx = if dx == x0 { x1 } else { x0 };
+            dy = if dy == y0 { y1 } else { y0 };
+            if !g.edges_to(dx, dy, M_CORRIDOR) {
+                dy = if dy == y0 { y1 } else { y0 };
+                if !g.edges_to(dx, dy, M_CORRIDOR) {
+                    dx = if dx == x0 { x1 } else { x0 };
+                    dy = if dy == y0 { y1 } else { y0 };
+                    if !g.edges_to(dx, dy, M_CORRIDOR) {
+                        door = 0;
+                        dx = x0;
+                        dy = y0;
+                    }
+                }
+            }
+        }
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                if x == dx && y == dy {
+                    rooms.set(x, y, M_ORIGIN | door | kind | id);
+                } else {
+                    rooms.set(x, y, kind | id);
+                }
+            }
+        }
+        id += 1;
+    }
+}
+
+/// Une pièce du manoir à poser : plan, coin, rotation, miroir.
+struct MPiece {
+    name: String,
+    pos: (i32, i32, i32),
+    rot: u8,
+    mirror: u8,
+}
+
+/// Pose des pièces (MansionPiecePlacer du jeu).
+struct Placer<'r> {
+    rng: &'r mut Rng,
+    start: (i32, i32),
+    pieces: Vec<MPiece>,
+}
+
+/// Position + n pas dans une direction (tournée par la rotation du manoir).
+fn rel(p: (i32, i32, i32), d: M4, n: i32) -> (i32, i32, i32) {
+    let (dx, dz) = d.step();
+    (p.0 + dx * n, p.1, p.2 + dz * n)
+}
+
+struct Walk {
+    pos: (i32, i32, i32),
+    rot: u8,
+    wall: &'static str,
+}
+
+impl Placer<'_> {
+    fn add(&mut self, name: &str, pos: (i32, i32, i32), rot: u8) {
+        self.add_m(name, pos, rot, 0);
+    }
+    fn add_m(&mut self, name: &str, pos: (i32, i32, i32), rot: u8, mirror: u8) {
+        self.pieces.push(MPiece { name: name.to_string(), pos, rot: rot & 3, mirror });
+    }
+
+    fn create(&mut self, pos: (i32, i32, i32), rot: u8, grid: &MansionGrid) {
+        let mut a = Walk { pos, rot, wall: "wall_flat" };
+        // Entrée
+        let w = M4::W.turn(rot);
+        self.add("entrance", rel(a.pos, w, 9), rot);
+        a.pos = rel(a.pos, M4::S.turn(rot), 16);
+        let mut b = Walk { pos: (a.pos.0, a.pos.1 + 8, a.pos.2), rot, wall: "wall_window" };
+        self.start = (grid.entrance.0 + 1, grid.entrance.1 + 1);
+        let (i, j) = (grid.entrance.0 + 1, grid.entrance.1);
+        let (sx, sy) = self.start;
+        self.outer_walls(&mut a, &grid.base, M4::S, sx, sy, i, j);
+        self.outer_walls(&mut b, &grid.base, M4::S, sx, sy, i, j);
+        let mut c = Walk { pos: (a.pos.0, a.pos.1 + 19, a.pos.2), rot, wall: "wall_window" };
+        'third: for k in 0..11 {
+            for l in (0..11).rev() {
+                if is_house(&grid.third, l, k) {
+                    c.pos = rel(c.pos, M4::S.turn(rot), 8 + (k - sy) * 8);
+                    c.pos = rel(c.pos, M4::E.turn(rot), (l - sx) * 8);
+                    self.wall_piece(&mut c);
+                    self.outer_walls(&mut c, &grid.third, M4::S, l, k, l, k);
+                    break 'third;
+                }
+            }
+        }
+        self.roof((pos.0, pos.1 + 16, pos.2), rot, &grid.base, Some(&grid.third));
+        self.roof((pos.0, pos.1 + 27, pos.2), rot, &grid.third, None);
+        for floor in 0..3usize {
+            let base = (pos.0, pos.1 + 8 * floor as i32 + if floor == 2 { 3 } else { 0 }, pos.2);
+            let rooms = &grid.rooms[floor];
+            let g = if floor == 2 { &grid.third } else { &grid.base };
+            let (south, west) = if floor == 0 { ("carpet_south_1", "carpet_west_1") } else { ("carpet_south_2", "carpet_west_2") };
+            for y in 0..11 {
+                for x in 0..11 {
+                    if g.get(x, y) != M_CORRIDOR {
+                        continue;
+                    }
+                    let p = rel(rel(base, M4::S.turn(rot), 8 + (y - sy) * 8), M4::E.turn(rot), (x - sx) * 8);
+                    self.add("corridor_floor", p, rot);
+                    let open = |dx: i32, dy: i32| g.get(x + dx, y + dy) == M_CORRIDOR || rooms.get(x + dx, y + dy) & M_CORRIDOR_FLAG == M_CORRIDOR_FLAG;
+                    let up = |p: (i32, i32, i32)| (p.0, p.1 + 1, p.2);
+                    if open(0, -1) {
+                        self.add("carpet_north", up(rel(p, M4::E.turn(rot), 1)), rot);
+                    }
+                    if open(1, 0) {
+                        self.add("carpet_east", up(rel(rel(p, M4::S.turn(rot), 1), M4::E.turn(rot), 5)), rot);
+                    }
+                    if open(0, 1) {
+                        self.add(south, rel(rel(p, M4::S.turn(rot), 5), M4::W.turn(rot), 1), rot);
+                    }
+                    if open(-1, 0) {
+                        self.add(west, rel(rel(p, M4::W.turn(rot), 1), M4::N.turn(rot), 1), rot);
+                    }
+                }
+            }
+            let (wall, door) = if floor == 0 { ("indoors_wall_1", "indoors_door_1") } else { ("indoors_wall_2", "indoors_door_2") };
+            for y in 0..11 {
+                for x in 0..11 {
+                    let mut stairs_top = floor == 2 && g.get(x, y) == M_START;
+                    if g.get(x, y) != M_ROOM && !stairs_top {
+                        continue;
+                    }
+                    let j2 = rooms.get(x, y);
+                    let kind = j2 & M_TYPE;
+                    let id = j2 & M_ID;
+                    stairs_top = stairs_top && j2 & M_CORRIDOR_FLAG == M_CORRIDOR_FLAG;
+                    let mut doors = Vec::new();
+                    if j2 & M_DOOR == M_DOOR {
+                        for d in M4::HORIZONTAL {
+                            let (dx, dy) = d.step();
+                            if g.get(x + dx, y + dy) == M_CORRIDOR {
+                                doors.push(d);
+                            }
+                        }
+                    }
+                    let front = if !doors.is_empty() {
+                        Some(doors[self.rng.below(doors.len() as u32) as usize])
+                    } else if j2 & M_ORIGIN == M_ORIGIN {
+                        Some(M4::Up)
+                    } else {
+                        None
+                    };
+                    let p3 = rel(rel(base, M4::S.turn(rot), 8 + (y - sy) * 8), M4::E.turn(rot), -1 + (x - sx) * 8);
+                    let pick = |d: M4| if front == Some(d) { door } else { wall };
+                    if is_house(g, x - 1, y) && !grid.is_room_id(x - 1, y, floor, id) {
+                        self.add(pick(M4::W), p3, rot);
+                    }
+                    if g.get(x + 1, y) == M_CORRIDOR && !stairs_top {
+                        self.add(pick(M4::E), rel(p3, M4::E.turn(rot), 8), rot);
+                    }
+                    if is_house(g, x, y + 1) && !grid.is_room_id(x, y + 1, floor, id) {
+                        self.add(pick(M4::S), rel(rel(p3, M4::S.turn(rot), 7), M4::E.turn(rot), 7), rot + 1);
+                    }
+                    if g.get(x, y - 1) == M_CORRIDOR && !stairs_top {
+                        self.add(pick(M4::N), rel(rel(p3, M4::N.turn(rot), 1), M4::E.turn(rot), 7), rot + 1);
+                    }
+                    if kind == M_1X1 {
+                        self.room_1x1(p3, rot, front, floor);
+                    } else if kind == M_1X2 {
+                        if let Some(f) = front {
+                            let side = grid.room_1x2_direction(x, y, floor, id);
+                            let stairs = j2 & M_STAIRS == M_STAIRS;
+                            if let Some(side) = side {
+                                self.room_1x2(p3, rot, side, f, floor, stairs);
+                            }
+                        }
+                    } else if kind == M_2X2 {
+                        match front {
+                            Some(M4::Up) => {
+                                let name = "2x2_s1";
+                                self.add(name, rel(p3, M4::E.turn(rot), 1), rot);
+                            }
+                            Some(f) => {
+                                let mut d2 = f.cw();
+                                let (dx, dy) = d2.step();
+                                if !grid.is_room_id(x + dx, y + dy, floor, id) {
+                                    d2 = d2.opposite();
+                                }
+                                self.room_2x2(p3, rot, d2, f, floor);
+                            }
+                            None => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn outer_walls(&mut self, w: &mut Walk, g: &MGrid, mut d: M4, sx: i32, sy: i32, ex: i32, ey: i32) {
+        let (mut i, mut j) = (sx, sy);
+        let d1 = d;
+        loop {
+            let (dx, dy) = d.step();
+            let (cx, cy) = d.ccw().step();
+            if !is_house(g, i + dx, j + dy) {
+                self.turn(w);
+                d = d.cw();
+                if i != ex || j != ey || d1 != d {
+                    self.wall_piece(w);
+                }
+            } else if is_house(g, i + dx + cx, j + dy + cy) {
+                self.inner_turn(w);
+                i += dx;
+                j += dy;
+                d = d.ccw();
+            } else {
+                i += dx;
+                j += dy;
+                if i != ex || j != ey || d1 != d {
+                    self.wall_piece(w);
+                }
+            }
+            if i == ex && j == ey && d1 == d {
+                break;
+            }
+        }
+    }
+
+    fn wall_piece(&mut self, w: &mut Walk) {
+        let p = rel(w.pos, M4::E.turn(w.rot), 7);
+        self.add(w.wall, p, w.rot);
+        w.pos = rel(w.pos, M4::S.turn(w.rot), 8);
+    }
+
+    fn turn(&mut self, w: &mut Walk) {
+        w.pos = rel(w.pos, M4::S.turn(w.rot), -1);
+        self.add("wall_corner", w.pos, w.rot);
+        w.pos = rel(w.pos, M4::S.turn(w.rot), -7);
+        w.pos = rel(w.pos, M4::W.turn(w.rot), -6);
+        w.rot = (w.rot + 1) & 3;
+    }
+
+    fn inner_turn(&mut self, w: &mut Walk) {
+        w.pos = rel(w.pos, M4::S.turn(w.rot), 6);
+        w.pos = rel(w.pos, M4::E.turn(w.rot), 8);
+        w.rot = (w.rot + 3) & 3;
+    }
+
+    fn roof(&mut self, pos: (i32, i32, i32), rot: u8, g: &MGrid, upper: Option<&MGrid>) {
+        let (sx, sy) = self.start;
+        let (s, e, w, n) = (M4::S.turn(rot), M4::E.turn(rot), M4::W.turn(rot), M4::N.turn(rot));
+        let cell = |x: i32, y: i32| rel(rel(pos, s, 8 + (y - sy) * 8), e, (x - sx) * 8);
+        for y in 0..11 {
+            for x in 0..11 {
+                let p = cell(x, y);
+                let covered = upper.map(|u| is_house(u, x, y)).unwrap_or(false);
+                if is_house(g, x, y) && !covered {
+                    self.add("roof", (p.0, p.1 + 3, p.2), rot);
+                    if !is_house(g, x + 1, y) {
+                        self.add("roof_front", rel(p, e, 6), rot);
+                    }
+                    if !is_house(g, x - 1, y) {
+                        self.add("roof_front", rel(rel(p, e, 0), s, 7), rot + 2);
+                    }
+                    if !is_house(g, x, y - 1) {
+                        self.add("roof_front", rel(p, w, 1), rot + 3);
+                    }
+                    if !is_house(g, x, y + 1) {
+                        self.add("roof_front", rel(rel(p, e, 6), s, 6), rot + 1);
+                    }
+                }
+            }
+        }
+        if let Some(u) = upper {
+            for y in 0..11 {
+                for x in 0..11 {
+                    let p = cell(x, y);
+                    if !(is_house(g, x, y) && is_house(u, x, y)) {
+                        continue;
+                    }
+                    if !is_house(g, x + 1, y) {
+                        self.add("small_wall", rel(p, e, 7), rot);
+                    }
+                    if !is_house(g, x - 1, y) {
+                        self.add("small_wall", rel(rel(p, w, 1), s, 6), rot + 2);
+                    }
+                    if !is_house(g, x, y - 1) {
+                        self.add("small_wall", rel(rel(p, w, 0), n, 1), rot + 3);
+                    }
+                    if !is_house(g, x, y + 1) {
+                        self.add("small_wall", rel(rel(p, e, 6), s, 7), rot + 1);
+                    }
+                    if !is_house(g, x + 1, y) {
+                        if !is_house(g, x, y - 1) {
+                            self.add("small_wall_corner", rel(rel(p, e, 7), n, 2), rot);
+                        }
+                        if !is_house(g, x, y + 1) {
+                            self.add("small_wall_corner", rel(rel(p, e, 8), s, 7), rot + 1);
+                        }
+                    }
+                    if !is_house(g, x - 1, y) {
+                        if !is_house(g, x, y - 1) {
+                            self.add("small_wall_corner", rel(rel(p, w, 2), n, 1), rot + 3);
+                        }
+                        if !is_house(g, x, y + 1) {
+                            self.add("small_wall_corner", rel(rel(p, w, 1), s, 8), rot + 2);
+                        }
+                    }
+                }
+            }
+        }
+        for y in 0..11 {
+            for x in 0..11 {
+                let p = cell(x, y);
+                let covered = upper.map(|u| is_house(u, x, y)).unwrap_or(false);
+                if !is_house(g, x, y) || covered {
+                    continue;
+                }
+                if !is_house(g, x + 1, y) {
+                    let p16 = rel(p, e, 6);
+                    if !is_house(g, x, y + 1) {
+                        self.add("roof_corner", rel(p16, s, 6), rot);
+                    } else if is_house(g, x + 1, y + 1) {
+                        self.add("roof_inner_corner", rel(p16, s, 5), rot);
+                    }
+                    if !is_house(g, x, y - 1) {
+                        self.add("roof_corner", p16, rot + 3);
+                    } else if is_house(g, x + 1, y - 1) {
+                        self.add("roof_inner_corner", rel(rel(p, e, 9), n, 2), rot + 1);
+                    }
+                }
+                if !is_house(g, x - 1, y) {
+                    let p17 = p;
+                    if !is_house(g, x, y + 1) {
+                        self.add("roof_corner", rel(p17, s, 6), rot + 1);
+                    } else if is_house(g, x - 1, y + 1) {
+                        self.add("roof_inner_corner", rel(rel(p17, s, 8), w, 3), rot + 3);
+                    }
+                    if !is_house(g, x, y - 1) {
+                        self.add("roof_corner", p17, rot + 2);
+                    } else if is_house(g, x - 1, y - 1) {
+                        self.add("roof_inner_corner", rel(p17, s, 1), rot + 2);
+                    }
+                }
+            }
+        }
+    }
+
+    fn room_1x1(&mut self, pos: (i32, i32, i32), rot: u8, front: Option<M4>, floor: usize) {
+        let mut r1 = 0u8;
+        let mut name = if floor == 0 { format!("1x1_a{}", self.rng.below(5) + 1) } else { format!("1x1_b{}", self.rng.below(5) + 1) };
+        match front {
+            Some(M4::E) => {}
+            Some(M4::N) => r1 = 3,
+            Some(M4::S) => r1 = 1,
+            Some(M4::W) => r1 = 2,
+            _ => name = format!("1x1_as{}", self.rng.below(4) + 1),
+        }
+        // StructureTemplate.getZeroPositionWithTransform((1, 0, 0), aucun miroir, r1, 7, 7)
+        let (zx, zz) = match r1 {
+            1 => (1 + 7 - 1, 0),
+            2 => (1 + 7 - 1, 7 - 1),
+            3 => (1, 7 - 1),
+            _ => (1, 0),
+        };
+        // Puis tournée avec le manoir
+        let (zx, zz) = match rot & 3 {
+            0 => (zx, zz),
+            1 => (-zz, zx),
+            2 => (-zx, -zz),
+            _ => (zz, -zx),
+        };
+        self.add(&name, (pos.0 + zx, pos.1, pos.2 + zz), r1 + rot);
+    }
+
+    fn room_1x2(&mut self, pos: (i32, i32, i32), rot: u8, front: M4, side: M4, floor: usize, stairs: bool) {
+        let (e, s, w, n) = (M4::E.turn(rot), M4::S.turn(rot), M4::W.turn(rot), M4::N.turn(rot));
+        let side_name = |rng: &mut Rng| -> String {
+            if floor == 0 {
+                format!("1x2_a{}", rng.below(9) + 1)
+            } else if stairs {
+                "1x2_c_stairs".into()
+            } else {
+                format!("1x2_c{}", rng.below(4) + 1)
+            }
+        };
+        let front_name = |rng: &mut Rng| -> String {
+            if floor == 0 {
+                format!("1x2_b{}", rng.below(5) + 1)
+            } else if stairs {
+                "1x2_d_stairs".into()
+            } else {
+                format!("1x2_d{}", rng.below(5) + 1)
+            }
+        };
+        let secret = |rng: &mut Rng| -> String {
+            if floor == 0 {
+                format!("1x2_s{}", rng.below(2) + 1)
+            } else {
+                "1x2_se1".into()
+            }
+        };
+        use M4::*;
+        match (side, front) {
+            (E, S) => {
+                let n_ = side_name(self.rng);
+                self.add(&n_, rel(pos, e, 1), rot)
+            }
+            (E, N) => {
+                let n_ = side_name(self.rng);
+                self.add_m(&n_, rel(rel(pos, e, 1), s, 6), rot, 1)
+            }
+            (W, N) => {
+                let n_ = side_name(self.rng);
+                self.add(&n_, rel(rel(pos, e, 7), s, 6), rot + 2)
+            }
+            (W, S) => {
+                let n_ = side_name(self.rng);
+                self.add_m(&n_, rel(pos, e, 7), rot, 2)
+            }
+            (S, E) => {
+                let n_ = side_name(self.rng);
+                self.add_m(&n_, rel(pos, e, 1), rot + 1, 1)
+            }
+            (S, W) => {
+                let n_ = side_name(self.rng);
+                self.add(&n_, rel(pos, e, 7), rot + 1)
+            }
+            (N, W) => {
+                let n_ = side_name(self.rng);
+                self.add_m(&n_, rel(rel(pos, e, 7), s, 6), rot + 1, 2)
+            }
+            (N, E) => {
+                let n_ = side_name(self.rng);
+                self.add(&n_, rel(rel(pos, e, 1), s, 6), rot + 3)
+            }
+            (S, N) => {
+                let n_ = front_name(self.rng);
+                self.add(&n_, rel(rel(pos, e, 1), n, 8), rot)
+            }
+            (N, S) => {
+                let n_ = front_name(self.rng);
+                self.add(&n_, rel(rel(pos, e, 7), s, 14), rot + 2)
+            }
+            (W, E) => {
+                let n_ = front_name(self.rng);
+                self.add(&n_, rel(pos, e, 15), rot + 1)
+            }
+            (E, W) => {
+                let n_ = front_name(self.rng);
+                self.add(&n_, rel(rel(pos, w, 7), s, 6), rot + 3)
+            }
+            (Up, E) => {
+                let n_ = secret(self.rng);
+                self.add(&n_, rel(pos, e, 15), rot + 1)
+            }
+            (Up, S) => {
+                let n_ = secret(self.rng);
+                self.add(&n_, rel(pos, e, 1), rot)
+            }
+            _ => {}
+        }
+    }
+
+    fn room_2x2(&mut self, pos: (i32, i32, i32), rot: u8, front: M4, side: M4, floor: usize) {
+        use M4::*;
+        let (mut i, mut j, mut r1, mut mirror) = (0, 0, rot, 0u8);
+        match (side, front) {
+            (E, S) => i = -7,
+            (E, N) => {
+                i = -7;
+                j = 6;
+                mirror = 1;
+            }
+            (N, E) => {
+                i = 1;
+                j = 14;
+                r1 = rot + 3;
+            }
+            (N, W) => {
+                i = 7;
+                j = 14;
+                r1 = rot + 3;
+                mirror = 1;
+            }
+            (S, W) => {
+                i = 7;
+                j = -8;
+                r1 = rot + 1;
+            }
+            (S, E) => {
+                i = 1;
+                j = -8;
+                r1 = rot + 1;
+                mirror = 1;
+            }
+            (W, N) => {
+                i = 15;
+                j = 6;
+                r1 = rot + 2;
+            }
+            (W, S) => {
+                i = 15;
+                mirror = 2;
+            }
+            _ => {}
+        }
+        let p = rel(rel(pos, E.turn(rot), i), S.turn(rot), j);
+        let name = if floor == 0 { format!("2x2_a{}", self.rng.below(4) + 1) } else { format!("2x2_b{}", self.rng.below(5) + 1) };
+        self.add_m(&name, p, r1, mirror);
+    }
+}
+
+/// Construit le manoir : plan d'étages, pièces, coffres, socle de pierre.
+fn mansion(b: &mut Builder, t: &Templates, rng: &mut Rng, x: i32, y: i32, z: i32) -> bool {
+    if t.get("mansion/entrance").is_none() {
+        return false;
+    }
+    let rot = rng.below(4) as u8;
+    let grid = MansionGrid::new(rng);
+    let mut placer = Placer { rng, start: (0, 0), pieces: Vec::new() };
+    placer.create((x, y, z), rot, &grid);
+    let pieces = std::mem::take(&mut placer.pieces);
+    let rng = placer.rng;
+    let air = b.p.air;
+    let mut lowest: HashMap<(i32, i32), i32> = HashMap::new();
+    let (mut min, mut max) = ((i32::MAX, i32::MAX), (i32::MIN, i32::MIN));
+    for piece in &pieces {
+        // « indoors_wall_1 » s'appelle « indoors_wall » dans les fichiers
+        let path = format!("mansion/{}", piece.name);
+        let Some(tpl) = t.get(&path).or_else(|| t.get(path.trim_end_matches("_1"))) else { continue };
+        // Position d'un point du plan : miroir, puis rotation autour du coin du plan (le jeu)
+        let place = |(lx, ly, lz): (i32, i32, i32)| {
+            let (mut px, mut pz) = (lx, lz);
+            match piece.mirror {
+                1 => pz = -pz,
+                2 => px = -px,
+                _ => {}
+            }
+            let (rx, rz) = match piece.rot & 3 {
+                0 => (px, pz),
+                1 => (-pz, px),
+                2 => (-px, -pz),
+                _ => (pz, -px),
+            };
+            (piece.pos.0 + rx, piece.pos.1 + ly, piece.pos.2 + rz)
+        };
+        for (local, state) in tpl.blocks_mirrored(piece.mirror, piece.rot) {
+            let at = place(local);
+            b.put(at, state);
+            if state != air {
+                let e = lowest.entry((at.0, at.2)).or_insert(at.1);
+                *e = (*e).min(at.1);
+                min = (min.0.min(at.0), min.1.min(at.2));
+                max = (max.0.max(at.0), max.1.max(at.2));
+            }
+        }
+        // Coffres : repère « Chest », « ChestWest »… à leur place, tournés avec la pièce
+        for (local, m) in tpl.markers_unturned() {
+            if let Some(dir) = m.strip_prefix("Chest") {
+                let facing = match dir {
+                    "West" => D::W,
+                    "East" => D::E,
+                    "South" => D::S,
+                    "North" => D::N,
+                    _ => D::S,
+                };
+                let at = place(local);
+                b.chest(at, if dir.is_empty() { facing } else { facing.turn(piece.rot) }, Loot::WoodlandMansion);
+            }
+        }
+    }
+    let _ = rng;
+    // Socle : sous le rez-de-chaussée, de la pierre jusqu'au sol (le jeu fait de même)
+    let cobble = b.id("cobblestone");
+    for ((cx, cz), low) in lowest {
+        if low > y + 1 {
+            continue;
+        }
+        let g = b.top(cx, cz);
+        for yy in (g + 1).max(low - 24)..low {
+            b.put((cx, yy, cz), cobble);
+        }
+    }
+    if min.0 <= max.0 {
+        b.no_trees.push((min.0 - 3, min.1 - 3, max.0 + 3, max.1 + 3));
+        for cx in min.0..=max.0 {
+            for cz in min.1..=max.1 {
+                b.clear.push((cx, cz, y));
+            }
+        }
+    }
+    true
 }
 
 // --- Plans officiels ---------------------------------------------------------------------
@@ -422,6 +1333,10 @@ fn official(b: &mut Builder, t: &Templates, rng: &mut Rng, kind: Kind, sx: i32, 
             place_layout(b, rng, &layout, Placing { under: None, air: false, planks: None, clear_trees: true, archaeology: false, carve: false, integrity: 1.0, markers: no_markers, slopes: true });
             weather_portal(b, rng, &layout);
             true
+        }
+        Kind::Mansion => {
+            let Some((x, y, z)) = placed(b.v, kind, sx, sz) else { return true };
+            mansion(b, t, rng, x, y, z)
         }
         Kind::Fossil => {
             let Some((x, y, z)) = placed(b.v, kind, sx, sz) else { return true };
@@ -2942,6 +3857,7 @@ pub enum Target {
     OceanRuin,
     Igloo,
     RuinedPortal,
+    Mansion,
 }
 
 impl Target {
@@ -2961,6 +3877,7 @@ impl Target {
             "ocean_ruin" | "ocean_ruins" => Target::OceanRuin,
             "igloo" => Target::Igloo,
             "ruined_portal" => Target::RuinedPortal,
+            "mansion" | "woodland_mansion" => Target::Mansion,
             _ => return None,
         })
     }
@@ -2989,6 +3906,7 @@ impl Target {
             Target::OceanRuin => "Les ruines océaniques les plus proches",
             Target::Igloo => "L'igloo le plus proche",
             Target::RuinedPortal => "Le portail en ruine le plus proche",
+            Target::Mansion => "Le manoir le plus proche",
         }
     }
 }
@@ -3104,6 +4022,14 @@ fn placed(v: &Vanilla, kind: Kind, sx: i32, sz: i32) -> Option<(i32, i32, i32)> 
             let top = v.surface(x, z).0;
             (top > SEA_LEVEL).then_some((x, top + 1, z))
         }
+        // Manoir : forêt sombre (ou jardin pâle), sur le point le plus bas de son emprise
+        Kind::Mansion => {
+            if !matches!(biome, B::DarkForest | B::PaleGarden) {
+                return None;
+            }
+            let low = [(-16, -16), (16, -16), (-16, 16), (16, 16), (0, 0)].iter().map(|(dx, dz)| v.surface(x + dx, z + dz).0).min().unwrap_or(0);
+            (low > SEA_LEVEL).then_some((x, low + 1, z))
+        }
         Kind::Fossil => {
             if !matches!(biome, B::Desert | B::Swamp | B::MangroveSwamp) {
                 return None;
@@ -3131,9 +4057,10 @@ pub fn locate(v: &Vanilla, what: Target, x: i32, z: i32) -> Option<(i32, i32, i3
         Target::OceanRuin => &[Kind::OceanRuin],
         Target::Igloo => &[Kind::Igloo],
         Target::RuinedPortal => &[Kind::RuinedPortal],
+        Target::Mansion => &[Kind::Mansion],
     };
     // Structures qui n'existent qu'avec les plans officiels
-    if matches!(what, Target::Shipwreck | Target::OceanRuin | Target::Igloo | Target::RuinedPortal) && !v.structures.official.load(std::sync::atomic::Ordering::Relaxed) {
+    if matches!(what, Target::Shipwreck | Target::OceanRuin | Target::Igloo | Target::RuinedPortal | Target::Mansion) && !v.structures.official.load(std::sync::atomic::Ordering::Relaxed) {
         return None;
     }
     let dist = |p: &(i32, i32, i32)| ((p.0 - x) as i64).pow(2) + ((p.2 - z) as i64).pow(2);
@@ -3419,6 +4346,33 @@ fn table(kind: Loot) -> (&'static [(&'static str, u8, u8, u32)], (u32, u32)) {
             ],
             (4, 8),
         ),
+        Loot::WoodlandMansion => (
+            &[
+                ("lead", 1, 1, 20),
+                ("golden_apple", 1, 1, 15),
+                ("music_disc_13", 1, 1, 15),
+                ("music_disc_cat", 1, 1, 15),
+                ("name_tag", 1, 1, 20),
+                ("chainmail_chestplate", 1, 1, 10),
+                ("diamond_hoe", 1, 1, 15),
+                ("diamond_chestplate", 1, 1, 5),
+                ("book", 1, 1, 10),
+                ("iron_ingot", 1, 4, 10),
+                ("bread", 1, 1, 20),
+                ("wheat", 1, 4, 20),
+                ("bucket", 1, 1, 10),
+                ("redstone", 1, 4, 15),
+                ("coal", 1, 4, 15),
+                ("melon_seeds", 2, 4, 10),
+                ("pumpkin_seeds", 2, 4, 10),
+                ("beetroot_seeds", 2, 4, 10),
+                ("bone", 1, 8, 10),
+                ("gunpowder", 1, 8, 10),
+                ("rotten_flesh", 1, 8, 10),
+                ("string", 1, 8, 10),
+            ],
+            (2, 7),
+        ),
         Loot::TrialSupply => (
             &[
                 ("arrow", 4, 14, 2),
@@ -3602,6 +4556,7 @@ mod tests {
             (Target::OceanRuin, Kind::OceanRuin, "chest", 1),
             (Target::Igloo, Kind::Igloo, "snow", 0),
             (Target::RuinedPortal, Kind::RuinedPortal, "netherrack", 0),
+            (Target::Mansion, Kind::Mansion, "dark_oak_planks", 3),
         ] {
             // Le monde sait qu'il a les plans (sinon `locate` ignore ces structures)
             near(&v, &p, &v.structures, 0, 0);
@@ -3650,7 +4605,7 @@ mod tests {
     fn loot_items_exist() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
         let Ok(data) = crate::data::GameData::load(&dir) else { return };
-        for kind in [Loot::Village, Loot::DesertPyramid, Loot::JungleTemple, Loot::Mineshaft, Loot::PillagerOutpost, Loot::AncientCity, Loot::TrialCorridor, Loot::TrialSupply, Loot::ShipwreckSupply, Loot::ShipwreckTreasure, Loot::ShipwreckMap, Loot::OceanRuin, Loot::Igloo, Loot::RuinedPortal] {
+        for kind in [Loot::Village, Loot::DesertPyramid, Loot::JungleTemple, Loot::Mineshaft, Loot::PillagerOutpost, Loot::AncientCity, Loot::TrialCorridor, Loot::TrialSupply, Loot::ShipwreckSupply, Loot::ShipwreckTreasure, Loot::ShipwreckMap, Loot::OceanRuin, Loot::Igloo, Loot::RuinedPortal, Loot::WoodlandMansion] {
             for (name, ..) in table(kind).0 {
                 assert!(data.item(&format!("minecraft:{}", name)).is_some() || data.item(name).is_some(), "objet inconnu : {}", name);
             }
@@ -3727,6 +4682,7 @@ mod tests {
             (Target::OceanRuin, Kind::OceanRuin, "oceanruin"),
             (Target::Igloo, Kind::Igloo, "igloo"),
             (Target::RuinedPortal, Kind::RuinedPortal, "portal"),
+            (Target::Mansion, Kind::Mansion, "mansion"),
         ] {
             near(&v, &p, &v.structures, 0, 0);
             let (x, _, z) = locate(&v, what, 0, 0).unwrap();

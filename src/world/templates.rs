@@ -108,7 +108,8 @@ pub struct Template {
     pub path: String,
     size: (i32, i32, i32),
     /// État Bedrock de chaque entrée de la palette, pour chacune des 4 rotations
-    states: [Vec<Option<u32>>; 4],
+    /// (indice : miroir × 4 + rotation ; miroir 0 aucun, 1 gauche-droite, 2 avant-arrière)
+    states: Vec<Vec<Option<u32>>>,
     blocks: Vec<(i16, i16, i16, u16)>,
     /// Coffres et leur table de butin (nom du jeu)
     chests: Vec<((i32, i32, i32), String)>,
@@ -151,6 +152,12 @@ impl Template {
     pub fn blocks_unturned(&self, r: u8) -> impl Iterator<Item = ((i32, i32, i32), u32)> + '_ {
         let r = (r & 3) as usize;
         self.blocks.iter().filter_map(move |&(x, y, z, i)| Some(((x as i32, y as i32, z as i32), self.states[r].get(i as usize).copied().flatten()?)))
+    }
+    /// Blocs du plan non tourné, avec leur état après le miroir puis la rotation donnés
+    /// (pièces du manoir : le jeu les retourne parfois).
+    pub fn blocks_mirrored(&self, mirror: u8, r: u8) -> impl Iterator<Item = ((i32, i32, i32), u32)> + '_ {
+        let k = (mirror as usize % 3) * 4 + (r & 3) as usize;
+        self.blocks.iter().filter_map(move |&(x, y, z, i)| Some(((x as i32, y as i32, z as i32), self.states[k].get(i as usize).copied().flatten()?)))
     }
     /// Repères du plan tourné : (position relative, texte).
     pub fn markers(&self, r: u8) -> impl Iterator<Item = ((i32, i32, i32), &str)> + '_ {
@@ -354,7 +361,7 @@ fn read_template(path: &str, tag: &Tag, resolve: &dyn Fn(&str) -> Option<u32>, u
             (name, props_of(e.get("Properties")))
         })
         .collect();
-    let mut t = Template { path: path.to_string(), size: (size[0], size[1], size[2]), states: Default::default(), blocks: Vec::new(), chests: Vec::new(), beds: Vec::new(), markers: Vec::new(), jigsaws: Vec::new() };
+    let mut t = Template { path: path.to_string(), size: (size[0], size[1], size[2]), states: vec![Vec::new(); 12], blocks: Vec::new(), chests: Vec::new(), beds: Vec::new(), markers: Vec::new(), jigsaws: Vec::new() };
     for b in tag.get("blocks")?.as_list()? {
         let pos: Vec<i32> = b.get("pos").and_then(|p| p.as_list()).map(|l| l.iter().filter_map(|t| t.as_int()).collect()).unwrap_or_default();
         let state = b.get("state").and_then(|s| s.as_int()).unwrap_or(0) as usize;
@@ -388,9 +395,14 @@ fn read_template(path: &str, tag: &Tag, resolve: &dyn Fn(&str) -> Option<u32>, u
     // Formes qui dépendent des voisins (coins d'escaliers, barrières, vitres, murets) :
     // recalculées comme le jeu le fait en posant un plan (les plus anciens les notent mal)
     fix_shapes(&mut palette, &mut t.blocks);
-    for (r, list) in t.states.iter_mut().enumerate() {
+    for (k, list) in t.states.iter_mut().enumerate() {
+        let (m, r) = ((k / 4) as u8, (k % 4) as u8);
+        // Le miroir ne sert qu'au manoir : inutile de le calculer pour les autres plans
+        if m > 0 && !path.starts_with("mansion/") {
+            continue;
+        }
         for (name, props) in &palette {
-            let s = java_to_bedrock(name, &rotate_props(props, r as u8), resolve);
+            let s = java_to_bedrock(name, &rotate_props(&mirror_props(props, m), r), resolve);
             if s.is_none() && name != "minecraft:jigsaw" {
                 #[cfg(test)]
                 eprintln!("inconnu {} {:?} r{} dans {}", name, props, r, path);
@@ -581,6 +593,37 @@ fn parse_state(s: &str) -> (String, Vec<(String, String)>) {
         }
         None => (s.to_string(), Vec::new()),
     }
+}
+
+/// Propriétés d'un bloc Java retourné : 1 gauche-droite (nord <-> sud), 2 avant-arrière
+/// (est <-> ouest). Les coins d'escaliers et les charnières changent de côté.
+fn mirror_props(props: &[(String, String)], m: u8) -> Vec<(String, String)> {
+    if m == 0 {
+        return props.to_vec();
+    }
+    let flip = |w: &str| -> String {
+        match (m, w) {
+            (1, "north") => "south".into(),
+            (1, "south") => "north".into(),
+            (2, "east") => "west".into(),
+            (2, "west") => "east".into(),
+            _ => w.into(),
+        }
+    };
+    props
+        .iter()
+        .map(|(k, v)| match k.as_str() {
+            "facing" => (k.clone(), flip(v)),
+            "north" | "south" | "east" | "west" => (flip(k), v.clone()),
+            "shape" => (k.clone(), if v.contains("left") { v.replace("left", "right") } else { v.replace("right", "left") }),
+            "hinge" => (k.clone(), if v == "left" { "right".into() } else { "left".into() }),
+            "rotation" => {
+                let r = v.parse::<i32>().unwrap_or(0);
+                (k.clone(), (if m == 1 { 8 - r } else { 16 - r }).rem_euclid(16).to_string())
+            }
+            _ => (k.clone(), v.clone()),
+        })
+        .collect()
 }
 
 /// Propriétés d'un bloc Java après `r` quarts de tour (sens des aiguilles d'une montre).
