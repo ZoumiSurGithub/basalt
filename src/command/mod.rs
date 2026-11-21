@@ -45,19 +45,19 @@ impl VanillaCommands {
             def(
                 "locate",
                 "commands.locate.description",
-                "/locate <mode:structure> <structure:village|desert_pyramid|jungle_temple|mineshaft|pillager_outpost|ancient_city|trail_ruins|trial_chambers> | /locate <mode:biome> <biome:biome>",
+                "/locate <mode:structure> <structure:village|desert_pyramid|jungle_temple|mineshaft|pillager_outpost|ancient_city|trail_ruins|trial_chambers> | /locate <mode:biome> <biome:biomes>",
                 true,
             ),
             def("kick", "commands.kick.description", "/kick <name:player> [reason:text]", true),
             def("op", "commands.op.description", "/op <player:player>", true),
             def("deop", "commands.deop.description", "/deop <player:player>", true),
-            def("allowlist", "commands.allowlist.description", "/allowlist <action:on|off|list|reload> | /allowlist <action:add|remove> <name>", true),
-            def("whitelist", "commands.allowlist.description", "/whitelist <action:on|off|list|reload> | /whitelist <action:add|remove> <name>", true),
+            def("allowlist", "commands.allowlist.description", "/allowlist <action:on|off|list|reload> | /allowlist <change:add|remove> <name>", true),
+            def("whitelist", "commands.allowlist.description", "/whitelist <action:on|off|list|reload> | /whitelist <change:add|remove> <name>", true),
             def("stop", "commands.stop.description", "/stop", true),
             // Commandes propres au serveur, comme sur PocketMine
             def("status", "Affiche la charge et l'état du serveur", "/status", true),
             def("version", "Affiche la version du serveur", "/version", true),
-            def("timings", "Mesure où passe le temps du serveur", "/timings <action:on|off|reset|report>", true),
+            def("timings", "Mesure où passe le temps du serveur", "/timings <option:on|off|reset|report>", true),
         ];
         &ALL
     }

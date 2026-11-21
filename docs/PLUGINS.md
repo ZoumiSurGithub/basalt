@@ -121,6 +121,7 @@ le nom :
 | `text` | tout le reste de la ligne |
 | `block` | un bloc du jeu, proposé pendant la frappe (`stone` ou `minecraft:stone`) |
 | `item` | un objet du jeu, proposé de la même façon |
+| `biomes` | un biome du terrain vanilla, proposé pendant la frappe |
 | `a\|b\|c` | un choix parmi ces mots : `<mode:on\|off>` |
 
 Plusieurs formes d'une même commande se séparent par ` | ` :
