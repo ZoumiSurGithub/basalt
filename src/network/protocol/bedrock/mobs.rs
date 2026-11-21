@@ -153,10 +153,58 @@ pub fn mob_metadata(width: f32, height: f32, variant: i32, color: u8, flags: i64
 pub const FLAG_BABY: i64 = 1 << 11;
 pub const FLAG_IN_LOVE: i64 = 1 << 7;
 pub const FLAG_SHEARED: i64 = 1 << 31;
+/// Montures : sellée, apprivoisée, dirigée au clavier par son cavalier, saut chargé
+pub const FLAG_SADDLED: i64 = 1 << 8;
+pub const FLAG_TAMED: i64 = 1 << 28;
+pub const FLAG_WASD_CONTROLLED: i64 = 1 << 44;
+pub const FLAG_CAN_POWER_JUMP: i64 = 1 << 45;
+/// Cavalier (le joueur assis sur une monture)
+pub const FLAG_RIDING: i64 = 1 << 2;
+/// Données d'entité du cavalier : position du siège sur la monture
+pub const META_SEAT_POSITION: u32 = 56;
 
 /// Événements d'entité propres aux animaux (ActorEvent)
 pub const EVENT_EAT_GRASS: u8 = 10;
 pub const EVENT_LOVE_PARTICLES: u8 = 21;
+/// Dressage d'une monture : raté (fumée, elle se cabre), réussi (cœurs)
+pub const EVENT_TAME_FAIL: u8 = 6;
+pub const EVENT_TAME_SUCCESS: u8 = 7;
+
+/// SetActorLink : un cavalier monte (1) ou descend (0) d'une monture.
+pub const ID_SET_ACTOR_LINK: u32 = 41;
+pub const LINK_REMOVE: u8 = 0;
+pub const LINK_RIDER: u8 = 1;
+
+/// Un lien monture → cavalier, tel qu'il s'écrit dans SetActorLink et AddActor : monture,
+/// cavalier, type, immédiat, à l'initiative du cavalier, vitesse de rotation de la monture.
+fn write_link(w: &mut W, ridden: i64, rider: i64, kind: u8, immediate: bool) {
+    w.vari64(ridden);
+    w.vari64(rider);
+    w.u8(kind);
+    w.bool(immediate);
+    w.bool(true);
+    w.f32(0.0);
+}
+
+pub fn set_actor_link(ridden: i64, rider: i64, kind: u8, immediate: bool) -> Vec<u8> {
+    let mut w = W::default();
+    write_link(&mut w, ridden, rider, kind, immediate);
+    w.0
+}
+
+/// MoveActorAbsolute envoyé par le jeu pour la monture qu'il dirige : (identifiant,
+/// position, tangage, lacet). Refuse les valeurs aberrantes.
+pub fn read_move_actor(body: &[u8]) -> Option<(u64, (f32, f32, f32), f32, f32)> {
+    let mut pos = 0;
+    let id = read_varu64(body, &mut pos)?;
+    pos += 1; // drapeaux (au sol, téléportation)
+    let f = |at: usize| body.get(at..at + 4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let (x, y, z) = (f(pos)?, f(pos + 4)?, f(pos + 8)?);
+    let angle = |at: usize| body.get(at).map(|b| *b as f32 * 360.0 / 256.0);
+    let (pitch, yaw) = (angle(pos + 12)?, angle(pos + 13)?);
+    let sane = x.is_finite() && y.is_finite() && z.is_finite() && x.abs() < 3.0e7 && z.abs() < 3.0e7 && y.abs() < 1.0e5;
+    sane.then_some((id, (x, y, z), pitch, yaw))
+}
 
 /// SetActorData : données d'entité changées (bébé devenu adulte, mouton tondu…).
 pub fn set_actor_data(id: i64, entries: &[(u32, Meta)]) -> Vec<u8> {
@@ -196,7 +244,7 @@ pub fn level_sound(sound: &str, pos: (f32, f32, f32), entity: &str, baby: bool, 
 
 /// AddActor : une créature apparaît chez le joueur.
 #[allow(clippy::too_many_arguments)]
-pub fn add_actor(id: i64, kind: &str, pos: (f32, f32, f32), motion: (f32, f32, f32), yaw: f32, health: (f32, f32), metadata: &[(u32, Meta)]) -> Vec<u8> {
+pub fn add_actor(id: i64, kind: &str, pos: (f32, f32, f32), motion: (f32, f32, f32), yaw: f32, health: (f32, f32), mount: Option<(f32, f32)>, rider: Option<i64>, metadata: &[(u32, Meta)]) -> Vec<u8> {
     let mut w = W::default();
     w.vari64(id); // identifiant unique
     w.varu64(id as u64); // identifiant d'exécution
@@ -209,7 +257,11 @@ pub fn add_actor(id: i64, kind: &str, pos: (f32, f32, f32), motion: (f32, f32, f
     w.f32(yaw); // tête
     w.f32(yaw); // corps
     // Attributs : (nom, minimum, valeur, maximum), comme le serveur officiel
-    let attributes: [(&str, f32, f32, f32); 2] = [("minecraft:health", 0.0, health.0, health.1), ("minecraft:movement", 0.0, 0.25, f32::MAX)];
+    // Monture : sa vitesse et la force de son saut (le jeu du cavalier s'en sert pour la diriger)
+    let mut attributes: Vec<(&str, f32, f32, f32)> = vec![("minecraft:health", 0.0, health.0, health.1), ("minecraft:movement", 0.0, mount.map(|m| m.0).unwrap_or(0.25), f32::MAX)];
+    if let Some((_, jump)) = mount {
+        attributes.push(("minecraft:horse.jump_strength", 0.0, jump, 2.0));
+    }
     w.varu32(attributes.len() as u32);
     for (name, min, value, max) in attributes {
         w.string(name);
@@ -220,7 +272,14 @@ pub fn add_actor(id: i64, kind: &str, pos: (f32, f32, f32), motion: (f32, f32, f
     write_metadata(&mut w, metadata);
     w.varu32(0); // propriétés entières
     w.varu32(0); // propriétés décimales
-    w.varu32(0); // liens
+    // Liens : le cavalier déjà en selle
+    match rider {
+        Some(r) => {
+            w.varu32(1);
+            write_link(&mut w, id, r, LINK_RIDER, true);
+        }
+        None => w.varu32(0),
+    }
     // Un octet nul de plus, comme dans le paquet officiel (sans lui : « invalid numeric value »)
     w.u8(0);
     w.0
@@ -231,13 +290,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mount_packets() {
+        // La position renvoyée par le jeu du cavalier se relit (angles sur 256 valeurs)
+        let pk = move_actor_absolute(300, (1.5, 64.0, -2.25), 0.0, 90.0, 90.0, true);
+        let (id, pos, _, yaw) = read_move_actor(&pk).unwrap();
+        assert_eq!((id, pos), (300, (1.5, 64.0, -2.25)));
+        assert!((yaw - 90.0).abs() < 1.5);
+        assert_eq!(read_move_actor(&[1, 0, 0]), None);
+        // Lien : monture, cavalier, type, immédiat, à l'initiative du cavalier, rotation
+        assert_eq!(set_actor_link(3, 1, LINK_RIDER, false), vec![6, 2, 1, 0, 1, 0, 0, 0, 0]);
+        // AddActor d'une monture : vitesse et saut parmi les attributs, cavalier parmi les liens
+        let p = add_actor(3, "minecraft:horse", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.0, (20.0, 25.0), Some((0.3, 0.7)), Some(1), &[]);
+        let jump = b"minecraft:horse.jump_strength";
+        assert!(p.windows(jump.len()).any(|w| w == jump));
+        assert!(p.ends_with(&[1, 6, 2, 1, 1, 1, 0, 0, 0, 0, 0]), "{:?}", &p[p.len() - 12..]);
+    }
+
+    #[test]
     fn metadata_is_written_like_the_recorded_one() {
         // Même écriture que les données relevées des objets au sol : n° 38, taille 1,0
         let mut w = W::default();
         write_metadata(&mut w, &[(38, Meta::Float(1.0)), (0, Meta::Long(3 << 48))]);
         assert_eq!(&w.0[..8], &[2, 0x26, 3, 3, 0, 0, 0x80, 0x3f]);
         assert_eq!(&w.0[8..11], &[0, 7, 7]);
-        let p = add_actor(5, "minecraft:cow", (1.0, 2.0, 3.0), (0.0, 0.0, 0.0), 90.0, (10.0, 10.0), &mob_metadata(0.9, 1.4, 0, 0, MOB_FLAGS));
+        let p = add_actor(5, "minecraft:cow", (1.0, 2.0, 3.0), (0.0, 0.0, 0.0), 90.0, (10.0, 10.0), None, None, &mob_metadata(0.9, 1.4, 0, 0, MOB_FLAGS));
         assert_eq!(&p[..3], &[10, 5, 13]);
         assert_eq!(&p[p.len() - 4..], &[0, 0, 0, 0], "quatre octets nuls à la fin");
         // 69 données d'entité, comme le paquet officiel

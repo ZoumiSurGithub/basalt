@@ -296,6 +296,8 @@ struct Client {
     pack_responses: u8,
     chunks_sent: bool,
     joined: bool,
+    /// Monture sur laquelle il est en selle
+    riding: Option<i64>,
     /// Dernière position annoncée par le jeu
     pos: (f32, f32, f32),
     /// Chunk au centre de la zone chargée, et rayon accordé
@@ -1196,7 +1198,9 @@ impl Server {
         let mut fall: Option<Cause> = None;
         let mut fall_amount = 0.0;
         let max_speed = self.max_speed(self.clients.get(addr).map(|c| c.mode.may_fly()).unwrap_or(false));
-        let check = self.cfg.movement_check;
+        // En selle : la vitesse est celle de la monture, et pas de chute
+        let riding = self.clients.get(addr).map(|c| c.riding.is_some()).unwrap_or(false);
+        let check = self.cfg.movement_check && !riding;
         // Le déplacement sera diffusé au prochain tick
         let tick = self.tick + 1;
         let mut correction = None;
@@ -1244,7 +1248,7 @@ impl Server {
                     let feet = pos.1 - player_eye_height();
                     if feet < -128.0 {
                         fall = Some(Cause::Void);
-                    } else if !c.mode.takes_damage() || footing == Footing::Liquid {
+                    } else if !c.mode.takes_damage() || footing == Footing::Liquid || riding {
                         c.fall_peak = None;
                     } else if footing == Footing::Air {
                         c.fall_peak = Some(c.fall_peak.map(|p| p.max(feet)).unwrap_or(feet));
@@ -1276,6 +1280,9 @@ impl Server {
         }
         if let Some(packet) = correction {
             self.send(addr, bedrock::ID_MOVE_PLAYER, &packet);
+        }
+        if riding {
+            self.follow_rider(addr);
         }
         if let Some(cause) = fall {
             self.hurt(addr, fall_amount, cause);
@@ -2903,6 +2910,7 @@ impl Server {
     /// Mort d'un joueur : écran de mort chez lui, chute du personnage chez les autres, message
     /// à tous. Son inventaire tombe au sol, comme dans le jeu.
     fn die(&mut self, addr: &SocketAddr, cause: Cause) {
+        self.dismount(addr);
         let tick = self.tick;
         let (id, name) = match self.clients.get_mut(addr) {
             Some(c) if c.dead.is_none() => {
@@ -5454,6 +5462,10 @@ impl Server {
                             changed_posture = Some(c.id);
                         }
                     }
+                    // S'accroupir en selle : on descend
+                    if changed_posture.is_some() && posture.0 && self.clients.get(&addr).map(|c| c.riding.is_some()).unwrap_or(false) {
+                        self.dismount(&addr);
+                    }
                     if let Some(id) = changed_posture {
                         // Les joueurs qui le voient reçoivent sa nouvelle posture
                         let flags = Self::remote_flags(posture.0, posture.1);
@@ -5553,8 +5565,12 @@ impl Server {
                 (Stage::InGame, bedrock::ID_INTERACT) => {
                     if bedrock::read_open_inventory(&body) {
                         self.on_open_inventory(&addr);
+                    } else if body.first() == Some(&3) {
+                        // Descendre de sa monture
+                        self.dismount(&addr);
                     }
                 }
+                (Stage::InGame, bedrock::ID_MOVE_ACTOR_ABSOLUTE) => self.on_rider_move(&addr, &body),
                 (Stage::InGame, bedrock::ID_CONTAINER_CLOSE) => self.on_close_container(&addr, &body),
                 (Stage::InGame, bedrock::ID_ITEM_STACK_REQUEST) => self.on_stack_request(&addr, &body),
                 (Stage::InGame, bedrock::ID_INVENTORY_TRANSACTION) if bedrock::read_attack(&body).is_some() => {
@@ -5764,6 +5780,7 @@ impl Server {
                         listed: HashMap::new(),
                         items_seen: HashSet::new(),
                         mobs_seen: HashSet::new(),
+                        riding: None,
                         data: None,
                         first_visit: false,
                         reported_error: false,
@@ -5775,6 +5792,10 @@ impl Server {
             RakEvent::Disconnected(addr, fault) => {
                 let _t = timings::scope("Départ d'un joueur (sauvegarde, annonce)");
                 if let Some(c) = self.clients.remove(&addr) {
+                    // En selle : la monture est libérée
+                    if let Some(mob) = c.riding {
+                        self.release_mount(mob, c.id);
+                    }
                     // Mise au point : le jeu est parti de lui-même juste après l'apparition
                     // (écran d'erreur « Block ») : on passe à l'expérience suivante.
                     if self.items_level > 0

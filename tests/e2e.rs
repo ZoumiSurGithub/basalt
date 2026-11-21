@@ -2148,6 +2148,36 @@ fn summon_makes_an_animal_appear() {
     assert_eq!(wait_for(&mut steve, Some("Objet invoqué : mooshroom"), Some(b"minecraft:mooshroom")), (true, true));
     command(&mut steve, "/summon licorne");
     assert_eq!(wait_for(&mut steve, Some("ne sait pas encore"), None), (true, true));
+    // En selle : un clic droit sur un âne adulte, main vide, le lie au joueur (SetActorLink,
+    // type 1) ; « descendre » (Interact, action 3) le délie (type 0)
+    command(&mut steve, "/summon donkey ~-2 ~ ~-2");
+    let mut donkey = None;
+    let started = std::time::Instant::now();
+    while donkey.is_none() && started.elapsed() < Duration::from_secs(10) {
+        if let Some((13, body)) = steve.poll_game(Duration::from_millis(300)) {
+            if body.windows(16).any(|w| w == b"minecraft:donkey") {
+                donkey = Some(body[1]);
+            }
+        }
+    }
+    let donkey = donkey.expect("l'âne invoqué est montré");
+    let mut click = vec![0x00, 0x03, 0x00, donkey, 0x00];
+    click.extend_from_slice(&[0x00, 0, 0, 0, 0, 0, 0, 0, 0]);
+    steve.game(30, &click, Some(0xff));
+    let link = |c: &mut Client| {
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(5) {
+            if let Some((41, body)) = c.poll_game(Duration::from_millis(300)) {
+                return Some(body);
+            }
+        }
+        None
+    };
+    let on = link(&mut steve).expect("lien de monture reçu");
+    assert_eq!((on[0], on[2]), (donkey * 2, 1), "monture, puis type « cavalier » : {:?}", on);
+    steve.game(33, &[3, donkey, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], Some(0xff));
+    let off = link(&mut steve).expect("lien retiré à la descente");
+    assert_eq!(off[2], 0, "type « retiré » : {:?}", off);
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = handle.join();
     let _ = std::fs::remove_dir_all(&dir);

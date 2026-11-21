@@ -116,6 +116,10 @@ pub const FLAG_SNEAKING: i64 = 1 << 1;
 /// En train de courir.
 pub const FLAG_SPRINTING: i64 = 1 << 3;
 
+/// Indicateurs du joueur chez lui : peut grimper (19), respire (35), a des collisions (48),
+/// subit la gravité (49).
+pub const OWN_PLAYER_FLAGS: i64 = (1i64 << 19) | (1 << 35) | (1 << 48) | (1 << 49);
+
 /// Met à jour les indicateurs d'une entité chez un client (accroupi, en course…).
 pub fn set_actor_flags(runtime_id: u64, flags: i64) -> Vec<u8> {
     let mut w = W::default();
@@ -141,7 +145,7 @@ pub fn set_actor_data_player(runtime_id: u64) -> Vec<u8> {
     w.u8(7); // type : entier 64 bits
     // peut grimper (19), respire (35), a des collisions (48), subit la gravité (49).
     // Sans le drapeau de gravité, le joueur glisse et ne peut pas sauter.
-    w.vari64((1i64 << 19) | (1 << 35) | (1 << 48) | (1 << 49));
+    w.vari64(OWN_PLAYER_FLAGS);
     w.varu32(0); // propriétés entières
     w.varu32(0); // propriétés décimales
     w.varu64(0); // tick

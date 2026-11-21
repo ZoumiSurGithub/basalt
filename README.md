@@ -47,7 +47,8 @@ jeu (Bedrock 1.26.63 à 1.26.66 sous Windows, deux comptes Xbox en même temps).
   champimeuhs (champs de champignons : soupe au bol, lait, tondues elles redeviennent
   vaches), chèvres (sommets, parfois « hurleuses »), lamas (collines venteuses, plateaux
   de savane), chevaux (7 robes × 5 motifs), ânes et mules (cheval + âne) avec leurs
-  qualités tirées au sort, soignés et grandis par leur nourriture ; `/summon <animal>` ;
+  qualités tirées au sort, soignés et grandis par leur nourriture ; montures à apprivoiser
+  en les montant, à seller pour les diriger ; `/summon <animal>` ;
   `spawn-animals=false` pour s'en passer ;
 - personnages non joueurs (PNJ) créés par les plugins, qui marchent seuls (`server.spawnNpc`) ;
 - connexion par RakNet (jeux plus anciens que 1.26.60), avec son chiffrement (ECDH + AES-256) ;

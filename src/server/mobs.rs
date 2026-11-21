@@ -67,6 +67,35 @@ impl Species {
     fn mount(self) -> bool {
         matches!(self, Species::Llama | Species::Horse | Species::Donkey | Species::Mule)
     }
+    /// Se dirige au clavier une fois apprivoisée et sellée (pas le lama)
+    fn steerable(self) -> bool {
+        matches!(self, Species::Horse | Species::Donkey | Species::Mule)
+    }
+    /// Patience maximale au dressage (« max_temper » du jeu)
+    fn max_temper(self) -> u32 {
+        if self == Species::Llama {
+            30
+        } else {
+            100
+        }
+    }
+    /// Ce qui l'amadoue pendant le dressage : (objet, patience gagnée)
+    fn temper_items(self) -> &'static [(&'static str, u32)] {
+        match self {
+            Species::Horse | Species::Donkey | Species::Mule => &[("wheat", 3), ("sugar", 3), ("apple", 3), ("golden_carrot", 5), ("golden_apple", 10), ("enchanted_golden_apple", 10)],
+            Species::Llama => &[("wheat", 3), ("hay_block", 6)],
+            _ => &[],
+        }
+    }
+    /// Position du cavalier (ses yeux) par rapport à la monture : le siège du jeu (1,1 bloc pour
+    /// le cheval) plus la hauteur des yeux du joueur assis
+    fn seat(self) -> (f32, f32, f32) {
+        match self {
+            Species::Donkey | Species::Mule => (0.0, 2.175, -0.2),
+            Species::Llama => (0.0, 2.37, -0.3),
+            _ => (0.0, 2.3, -0.2),
+        }
+    }
     /// Vie maximale (celle du jeu ; les montures tirent la leur entre 15 et 30)
     fn health(self) -> f32 {
         match self {
@@ -217,6 +246,16 @@ pub(super) struct Mob {
     move_speed: f32,
     jump: f32,
     strength: u8,
+    /// Sellée (monture)
+    saddled: bool,
+    /// Patience gagnée au dressage (chaque essai raté la fait monter)
+    temper: u32,
+    /// Joueur en selle
+    pub rider: Option<SocketAddr>,
+    /// Ticks avant l'essai de dressage (cavalier sur une monture sauvage)
+    tame_in: u32,
+    /// Tick du dernier déplacement imposé par le cavalier
+    driven: u64,
 }
 
 impl Mob {
@@ -234,7 +273,21 @@ impl Mob {
         if self.sheared {
             f |= bedrock::FLAG_SHEARED;
         }
+        if self.tamed {
+            f |= bedrock::FLAG_TAMED;
+        }
+        if self.saddled {
+            f |= bedrock::FLAG_SADDLED;
+            // Apprivoisée et sellée : son cavalier la dirige (saut chargé du cheval)
+            if self.tamed && self.species.steerable() {
+                f |= bedrock::FLAG_WASD_CONTROLLED | bedrock::FLAG_CAN_POWER_JUMP;
+            }
+        }
         f
+    }
+    /// Dirigée par son cavalier (le jeu de celui-ci la déplace)
+    fn driven_by_rider(&self) -> bool {
+        self.rider.is_some() && self.tamed && self.saddled && self.species.steerable()
     }
     fn size(&self) -> (f32, f32) {
         let (w, h) = self.species.size();
@@ -270,6 +323,8 @@ pub(super) struct MobRecord {
     pub move_speed: f32,
     pub jump: f32,
     pub strength: u8,
+    pub saddled: bool,
+    pub temper: u32,
 }
 
 impl MobRecord {
@@ -292,6 +347,8 @@ impl MobRecord {
             ("speed".into(), Json::Num((self.move_speed as f64 * 10000.0).round() / 10000.0)),
             ("jump".into(), Json::Num((self.jump as f64 * 10000.0).round() / 10000.0)),
             ("strength".into(), Json::Num(self.strength as f64)),
+            ("saddled".into(), Json::Bool(self.saddled)),
+            ("temper".into(), Json::Num(self.temper as f64)),
         ])
     }
 
@@ -310,6 +367,8 @@ impl MobRecord {
             move_speed: num("speed").unwrap_or(0.0) as f32,
             jump: num("jump").unwrap_or(0.0) as f32,
             strength: num("strength").unwrap_or(0.0).clamp(0.0, 5.0) as u8,
+            saddled: v.get("saddled").and_then(|s| s.as_bool()).unwrap_or(false),
+            temper: num("temper").unwrap_or(0.0).clamp(0.0, 100.0) as u32,
             age: num("age").unwrap_or(0.0) as i64,
             color: num("color").unwrap_or(0.0) as u8 & 15,
             variant: num("variant").unwrap_or(0.0) as i32,
@@ -335,6 +394,8 @@ impl Mob {
             move_speed: self.move_speed,
             jump: self.jump,
             strength: self.strength,
+            saddled: self.saddled,
+            temper: self.temper,
         }
     }
 }
@@ -588,6 +649,11 @@ impl Server {
             move_speed,
             jump,
             strength,
+            saddled: false,
+            temper: 0,
+            rider: None,
+            tame_in: 0,
+            driven: 0,
         };
         self.mobs.insert(id, mob);
         self.mobs_dirty = true;
@@ -611,8 +677,8 @@ impl Server {
     }
 
     /// Paquet d'apparition d'une créature.
-    fn mob_packet(m: &Mob) -> Vec<u8> {
-        bedrock::add_actor(m.id, m.species.id(), m.pos, m.vel, m.yaw, (m.health.max(0.5), m.max_health), &Self::mob_meta(m))
+    fn mob_packet(m: &Mob, rider: Option<i64>) -> Vec<u8> {
+        bedrock::add_actor(m.id, m.species.id(), m.pos, m.vel, m.yaw, (m.health.max(0.5), m.max_health), m.species.mount().then_some((m.move_speed, m.jump)), rider, &Self::mob_meta(m))
     }
 
     /// Envoie aux joueurs qui la voient l'état changé d'une créature (bébé devenu adulte,
@@ -629,6 +695,7 @@ impl Server {
     /// Montre à chaque joueur les créatures proches de lui et retire les autres.
     pub(super) fn show_mobs(&mut self) {
         let mut out: Vec<(SocketAddr, u32, Vec<u8>)> = Vec::new();
+        let ids: HashMap<SocketAddr, i64> = self.clients.iter().map(|(a, c)| (*a, c.id)).collect();
         for (addr, c) in self.clients.iter_mut() {
             if !c.joined || c.stage != Stage::InGame {
                 continue;
@@ -640,7 +707,7 @@ impl Server {
                 let has_chunk = c.delivered.contains(&chunk);
                 if far < VIEW * VIEW && m.dead.is_none() && has_chunk {
                     if c.mobs_seen.insert(m.id) {
-                        out.push((*addr, bedrock::ID_ADD_ACTOR, Self::mob_packet(m)));
+                        out.push((*addr, bedrock::ID_ADD_ACTOR, Self::mob_packet(m, m.rider.and_then(|r| ids.get(&r).copied()))));
                     }
                 } else if (far > (VIEW + 16.0) * (VIEW + 16.0) || !has_chunk) && c.mobs_seen.remove(&m.id) {
                     out.push((*addr, bedrock::ID_REMOVE_ACTOR, bedrock::remove_actor(m.id)));
@@ -701,6 +768,24 @@ impl Server {
             }
             let near = players.iter().any(|(p, _)| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2) < active * active);
             if !near {
+                continue;
+            }
+            if m.rider.is_some() {
+                // En selle : la monture suit son cavalier (ou attend le dressage)
+                let had_love = m.love > 0;
+                self.mob_age(&mut m);
+                let tame = !m.tamed && m.tame_in > 0 && {
+                    m.tame_in -= 1;
+                    m.tame_in == 0
+                };
+                let love = m.love;
+                self.mobs.insert(id, m);
+                if had_love && love == 0 {
+                    self.mob_changed(id);
+                }
+                if tame {
+                    self.try_tame(id);
+                }
                 continue;
             }
             let (cx, cz) = ((m.pos.0.floor() as i32) >> 4, (m.pos.2.floor() as i32) >> 4);
@@ -1038,12 +1123,16 @@ impl Server {
         m.target = None;
         m.love = 0;
         let dead = m.health <= 0.0;
+        let rider = m.rider;
         if dead {
             m.dead = Some(tick);
         }
         self.mobs_dirty = true;
         self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_HURT, 0));
         if dead {
+            if let Some(r) = rider {
+                self.dismount(&r);
+            }
             self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_DEATH, 0));
             self.mob_loot(id);
         }
@@ -1058,12 +1147,12 @@ impl Server {
         if m.dead.is_some() {
             return true;
         }
-        let (held, creative, near) = match self.clients.get(addr) {
+        let (held, creative, near, riding) = match self.clients.get(addr) {
             Some(c) => {
                 let h = c.inv.held();
                 let name = if h.is_empty() { String::new() } else { self.data.as_ref().and_then(|d| d.item_by_id(h.id)).map(|d| d.name.trim_start_matches("minecraft:").to_string()).unwrap_or_default() };
                 let near = (c.pos.0 - m.pos.0).powi(2) + (c.pos.2 - m.pos.2).powi(2) < 8.0 * 8.0;
-                (name, c.mode == GameMode::Creative, near)
+                (name, c.mode == GameMode::Creative, near, c.riding.is_some())
             }
             None => return true,
         };
@@ -1088,6 +1177,7 @@ impl Server {
         let grow = m.species.grow_items().iter().find(|(name, _)| *name == held).map(|(_, g)| *g);
         let heal = m.species.heal_items().iter().find(|(name, _)| *name == held).map(|(_, h)| *h);
         let breeds = m.species.breed_items().contains(&held.as_str()) && (!m.species.mount() || m.tamed);
+        let temper = if m.tamed { None } else { m.species.temper_items().iter().find(|(name, _)| *name == held).map(|(_, t)| *t) };
         if held == "shears" && m.species == Species::Sheep && !m.baby() && !m.sheared {
             // Tonte : 1 à 3 laines de sa couleur
             if let Some(wool) = self.item_id(&format!("{}_wool", COLORS[m.color as usize & 15])) {
@@ -1115,10 +1205,18 @@ impl Server {
         } else if held == "bowl" && m.species == Species::Mooshroom && !m.baby() {
             // Champimeuh : un bol devient une soupe de champignons
             swap(self, "mushroom_stew");
-        } else if let (Some(h), true) = (heal, m.health < m.max_health) {
-            // Monture blessée : le repas la soigne
+        } else if held == "saddle" && m.tamed && !m.saddled && m.species.steerable() && !m.baby() {
+            // Selle posée : son cavalier pourra la diriger
             if let Some(s) = self.mobs.get_mut(&id) {
-                s.health = (s.health + h).min(s.max_health);
+                s.saddled = true;
+            }
+            changed = true;
+            used = true;
+        } else if heal.is_some() && (m.health < m.max_health || temper.is_some()) {
+            // Monture blessée : le repas la soigne ; sauvage, il l'amadoue (dressage plus facile)
+            if let Some(s) = self.mobs.get_mut(&id) {
+                s.health = (s.health + heal.unwrap_or(0.0)).min(s.max_health);
+                s.temper = (s.temper + temper.unwrap_or(0)).min(s.species.max_temper());
             }
             used = true;
         } else if let (Some(g), true) = (grow, m.baby()) {
@@ -1134,6 +1232,9 @@ impl Server {
             self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_LOVE_PARTICLES, 0));
             changed = true;
             used = true;
+        } else if m.species.mount() && !m.baby() && m.rider.is_none() && !riding && !m.species.breed_items().contains(&held.as_str()) {
+            // Main vide (ou un objet sans usage ici) : en selle
+            self.mount_mob(addr, id);
         }
         if used && !creative {
             if let Some(c) = self.clients.get_mut(addr) {
@@ -1186,6 +1287,160 @@ impl Server {
         Ok(())
     }
 
+    /// Le joueur monte sur la monture : lien envoyé à tous ceux qui la voient, et le joueur
+    /// devient cavalier (assis sur le siège). Une monture sauvage tente ensuite de le jeter.
+    pub(super) fn mount_mob(&mut self, addr: &SocketAddr, id: i64) {
+        let Some(player) = self.clients.get(addr).map(|c| c.id) else { return };
+        let Some(m) = self.mobs.get_mut(&id) else { return };
+        if m.rider.is_some() || m.dead.is_some() {
+            return;
+        }
+        m.rider = Some(*addr);
+        m.target = None;
+        m.vel = (0.0, 0.0, 0.0);
+        let (seat, wild) = (m.species.seat(), !m.tamed);
+        if wild {
+            // Quelques secondes avant de décider : apprivoisée ou jeté à terre
+            m.tame_in = 40 + self.mob_rng.below(60);
+        }
+        if let Some(c) = self.clients.get_mut(addr) {
+            c.riding = Some(id);
+            c.fall_peak = None;
+        }
+        let link = bedrock::set_actor_link(id, player, bedrock::LINK_RIDER, false);
+        self.send_to_viewers(id, bedrock::ID_SET_ACTOR_LINK, &link);
+        self.rider_data(addr, Some(seat));
+        self.mob_changed(id);
+    }
+
+    /// Le cavalier descend (de lui-même, jeté par une monture sauvage, mort ou parti).
+    pub(super) fn dismount(&mut self, addr: &SocketAddr) {
+        let (mob, player) = match self.clients.get_mut(addr) {
+            Some(c) => match c.riding.take() {
+                Some(m) => (m, c.id),
+                None => return,
+            },
+            None => return,
+        };
+        self.release_mount(mob, player);
+        self.rider_data(addr, None);
+    }
+
+    /// La monture n'a plus de cavalier (lien retiré chez tous ceux qui la voient).
+    pub(super) fn release_mount(&mut self, mob: i64, player: i64) {
+        if let Some(m) = self.mobs.get_mut(&mob) {
+            m.rider = None;
+            m.tame_in = 0;
+            m.sent = (f32::MAX, 0.0, 0.0); // position renvoyée à tous au prochain tick
+        }
+        let link = bedrock::set_actor_link(mob, player, bedrock::LINK_REMOVE, false);
+        self.send_to_viewers(mob, bedrock::ID_SET_ACTOR_LINK, &link);
+        let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.visible.contains(&player)).map(|(a, _)| *a).collect();
+        for v in viewers {
+            self.send(&v, bedrock::ID_SET_ACTOR_LINK, &link);
+        }
+    }
+
+    /// Données du joueur cavalier (ou redevenu piéton, `seat` à None), chez lui et chez ceux
+    /// qui le voient : indicateur « en selle » et position du siège.
+    fn rider_data(&mut self, addr: &SocketAddr, seat: Option<(f32, f32, f32)>) {
+        let Some(c) = self.clients.get(addr) else { return };
+        let (id, sneaking, sprinting) = (c.id, c.sneaking, c.sprinting);
+        let riding = if seat.is_some() { bedrock::FLAG_RIDING } else { 0 };
+        let seat = seat.unwrap_or((0.0, 0.0, 0.0));
+        let own = bedrock::OWN_PLAYER_FLAGS | riding;
+        let packet = bedrock::set_actor_data(id, &[(0, bedrock::Meta::Long(own)), (bedrock::META_SEAT_POSITION, bedrock::Meta::Vec3(seat.0, seat.1, seat.2))]);
+        self.send(addr, bedrock::ID_SET_ACTOR_DATA, &packet);
+        let others = Self::remote_flags(sneaking, sprinting) | riding;
+        let packet = bedrock::set_actor_data(id, &[(0, bedrock::Meta::Long(others)), (bedrock::META_SEAT_POSITION, bedrock::Meta::Vec3(seat.0, seat.1, seat.2))]);
+        let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(a, c)| *a != addr && c.visible.contains(&id)).map(|(a, _)| *a).collect();
+        for v in viewers {
+            self.send(&v, bedrock::ID_SET_ACTOR_DATA, &packet);
+        }
+    }
+
+    /// Essai de dressage d'une monture sauvage montée : réussi si le hasard tombe sous sa
+    /// patience (comme le jeu) ; sinon elle jette son cavalier et sera plus patiente ensuite.
+    fn try_tame(&mut self, id: i64) {
+        let Some(m) = self.mobs.get(&id) else { return };
+        let (max, temper, rider) = (m.species.max_temper(), m.temper, m.rider);
+        if self.mob_rng.below(max) < temper {
+            if let Some(m) = self.mobs.get_mut(&id) {
+                m.tamed = true;
+            }
+            self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_TAME_SUCCESS, 0));
+            self.mob_changed(id);
+        } else {
+            if let Some(m) = self.mobs.get_mut(&id) {
+                m.temper = (m.temper + 5).min(max);
+            }
+            self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_TAME_FAIL, 0));
+            if let Some(r) = rider {
+                self.dismount(&r);
+            }
+        }
+    }
+
+    /// Position de sa monture envoyée par le jeu du cavalier (il la dirige lui-même) : elle
+    /// est reprise et montrée aux autres joueurs.
+    pub(super) fn on_rider_move(&mut self, addr: &SocketAddr, body: &[u8]) {
+        let Some((runtime, pos, _pitch, yaw)) = bedrock::read_move_actor(body) else { return };
+        let Some((riding, player)) = self.clients.get(addr).map(|c| (c.riding, c.pos)) else { return };
+        if riding != Some(runtime as i64) {
+            return;
+        }
+        self.steer_mount(runtime as i64, pos, yaw, Some(player));
+    }
+
+    /// Déplace une monture dirigée par son cavalier (refus si elle s'écarte de lui).
+    pub(super) fn steer_mount(&mut self, id: i64, pos: (f32, f32, f32), yaw: f32, player: Option<(f32, f32, f32)>) {
+        let tick = self.tick;
+        let Some(m) = self.mobs.get_mut(&id) else { return };
+        if !m.driven_by_rider() {
+            return;
+        }
+        if let Some(p) = player {
+            if (p.0 - pos.0).powi(2) + (p.2 - pos.2).powi(2) > 8.0 * 8.0 {
+                return;
+            }
+        }
+        m.pos = pos;
+        m.yaw = yaw.rem_euclid(360.0);
+        m.driven = tick;
+        let moved = (m.pos.0 - m.sent.0).abs() + (m.pos.1 - m.sent.1).abs() + (m.pos.2 - m.sent.2).abs() > 0.01 || (m.yaw - m.sent_yaw).abs() > 3.0;
+        if !moved {
+            return;
+        }
+        m.sent = m.pos;
+        m.sent_yaw = m.yaw;
+        let rider = m.rider;
+        let packet = bedrock::move_actor_absolute(id, pos, 0.0, m.yaw, m.yaw, true);
+        self.mobs_dirty = true;
+        // Le cavalier la déplace lui-même : on ne la lui renvoie pas
+        let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(a, c)| Some(**a) != rider && c.mobs_seen.contains(&id)).map(|(a, _)| *a).collect();
+        for v in viewers {
+            self.send(&v, bedrock::ID_MOVE_ACTOR_ABSOLUTE, &packet);
+        }
+    }
+
+    /// Le cavalier a bougé : si son jeu n'a pas envoyé la position de la monture depuis un
+    /// moment, elle est déduite de la sienne (sous le siège).
+    pub(super) fn follow_rider(&mut self, addr: &SocketAddr) {
+        let Some((Some(id), pos, yaw)) = self.clients.get(addr).map(|c| (c.riding, c.pos, c.yaw)) else { return };
+        let tick = self.tick;
+        let Some(m) = self.mobs.get(&id) else { return };
+        if !m.driven_by_rider() || tick.saturating_sub(m.driven) < 10 {
+            return;
+        }
+        let seat = m.species.seat();
+        let driven = m.driven;
+        self.steer_mount(id, (pos.0, pos.1 - seat.1, pos.2), yaw, None);
+        // (Position déduite : n'empêche pas une vraie position du jeu d'arriver ensuite)
+        if let Some(m) = self.mobs.get_mut(&id) {
+            m.driven = driven;
+        }
+    }
+
     /// Change l'espèce d'une créature (champimeuh tondue → vache) : elle est retirée puis
     /// remontrée aux joueurs sous sa nouvelle forme, à la même place.
     fn transform_mob(&mut self, id: i64, into: Species) {
@@ -1205,6 +1460,11 @@ impl Server {
     /// Butin d'une créature morte, lâché sur place (rien pour un petit).
     fn mob_loot(&mut self, id: i64) {
         let Some(m) = self.mobs.get(&id).cloned() else { return };
+        if m.saddled {
+            if let Some(saddle) = self.item_id("saddle") {
+                self.drop_item((m.pos.0, m.pos.1 + 0.5, m.pos.2), (0.0, 0.2, 0.0), saddle, 1, 10);
+            }
+        }
         if m.baby() {
             return;
         }
@@ -1262,7 +1522,8 @@ impl Server {
         let away: Vec<(i64, (i32, i32))> = self
             .mobs
             .values()
-            .filter(|m| m.dead.is_none())
+            // (Une monture en selle suit son cavalier : jamais rangée sous lui)
+            .filter(|m| m.dead.is_none() && m.rider.is_none())
             .map(|m| (m.id, mob_store::chunk_of(m.pos.0, m.pos.2)))
             .filter(|(_, c)| !self.mob_chunks.contains(c))
             .collect();
@@ -1290,6 +1551,8 @@ impl Server {
             m.max_health = r.max_health;
             m.mark = r.mark;
             m.tamed = r.tamed;
+            m.saddled = r.saddled;
+            m.temper = r.temper;
             // Monture enregistrée avant que ses qualités existent : celles tirées à l'apparition restent
             if r.move_speed > 0.0 {
                 m.move_speed = r.move_speed;
@@ -1429,6 +1692,8 @@ mod tests {
             move_speed: 0.3125,
             jump: 0.75,
             strength: 0,
+            saddled: true,
+            temper: 15,
         };
         assert_eq!(MobRecord::from_json(&r.to_json()), Some(r));
         // Ancien enregistrement (sans les nouveaux champs) : valeurs du jeu par défaut

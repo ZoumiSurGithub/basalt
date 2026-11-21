@@ -17,7 +17,13 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   plateaux de savane ; 4 pelages), cheval (plaines, savanes ; 7 robes et 5 motifs), âne
   et mule (un cheval et un âne font une mule, qui n'a pas de petit). Vie, vitesse et saut
   des montures tirés au sort ; elles se soignent et leurs petits grandissent avec leur
-  nourriture. Pas encore : les monter et les apprivoiser (donc les faire se reproduire).
+  nourriture.
+- Montures : clic droit main vide pour monter (s'accroupir pour descendre). Une monture
+  sauvage se laisse apprivoiser ou jette son cavalier, de plus en plus patiente à chaque
+  essai et quand on la nourrit (règles du jeu) ; apprivoisés, chevaux, ânes, lamas se
+  reproduisent (carottes et pommes dorées, bottes de foin pour les lamas). Une selle
+  posée sur un cheval, un âne ou une mule apprivoisés permet de les diriger ; elle tombe
+  à leur mort.
 - Commande `/summon <animal> [position] [minecraft:entity_born]`.
 - Guide d'installation pas à pas pour Windows et Linux : `docs/INSTALLER.md`.
 - `/timings report` indique l'état de la machine pendant les mesures (processeur, temps
