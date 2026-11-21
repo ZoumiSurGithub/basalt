@@ -434,7 +434,13 @@ fn start_opts(dir: &PathBuf, max_per_ip: usize, xbox_auth: bool) -> (SocketAddr,
         cfg.nethernet_udp_port = 0;
         cfg.gamemode = "Creative".into();
         // Terrain plat : les tests marchent sur le sol à y = -60 (sauf fichier témoin)
-        cfg.level_type = if dir.join("terrain-normal").exists() { "normal".into() } else { "flat".into() };
+        cfg.level_type = if let Ok(kind) = std::fs::read_to_string(dir.join("terrain-type")) {
+            kind.trim().to_string()
+        } else if dir.join("terrain-normal").exists() {
+            "normal".into()
+        } else {
+            "flat".into()
+        };
         cfg.level_seed = "42".into();
         cfg.debug = std::env::var("BASALT_TEST_DEBUG").is_ok();
         cfg.auth_keys_file = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/auth/keys.json").into();
@@ -1694,5 +1700,51 @@ fn locate_answers_in_the_chat() {
     drop(steve);
     stop.store(true, Ordering::Relaxed);
     handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Un monde créé avec le générateur d'un plugin (`level-type=plugin:archipel`) : le joueur
+/// apparaît sur une île, et le type de terrain est enregistré.
+#[test]
+fn a_plugin_generator_shapes_the_world() {
+    if !PluginManager::new(std::path::Path::new("plugins")).available() {
+        return; // pas de Lua sur cette machine
+    }
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-plugingen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let gens = dir.join("Archipel").join("generators");
+    std::fs::create_dir_all(&gens).unwrap();
+    std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/plugins/Archipel/generators/archipel.lua"), gens.join("archipel.lua")).unwrap();
+    std::fs::write(dir.join("terrain-type"), "plugin:archipel").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(300));
+    let mut c = Client::new(addr);
+    c.handshake();
+    c.game(0xc1, &2225i32.to_be_bytes(), None);
+    assert_eq!(c.recv_game(false).0, 0x8f);
+    c.login(2225, "Steve", false);
+    c.wait_for(6);
+    c.game(8, &[3, 0, 0], Some(0xff));
+    c.wait_for(7);
+    c.game(8, &[4, 0, 0], Some(0xff));
+    let start_game = c.wait_for(11);
+    let y = f32::from_le_bytes([start_game[7], start_game[8], start_game[9], start_game[10]]);
+    assert!(y > 63.0 && y < 200.0, "apparition sur une île, pas à {}", y);
+    c.game(69, &[6, 16], Some(0xff));
+    let mut chunks = 0;
+    loop {
+        let (id, _) = c.recv_after_state();
+        match id {
+            58 => chunks += 1,
+            2 => break,
+            _ => {}
+        }
+    }
+    assert_eq!(chunks, 29, "chunks dans un rayon de 3");
+    drop(c);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let doc = basalt::nbt::load_file(&dir.join("world").join("level.nbt")).unwrap().unwrap();
+    assert_eq!(doc.get("Generator").and_then(|t| t.as_str()), Some("plugin:archipel"));
     let _ = std::fs::remove_dir_all(&dir);
 }

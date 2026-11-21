@@ -421,7 +421,7 @@ pub struct Server {
     /// descend d'un cran si le jeu refuse la liste, gèle ou décroche juste après l'apparition.
     items_level: u8,
     /// Données du jeu (objets, blocs), si le dossier `data/` est présent
-    data: Option<GameData>,
+    data: Option<Arc<GameData>>,
     /// Tous les blocs du jeu, avec leurs règles (construit à partir des données)
     blocks: Option<BlockRegistry>,
     /// Eau et lave qui s'écoulent (absent sans les données du jeu)
@@ -1909,7 +1909,7 @@ impl Server {
                 } else {
                     from
                 };
-                let block = match parse_pattern(self.data.as_ref(), arg(if fill { 6 } else { 3 })) {
+                let block = match parse_pattern(self.data.as_deref(), arg(if fill { 6 } else { 3 })) {
                     Ok(b) if b.len() == 1 => b[0],
                     Ok(_) => return usage(self),
                     Err(e) => return self.reply(sender, &format!("§c{}", e)),
@@ -2713,8 +2713,34 @@ impl Server {
             let data = &self.data;
             Palette::new(&|name: &str| data.as_ref().and_then(|d| d.state_from_spec(name)))
         };
+        let generator = if kind == Kind::Plugin {
+            // Générateur fourni par un plugin : plugins/<plugin>/generators/<nom>.lua
+            let name = if created {
+                self.cfg.level_type.trim().splitn(2, ':').nth(1).unwrap_or("").trim().to_string()
+            } else {
+                crate::world::World::stored_plugin(&dir).unwrap_or_default()
+            };
+            let loaded = match self.data.clone() {
+                Some(data) => crate::plugin::generator::LuaGenerator::load(Path::new(&self.cfg.plugins_dir), &name, seed, data, self.cfg.plugin_memory_mb),
+                None => Err("données du jeu absentes".to_string()),
+            };
+            let loaded = match loaded {
+                Ok(g) => {
+                    info!("Générateur « {} » fourni par le plugin {}", g.name, g.plugin);
+                    Some(g)
+                }
+                Err(e) => {
+                    error!("Générateur « {} » : {} — le terrain reste vide tant qu'il manque (rien n'est perdu : le terrain n'est jamais enregistré)", name, e);
+                    None
+                }
+            };
+            Generator::with_plugin(&name, seed, palette, loaded)
+        } else {
+            Generator::new(kind, seed, palette)
+        };
+        let stored = generator.stored_name();
         let tiles = std::mem::take(&mut self.world.tiles);
-        self.world = crate::world::World::with_generator(Generator::new(kind, seed, palette));
+        self.world = crate::world::World::with_generator(generator);
         self.world.tiles = tiles;
         match self.world.load(&dir) {
             Ok(0) => {}
@@ -2726,12 +2752,12 @@ impl Server {
             self.world.dirty = true;
             let _ = std::fs::create_dir_all(&dir);
             let _ = self.world.save(&dir);
-            info!("Nouveau monde : terrain {}, graine {}", kind.name(), seed as i64);
+            info!("Nouveau monde : terrain {}, graine {}", stored, seed as i64);
         } else {
-            info!("Terrain du monde : {}, graine {}", kind.name(), seed as i64);
+            info!("Terrain du monde : {}, graine {}", stored, seed as i64);
         }
         self.spawn = self.find_spawn();
-        self.liquids = self.data.as_ref().and_then(crate::world::liquid::Liquids::new);
+        self.liquids = self.data.as_deref().and_then(crate::world::liquid::Liquids::new);
     }
 
     /// Un bloc a changé : l'eau et la lave voisines seront recalculées.
@@ -6077,7 +6103,7 @@ impl Server {
                 info!("Données du jeu chargées : {} objets, {} blocs ({} états)", d.items.len(), d.block_count(), d.state_count());
                 self.blocks = Some(d.block_registry());
                 self.plugin_blocks = Some(Arc::new(d.block_names_for_plugins()));
-                self.data = Some(d);
+                self.data = Some(Arc::new(d));
                 self.items_level = 2;
             }
             Err(e) => warn!("Données du jeu absentes ({}) : seuls quelques blocs sont disponibles. Placez le dossier « data » à côté du serveur.", e),

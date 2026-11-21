@@ -138,7 +138,8 @@ gamemode=Survival
 # true : un joueur qui meurt garde son inventaire. false (comme dans le jeu) : son
 # inventaire et son armure tombent au sol là où il est mort.
 keep-inventory=false
-# Terrain d'un nouveau monde : normal (comme le jeu : biomes, montagnes, grottes) ou flat (plat).
+# Terrain d'un nouveau monde : normal (comme le jeu : biomes, montagnes, grottes), flat (plat),
+# ou plugin:<nom> pour le générateur d'un plugin (plugins/<plugin>/generators/<nom>.lua).
 # Un monde déjà créé garde son terrain : pour en changer, utilisez un autre world-dir.
 level-type=normal
 # Graine d'un nouveau monde : un nombre ou un texte. Vide : au hasard.
@@ -203,7 +204,7 @@ impl Config {
             if !more.ends_with('\n') {
                 more.push('\n');
             }
-            more.push_str("# Terrain d'un nouveau monde : normal (comme le jeu : biomes, montagnes, grottes) ou flat (plat).\n# Un monde déjà créé garde son terrain : pour en changer, utilisez un autre world-dir.\nlevel-type=normal\n# Graine d'un nouveau monde : un nombre ou un texte. Vide : au hasard.\nlevel-seed=\n");
+            more.push_str("# Terrain d'un nouveau monde : normal (comme le jeu : biomes, montagnes, grottes), flat (plat),\n# ou plugin:<nom> pour le générateur d'un plugin (plugins/<plugin>/generators/<nom>.lua).\n# Un monde déjà créé garde son terrain : pour en changer, utilisez un autre world-dir.\nlevel-type=normal\n# Graine d'un nouveau monde : un nombre ou un texte. Vide : au hasard.\nlevel-seed=\n");
             let _ = std::fs::write(path, &more);
         }
         let text = std::fs::read_to_string(path).unwrap_or(text);

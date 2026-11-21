@@ -6,15 +6,18 @@ plugin peut faire aujourd'hui, avec des exemples vérifiés sur le serveur.
 - [Premier plugin](#premier-plugin)
 - [Où placer un plugin](#où-placer-un-plugin)
 - [Cycle de vie](#cycle-de-vie)
+- [La fiche du plugin : `plugin.yml`](#la-fiche-du-plugin--pluginyml), avec les [permissions](#permissions)
 - [Événements](#événements)
 - [Écouteurs d'événements (comme PocketMine)](#écouteurs-dévénements-comme-pocketmine)
 - [L'objet joueur](#lobjet-joueur), puis [le monde : lire et poser des blocs](#le-monde--lire-et-poser-des-blocs)
 - [Commandes](#commandes)
 - [Minuteries](#minuteries)
 - [Référence de l'API](#référence-de-lapi)
+- [Sécurité : un plugin n'a que ce que le serveur lui donne](#sécurité--un-plugin-na-que-ce-que-le-serveur-lui-donne)
 - [Fichiers et configuration](#fichiers-et-configuration)
 - [Erreurs et diagnostic](#erreurs-et-diagnostic)
 - [Exemple complet](#exemple-complet)
+- [Générateurs de terrain](#générateurs-de-terrain)
 - [Ce qui n'existe pas encore](#ce-qui-nexiste-pas-encore)
 
 ## Premier plugin
@@ -36,6 +39,8 @@ La console affiche `Plugin chargé : bonjour`.
 |---|---|---|
 | Un seul fichier | `plugins/bonjour.lua` | `bonjour` |
 | Un dossier | `plugins/gardien/main.lua` | `gardien` |
+| Un dossier avec `plugin.yml` | `plugins/gardien/plugin.yml` (voir plus bas) | celui de la fiche |
+| Un générateur de terrain | `plugins/<dossier>/generators/<nom>.lua` | voir [Générateurs de terrain](#générateurs-de-terrain) |
 
 - Le dossier des plugins se règle avec `plugins-dir` dans `server.properties`.
 - Les plugins sont chargés par ordre alphabétique.
@@ -57,8 +62,9 @@ La console affiche `Plugin chargé : bonjour`.
 La commande `reload` décharge puis recharge **tous** les plugins : les variables
 en mémoire sont perdues. Enregistrez dans un fichier ce qui doit survivre.
 
-Le serveur fonctionne à **20 ticks par seconde** et appelle les plugins depuis sa
-boucle principale : une fonction qui dure longtemps bloque tout le serveur.
+Le serveur fonctionne à **20 ticks par seconde**. Les plugins tournent sur leur propre
+fil : une fonction qui dure longtemps ne bloque pas le serveur, mais retarde le plugin
+(voir [Un plugin ne peut pas bloquer le serveur](#un-plugin-ne-peut-pas-bloquer-le-serveur)).
 
 ## La fiche du plugin : `plugin.yml`
 
@@ -318,6 +324,12 @@ sinon par chunks entiers) et visibles dès l'appel suivant. Pour un très grand 
 posez-les par tranches avec `server.every(1, …)` : c'est ce que fait le plugin EasyEdit fourni
 (`plugins/EasyEdit`), écrit entièrement avec ces fonctions, à lire comme exemple.
 
+Comme WorldEdit dans le jeu, les blocs posés par un plugin ne déclenchent pas l'écoulement
+de l'eau et de la lave : une source posée par un plugin reste immobile jusqu'à ce qu'un
+joueur modifie un bloc à côté. Un coffre posé par un plugin est vide ; un coffre de
+structure (village, temple, mine) reçoit son butin à sa première ouverture, même si le
+plugin l'a lu entre-temps.
+
 ## Commandes
 
 `server.command(nom, description, fonction)` ajoute une commande à la console
@@ -566,6 +578,168 @@ return {
 }
 ```
 
+## Générateurs de terrain
+
+Un plugin peut fournir ses propres générateurs de monde : relief, biomes, décorations
+(arbres, minerais, herbes…) et structures, ou retoucher le terrain du jeu.
+
+### Mettre en place
+
+Un générateur est un fichier `generators/<nom>.lua` dans le dossier du plugin :
+
+```
+plugins/
+  MonPlugin/
+    plugin.yml          (facultatif : un dossier avec seulement generators/ suffit)
+    generators/
+      iles.lua
+```
+
+Dans `server.properties`, **pour un nouveau monde** (un autre `world-dir`) :
+
+```
+level-type=plugin:iles
+```
+
+Le type est enregistré avec le monde : il garde ce générateur aux démarrages suivants.
+Comme pour le terrain du jeu, seuls les blocs modifiés par les joueurs sont enregistrés ;
+le terrain est recalculé à partir de la graine. Corriger le générateur change donc le
+terrain des zones que personne n'a touchées. Si le fichier manque ou ne se charge pas, le
+serveur le signale et le terrain reste vide en attendant (rien n'est perdu).
+
+Le plugin `Archipel`, livré avec Basalt (`plugins/Archipel/generators/archipel.lua`), est
+un exemple complet et commenté : des îles, des palmiers et des phares.
+
+### Le fichier
+
+Il renvoie une table de fonctions ; seule `terrain` est obligatoire.
+
+```lua
+local STONE, GRASS = block("stone"), block("grass_block")
+
+local gen = {}
+
+-- Hauteur du sol : une fonction pure de (x, z), donc toujours le même monde
+local function height(x, z)
+  return 64 + math.floor(noise(x / 100, z / 100) * 20)
+end
+gen.height = height              -- facultatif : sert aux structures (voir plus bas)
+
+function gen.terrain(chunk)      -- obligatoire : remplit le chunk
+  for x = 0, 15 do
+    for z = 0, 15 do
+      local h = height(chunk.x * 16 + x, chunk.z * 16 + z)
+      chunk:fill(x, -64, z, x, h - 1, z, STONE)
+      chunk:set(x, h, z, GRASS)
+    end
+  end
+  chunk:biome("plains")
+end
+
+function gen.decorate(chunk) end -- facultatif : appelée après terrain
+gen.structures = { }             -- facultatif : voir plus bas
+function gen.spawn() return 0, 80, 0 end -- facultatif : point d'apparition
+
+return gen
+```
+
+Ordre pour chaque chunk : `terrain`, puis `decorate`, puis les structures.
+
+### Outils disponibles
+
+| Fonction | Rôle |
+|---|---|
+| `block(nom)` | identifiant d'un bloc : `block("oak_stairs[weirdo_direction=2]")` accepte les propriétés. À garder dans une variable en haut du fichier (plus rapide). Partout où un bloc est attendu, on peut aussi donner son nom. |
+| `noise(x, z)`, `noise(x, y, z)` | bruit de Perlin de -1 à 1, propre à la graine du monde. Divisez les coordonnées pour des formes plus larges. |
+| `seed` | la graine du monde (un nombre) |
+| `math.random()` | hasard **déterministe** : le même pour un chunk donné (comme `chunk:random()`) |
+| `vanillaHeight(x, z)` | hauteur du sol du terrain du jeu à cet endroit |
+| `vanillaBiome(x, z)` | biome de surface du terrain du jeu (`"plains"`, `"desert"`…) |
+
+### Le chunk
+
+`chunk.x`, `chunk.z` : coordonnées du chunk (le bloc `x` du monde vaut `chunk.x * 16 + x`).
+`chunk.minY` (-64) et `chunk.maxY` (319). Sauf `setAt`, les coordonnées `x` et `z` vont
+de 0 à 15.
+
+| Méthode | Rôle |
+|---|---|
+| `chunk:set(x, y, z, bloc)` | pose un bloc |
+| `chunk:get(x, y, z)` | identifiant du bloc (à comparer avec `block(...)`) |
+| `chunk:fill(x1, y1, z1, x2, y2, z2, bloc)` | remplit un pavé (bien plus rapide que des `set`) |
+| `chunk:height(x, z)` | y du plus haut bloc qui n'est pas de l'air |
+| `chunk:biome(nom)`, `chunk:biome(x, z, nom)` | biome du chunk, ou d'une colonne (noms du jeu : `"plains"`, `"cherry_grove"`…) |
+| `chunk:random()`, `chunk:random(n)`, `chunk:random(a, b)` | hasard déterministe : de 0 à 1, de 1 à n, de a à b |
+| `chunk:setAt(x, y, z, bloc)` | pose un bloc en coordonnées du monde ; ignoré hors du chunk (pour un arbre qui déborde un peu) |
+| `chunk:vanilla()` | remplit le chunk avec le terrain du jeu (relief, grottes, arbres, villages…), à retoucher ensuite |
+
+Avec `chunk:vanilla()`, un générateur devient un **décorateur** du terrain du jeu :
+
+```lua
+local GOLD = block("gold_ore")
+return {
+  terrain = function(chunk)
+    chunk:vanilla()
+    for i = 1, 4 do               -- 4 filons d'or en plus par chunk
+      chunk:set(chunk:random(0, 15), chunk:random(-60, 30), chunk:random(0, 15), GOLD)
+    end
+  end,
+}
+```
+
+### Structures
+
+Une structure peut s'étendre sur plusieurs chunks. Elles sont placées sur une grille,
+comme dans le jeu : une au plus par case de `spacing` chunks de côté, à `separation`
+chunks au moins l'une de l'autre.
+
+```lua
+gen.structures = {
+  {
+    spacing = 16, separation = 4, -- une par case de 16 × 16 chunks
+    salt = 1,                     -- un nombre propre à cette structure
+    reach = 1,                    -- portée en chunks autour de son départ (taille ÷ 16)
+    check = function(s)           -- facultatif : faux pour ne pas la construire ici
+      return s:height(s.x, s.z) > 63
+    end,
+    build = function(s)           -- obligatoire
+      local y = s:height(s.x, s.z)
+      s:fill(s.x - 3, y + 1, s.z - 3, s.x + 3, y + 5, s.z + 3, "stone_bricks")
+    end,
+  },
+}
+```
+
+`s.x`, `s.z` : centre du chunk de départ, en coordonnées du monde. Toutes les méthodes de
+`s` emploient les coordonnées du monde :
+
+| Méthode | Rôle |
+|---|---|
+| `s:set(x, y, z, bloc)`, `s:fill(x1, y1, z1, x2, y2, z2, bloc)` | pose des blocs |
+| `s:get(x, y, z)` | bloc à cet endroit (seulement dans le chunk en cours, sinon `nil`) |
+| `s:height(x, z)` | hauteur du sol n'importe où : appelle `height(x, z)` du générateur, à défaut le relief du jeu |
+| `s:random(...)` | hasard propre à la structure : le même à chaque appel |
+
+`build` est appelée **pour chaque chunk que la structure touche** ; seuls les blocs du
+chunk en cours sont posés. Pour que les morceaux se raccordent, `build` doit faire
+exactement la même chose à chaque appel : n'utiliser que `s:random`, `s:height` et le
+bruit, jamais `chunk:height` ni `math.random`. Un `reach` trop petit coupe la structure ;
+trop grand, il la fait recalculer pour rien.
+
+### Limites
+
+Un générateur tourne sur les fils de génération du terrain, en parallèle : chaque fil a sa
+propre copie du fichier. Il n'a donc pas accès à `server`, aux joueurs, aux fichiers ni aux
+variables d'un autre plugin ; seulement à son chunk et aux outils ci-dessus (`io`, `os`,
+`require` et `load` n'existent pas). Les variables globales du fichier ne sont pas
+partagées entre les fils : ne vous en servez pas pour compter ou mémoriser.
+
+Chaque chunk dispose de 2 secondes au plus, et chaque copie de la mémoire réglée par
+`plugin-memory-mb`. Une erreur est écrite une fois dans le journal ; le chunk concerné
+reste vide. Côté vitesse, l'exemple `Archipel` (terrain, herbes, palmiers et phares)
+prend environ 0,6 milliseconde par chunk, contre 3 pour le terrain du jeu : préférez
+`fill` à de longues suites de `set`.
+
 ## Ce qui n'existe pas encore
 
 L'API suit l'avancement du serveur. Ne sont pas encore accessibles aux plugins :
@@ -573,6 +747,7 @@ L'API suit l'avancement du serveur. Ne sont pas encore accessibles aux plugins :
 - un événement de déplacement (`PlayerMoveEvent`), trop fréquent pour le fil des plugins ;
 - le contenu des inventaires (seuls `joueur:give` et `joueur:getItemInHand` existent) ;
 - les entités autres que les joueurs ;
+- les coffres remplis par un générateur (ses structures peuvent poser des coffres, vides) ;
 - l'annulation d'une minuterie ;
 - la communication directe entre plugins (en dehors des événements qu'ils écoutent tous).
 

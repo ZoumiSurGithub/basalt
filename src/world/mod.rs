@@ -408,7 +408,7 @@ impl World {
         let g = self.generator();
         Tag::compound(vec![
             ("Version", Tag::Int(1)),
-            ("Generator", Tag::string(g.kind.name())),
+            ("Generator", Tag::string(&g.stored_name())),
             ("Seed", Tag::Long(g.seed as i64)),
             ("Blocks", Tag::IntArray(blocks)),
             ("Waterlogged", Tag::IntArray(wet)),
@@ -436,6 +436,13 @@ impl World {
             None if dir.join("blocs.bin").exists() => Ok(Some((Kind::Flat, 0))),
             None => Ok(None),
         }
+    }
+
+    /// Nom du générateur d'un plugin enregistré pour ce monde (`plugin:<nom>`), s'il y en a un.
+    pub fn stored_plugin(dir: &std::path::Path) -> Option<String> {
+        let doc = crate::nbt::load_file(&dir.join("level.nbt")).ok()??;
+        let text = doc.get("Generator")?.as_str()?.to_string();
+        text.strip_prefix("plugin:").map(|s| s.to_string())
     }
 
     /// Recharge les blocs enregistrés. Renvoie leur nombre (0 si aucun fichier).

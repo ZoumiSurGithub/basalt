@@ -17,26 +17,30 @@ jeu (Bedrock 1.26.63 à 1.26.66 sous Windows, deux comptes Xbox en même temps).
 | Fonction | Détails |
 |---|---|
 | Connexion | NetherNet (jeux 1.26.60+), compte Xbox vérifié, liste des serveurs |
-| Monde | casser et poser des blocs (escaliers, orientations, angles), sauvegarde et rechargement (sur terrain plat) |
+| Monde | terrain à la manière du jeu (relief, biomes, grottes, arbres, décorations, fonds marins), casser et poser des blocs (escaliers, orientations, angles, doubles dalles), blocs posés dans l'eau, sauvegarde et rechargement |
+| Eau et lave | écoulement, cascades, sources infinies, rencontre eau et lave (pierre, pierre taillée, obsidienne), seaux |
 | Joueurs | visibles entre eux avec leur skin, liste des joueurs (pause, Social, `/list`), rotation de la tête, position et rotation retrouvées à la reconnexion |
 | Inventaire | sac, barre, armure, seconde main, coffres, fours, menu créatif, fabrication (vérifiée par le serveur) |
-| Combat et survie | coups entre joueurs avec recul, dégâts de chute, mort, écran de réapparition, inventaire lâché à la mort (`keep-inventory` en option) |
+| Combat et survie | coups entre joueurs avec recul, dégâts de chute, vie qui remonte (sans couper le sprint), mort, écran de réapparition, inventaire lâché à la mort (`keep-inventory` en option) |
 | Modes de jeu | survie, créatif, aventure, spectateur |
 | Objets au sol | lâcher (inventaire, Q, Ctrl+Q), physique, fusion des tas, ramassage, disparition au bout de 5 minutes |
-| Commandes | chat et commandes en jeu, `/tp` et téléportation par les plugins, `/locate structure` et `/locate biome` |
+| Commandes | chat et commandes en jeu, `/tp` et téléportation par les plugins |
 | Anti-triche | contrôle des déplacements (le tricheur est replacé), fabrication vérifiée, inventaire tenu par le serveur |
 | Plugins Lua | événements à la PocketMine, commandes, accès au monde, EasyEdit fourni (entièrement en plugin) |
 
 **Écrit et testé automatiquement, pas encore essayé avec le vrai jeu :**
 
-- génération du terrain à la manière du jeu (voir « Le monde » ci-dessous) ;
+- structures : villages, pyramides du désert, temples de la jungle, mines abandonnées, et
+  le butin de leurs coffres (voir « Le monde » ci-dessous) ;
+- `/locate structure` et `/locate biome` ;
+- générateurs de terrain écrits en Lua par les plugins (`level-type=plugin:<nom>`) ;
 - connexion par RakNet (jeux plus anciens que 1.26.60), avec son chiffrement (ECDH + AES-256) ;
 - installation et mise à jour sous Windows par les scripts fournis ;
 - montée en charge (voir plus bas).
 
 **Pas encore fait :** chargement de vrais mondes Minecraft (format LevelDB),
-mondes multiples (Nether, End), blocs qui réagissent (eau, lave, sable, redstone),
-monstres et animaux, faim et expérience, cycle jour/nuit animé, météo.
+mondes multiples (Nether, End), blocs soumis à la gravité (sable, gravier), redstone,
+monstres et animaux, faim qui baisse et expérience gagnée, cycle jour/nuit animé, météo.
 
 **Réglages de secours.** Si un joueur est replacé à tort, ou se déconnecte quand un autre
 joueur apparaît, `movement-check=false` et `show-players=false` désactivent ces fonctions
@@ -60,13 +64,17 @@ Un nouveau monde est généré comme dans le jeu depuis la 1.18 (`src/world/vani
   tout en bas ;
 - **surface** de chaque biome (sable, grès, terre cuite, neige, glace compacte, neige
   poudreuse, calcite, podzol, mycélium, boue, gravier, pierre sur les pentes raides) ;
-- **arbres** de chaque biome (chêne, grand chêne, bouleau, sapin, sapin géant, chêne noir,
-  chêne pâle, acacia, jungle et jungle géante, cerisier, palétuvier), fleurs, herbes,
-  fougères, buissons de baies, cactus, cannes à sucre, nénuphars, algues, pics de glace ;
+- **arbres** de chaque biome, aux formes du jeu (chêne, grand chêne, bouleau, sapin, sapin
+  géant, chêne noir, chêne pâle, acacia, jungle et jungle géante, cerisier, palétuvier),
+  avec lianes et nids d'abeilles ;
+- **sol** : fleurs, herbes, fougères, buissons et buissons à lucioles, baies, cactus et
+  leurs fleurs, herbes sèches, cannes à sucre, nénuphars, pics de glace, feuilles mortes
+  en forêt, pétales roses sous les cerisiers, fleurs sauvages dans les prairies ;
+- **fonds marins** : herbes marines (hautes ou basses), laminaires, récifs de corail et
+  cornichons de mer des océans chauds, icebergs des océans gelés, magma au fond des
+  océans profonds. Les plantes sous l'eau contiennent bien de l'eau ;
 - **minerais** à leurs hauteurs (émeraude dans les montagnes), poches de granite,
   diorite, andésite, tuf, gravier.
-- **fonds marins** : herbes marines, laminaires, récifs de corail et cornichons de mer des
-  océans chauds, icebergs, magma ; feuilles mortes en forêt, pétales roses sous les cerisiers.
 
 **Eau et lave** coulent comme dans le jeu (`src/world/liquid.rs`) : un liquide n'est
 recalculé que lorsqu'un bloc change à côté de lui (bloc cassé, posé, seau vidé). L'eau
@@ -90,13 +98,20 @@ officiels du jeu, mais placées comme dans le jeu (une par case d'une grille) :
 Les coffres se remplissent au premier clic (ou lâchent leur butin si on les casse sans les
 ouvrir), toujours avec le même contenu pour une graine donnée.
 
-Pas encore générés : autres structures (avant-postes, épaves, monuments…), lacs,
-aquifères (l'eau souterraine du jeu), filons géants de fer et de cuivre. Les valeurs ne sont pas celles du jeu : le monde
-a la même allure, mais une graine ne redonne pas le même monde que dans Minecraft.
+`/locate structure <village|temple|desert_pyramid|jungle_temple|mineshaft>` et
+`/locate biome <nom>` donnent les coordonnées de la plus proche (réservées aux opérateurs).
+La recherche suit les mêmes règles que la génération, sur un fil à part.
+
+Pas encore générés : autres structures (avant-postes, épaves, monuments, cités
+antiques…), lacs, aquifères (l'eau souterraine du jeu), filons géants de fer et de
+cuivre. Les valeurs ne sont pas celles du jeu : le monde a la même allure, mais une graine
+ne redonne pas le même monde que dans Minecraft.
 
 Dans `server.properties` :
 
-- `level-type=normal` (comme le jeu) ou `level-type=flat` (plat) ;
+- `level-type=normal` (comme le jeu), `level-type=flat` (plat), ou `level-type=plugin:<nom>`
+  pour un générateur écrit en Lua par un plugin (relief, décorations, structures : voir
+  [docs/PLUGINS.md](docs/PLUGINS.md#générateurs-de-terrain) et l'exemple `plugins/Archipel`) ;
 - `level-seed=` : un nombre ou un texte ; vide, la graine est tirée au hasard.
 
 Ces deux réglages ne servent qu'à la création d'un monde : le type de terrain et la graine
@@ -106,8 +121,10 @@ de Basalt gardent ce terrain. Pour un nouveau monde, changez
 `world-dir` (ou supprimez le dossier du monde).
 
 Le terrain lui-même n'est jamais enregistré : il se régénère à l'identique à partir de la
-graine. Seuls les blocs modifiés par les joueurs le sont. Les chunks sont générés à
-l'avance, sur plusieurs cœurs, autour des joueurs (environ 2 ms par chunk).
+graine. Seuls les blocs modifiés par les joueurs le sont (avec l'eau gardée dans les blocs
+posés dans l'eau). Conséquence : une nouvelle version de Basalt qui améliore le terrain
+l'applique aussi aux zones déjà explorées, sans toucher aux constructions. Les chunks sont
+générés à l'avance, sur plusieurs cœurs, autour des joueurs (environ 3 ms par chunk).
 
 ### Si la connexion échoue avec le jeu
 
@@ -252,11 +269,12 @@ qui limite, pas le processeur ; `max-visible-players` et `player-view-distance`
 permettent de la réduire.
 
 **Ce que ces chiffres mesurent** : le transport réseau (réception, accusés,
-sessions) et l'entrée en jeu, sur la même machine, sans authentification.
-**Ce qu'ils ne mesurent pas** : un vrai gameplay. Aujourd'hui les joueurs ne se
-voient pas et le monde est figé ; le coût par joueur augmentera avec chaque
-fonction ajoutée, et une vraie connexion Internet perd des paquets, ce que la
-machine locale ne reproduit pas.
+sessions), l'entrée en jeu, l'envoi du terrain et l'affichage des joueurs entre eux, sur
+la même machine, sans authentification. **Ce qu'ils ne mesurent pas** : un vrai
+gameplay (combat, objets au sol, eau qui coule, plugins). Le coût par joueur augmente avec
+chaque fonction ajoutée, et une vraie connexion Internet perd des paquets, ce que la
+machine locale ne reproduit pas. Sur le serveur Debian de test, avec deux vrais joueurs, la
+commande `timings` relève 20 ticks par seconde.
 
 Choix d'architecture faits pour tenir la charge :
 
@@ -284,7 +302,9 @@ Règles à respecter pour les fonctions à venir, afin de rester à 1000 joueurs
   mises à jour par tick. Les prochaines fonctions (chat local, blocs, entités)
   doivent suivre la même règle.
 - **Terrain, compression et chiffrement hors de la boucle principale**, sur les
-  fils de travail, comme les logins.
+  fils de travail, comme les logins. L'eau et la lave sont plafonnées à 3 000 mises à
+  jour par tick : une grande inondation coule plus lentement au lieu de ralentir le
+  serveur. Les recherches `/locate` tournent sur un fil à part.
 - **Mesurer chaque ajout** avec l'outil de charge avant de le garder.
 
 Même en suivant ces règles, 1000 joueurs dans une même zone d'un seul monde reste
@@ -350,7 +370,10 @@ git tag v0.1.0 && git push origin v0.1.0
 ```
 
 GitHub compile alors Basalt pour Linux et Windows et publie les archives ; `get.sh` et
-`update.sh` installent toujours la dernière.
+`update.sh` installent toujours la dernière. Les tests (`cargo test`) tournent sur la
+compilation Linux, en mode optimisé : la compilation finale reprend ce travail au lieu de
+tout recompiler. Chaque envoi sur la branche `dev` publie la préversion `dev-latest`
+(`./update.sh -v dev`).
 
 ### Debian / Ubuntu (compilation depuis les sources)
 
@@ -416,6 +439,7 @@ Les commandes du jeu se tapent aussi dans la console, sans `/` :
 | `say`, `me`, `tell` | messages |
 | `gamemode`, `give`, `clear`, `kill`, `tp` | joueurs |
 | `setblock`, `fill`, `time` | monde |
+| `locate structure <nom>`, `locate biome <nom>` | structure ou biome le plus proche |
 | `kick`, `op`, `deop`, `whitelist` | modération |
 | `status` | charge du serveur : ticks par seconde, trafic, logins en attente |
 | `timings on` / `timings off` | rapport détaillé du temps passé par le serveur (dossier `timings/`) |
@@ -458,7 +482,7 @@ est dans **[docs/PLUGINS.md](docs/PLUGINS.md)**.
 | `src/block/` | `Block` (base de tous les blocs), types de blocs (`types.rs`), registre `VanillaBlocks` couvrant tous les blocs du jeu |
 | `src/tile/` | `Tile` (base des données attachées aux blocs), `ContainerTile`, `FurnaceTile`, `SignTile`, `TileMap` et sa sauvegarde |
 | `src/item/` | `Item` (base de tous les objets), `Tool`, `Armor`, `Food`, `VanillaItems` ; `ItemStack` (une pile) |
-| `src/world/` | `World` : le monde, ses blocs modifiés et leur sauvegarde ; `vanilla.rs` : terrain à la manière du jeu ; `generator.rs` : terrain plat et premier terrain |
+| `src/world/` | `World` : le monde, ses blocs modifiés et leur sauvegarde ; `vanilla.rs` : terrain à la manière du jeu ; `structures.rs` : villages, temples, mines, butin, `/locate` ; `liquid.rs` : écoulement de l'eau et de la lave ; `generator.rs` : terrain plat, premier terrain, choix du générateur |
 | `src/permission/` | `Permission`, règles par défaut, liste des opérateurs |
 | `src/utils/` | journal (`log.rs`), `server.properties` (`config.rs`), JSON et base64 (`json.rs`), YAML (`yaml.rs`), décompression (`inflate.rs`) |
 | `src/security/` | authentification Xbox (`auth.rs`), SHA-2 et signatures (`crypto.rs`), clé du serveur (`identity.rs`) |
@@ -467,20 +491,23 @@ est dans **[docs/PLUGINS.md](docs/PLUGINS.md)**.
 | `src/network/protocol/bedrock/` | paquets Bedrock, un fichier par thème : `codec`, `login`, `spawn`, `chunk`, `player`, `state`, `chat`, `blocks`, `items` |
 | `src/data/` | chargement des données du jeu : objets, blocs et états, recettes (`recipes.rs`), NBT, gzip |
 | `data/` | fichiers de données du jeu (projet BedrockData, licence CC0) ; `data/<protocole>/packets/` : paquets relevés auprès du serveur officiel par l'outil de capture |
-| `src/plugin/` | fiche `plugin.yml` (`manifest.rs`), moteur Lua et API (`lua.rs`), préambule et bac à sable (`sandbox.lua`), fil d'exécution dédié (`host.rs`) |
+| `src/plugin/` | fiche `plugin.yml` (`manifest.rs`), moteur Lua et API (`lua.rs`), préambule et bac à sable (`sandbox.lua`), fil d'exécution dédié (`host.rs`), générateurs de terrain en Lua (`generator.rs`) |
 | `examples/stress.rs` | outil de charge : simule des centaines ou milliers de joueurs |
-| `tests/e2e.rs` | faux client : connexion, login, entrée en jeu, combat, objets, fabrication, plugins |
+| `tests/e2e.rs` | faux client : connexion, login, entrée en jeu, combat, objets, fabrication, coffres, plugins, terrain, `/locate`, générateur d'un plugin |
 | `plugins/EasyEdit/` | plugin fourni : édition du monde en volume, exemple de plugin en plusieurs fichiers |
+| `plugins/Archipel/` | générateur fourni en exemple : îles, palmiers, phares (`level-type=plugin:archipel`) |
 
 Tests : `cargo test`
 
 ## Suite proposée
 
-1. **Le monde** : chargement des mondes Minecraft (format LevelDB), blocs qui réagissent
-   (eau, lave, gravité), mondes multiples, villages et autres structures.
-2. **Le jeu** : monstres et animaux, faim, expérience, temps de minage selon l'outil,
-   jour et nuit.
-3. **Montée en charge** : mesure avec 1000 joueurs simulés sur une vraie machine.
+1. **Le jeu** : animaux et monstres (apparition selon le biome, déplacements, butin),
+   faim qui baisse, expérience, temps de minage selon l'outil, jour et nuit, météo.
+2. **Le monde** : Nether et End, gravité du sable et du gravier, redstone (le piège du
+   temple de la jungle en a besoin), autres structures (avant-postes, épaves, cités
+   antiques…), chargement des mondes Minecraft (format LevelDB).
+3. **Plugins** : coffres remplis par les générateurs, inventaires, entités.
+4. **Montée en charge** : mesure avec 1000 joueurs simulés sur une vraie machine.
 
 ## Licence
 

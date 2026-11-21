@@ -13,8 +13,8 @@ use std::time::Instant;
 
 use crate::plugin::manifest::{self, CommandDecl, Manifest, PermDefault};
 
-type L = *mut c_void;
-type CFn = unsafe extern "C" fn(L) -> c_int;
+pub(crate) type L = *mut c_void;
+pub(crate) type CFn = unsafe extern "C" fn(L) -> c_int;
 /// Fonction appelée par Lua toutes les N instructions (peut lever une erreur Lua).
 type Hook = unsafe extern "C-unwind" fn(L, *mut c_void);
 type Alloc = unsafe extern "C" fn(*mut c_void, *mut c_void, usize, usize) -> *mut c_void;
@@ -29,9 +29,9 @@ const CALL_BUDGET_MS: u64 = 250;
 const MEM_MARGIN: usize = 8 * 1024 * 1024;
 
 /// Mémoire d'un plugin protégé.
-struct MemState {
-    used: usize,
-    limit: usize,
+pub(crate) struct MemState {
+    pub(crate) used: usize,
+    pub(crate) limit: usize,
 }
 
 extern "C" {
@@ -40,7 +40,7 @@ extern "C" {
 }
 
 /// Allocateur donné à Lua : compte la mémoire du plugin et refuse au-delà de sa limite.
-unsafe extern "C" fn limited_alloc(ud: *mut c_void, ptr: *mut c_void, osize: usize, nsize: usize) -> *mut c_void {
+pub(crate) unsafe extern "C" fn limited_alloc(ud: *mut c_void, ptr: *mut c_void, osize: usize, nsize: usize) -> *mut c_void {
     let mem = &mut *(ud as *mut MemState);
     let old = if ptr.is_null() { 0 } else { osize };
     if nsize == 0 {
@@ -65,8 +65,8 @@ static CLOCK: OnceLock<Instant> = OnceLock::new();
 // Échéance de l'appel en cours (millisecondes depuis le démarrage) et mémoire du plugin appelé.
 // Propres à chaque fil d'exécution : un plugin ne tourne que sur le fil qui l'a chargé.
 thread_local! {
-    static DEADLINE_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(u64::MAX) };
-    static CURRENT_MEM: std::cell::Cell<*mut MemState> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+    pub(crate) static DEADLINE_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(u64::MAX) };
+    pub(crate) static CURRENT_MEM: std::cell::Cell<*mut MemState> = const { std::cell::Cell::new(std::ptr::null_mut()) };
 }
 
 /// Plugin en cours d'exécution (vide si aucun), pour nommer le responsable d'un retard.
@@ -86,12 +86,12 @@ fn set_current(name: &str) {
 /// Dépassements de temps tolérés avant de désactiver un plugin.
 const MAX_STRIKES: u32 = 3;
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     CLOCK.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
 /// Contrôle périodique : interrompt un plugin qui dépasse son temps ou sa mémoire.
-unsafe extern "C-unwind" fn watchdog(l: L, _: *mut c_void) {
+pub(crate) unsafe extern "C-unwind" fn watchdog(l: L, _: *mut c_void) {
     let api = &*API.load(Ordering::Relaxed);
     let mem = CURRENT_MEM.with(|m| m.get());
     let message: &[u8] = if now_ms() > DEADLINE_MS.with(|d| d.get()) {
@@ -105,12 +105,12 @@ unsafe extern "C-unwind" fn watchdog(l: L, _: *mut c_void) {
     (api.error)(l);
 }
 
-const REGISTRY: c_int = -1_001_000;
+pub(crate) const REGISTRY: c_int = -1_001_000;
 const T_BOOLEAN: c_int = 1;
-const T_NUMBER: c_int = 3;
-const T_STRING: c_int = 4;
-const T_TABLE: c_int = 5;
-const T_FUNCTION: c_int = 6;
+pub(crate) const T_NUMBER: c_int = 3;
+pub(crate) const T_STRING: c_int = 4;
+pub(crate) const T_TABLE: c_int = 5;
+pub(crate) const T_FUNCTION: c_int = 6;
 
 #[cfg(unix)]
 mod dl {
@@ -155,39 +155,40 @@ mod dl {
 }
 
 /// Fonctions de l'API C de Lua 5.4 dont le serveur a besoin.
-struct Api {
-    newstate: unsafe extern "C" fn() -> L,
-    newstate_alloc: unsafe extern "C" fn(Alloc, *mut c_void) -> L,
-    sethook: unsafe extern "C" fn(L, Option<Hook>, c_int, c_int),
-    error: unsafe extern "C-unwind" fn(L) -> c_int,
-    loadbufferx: unsafe extern "C" fn(L, *const c_char, usize, *const c_char, *const c_char) -> c_int,
-    openlibs: unsafe extern "C" fn(L),
-    close: unsafe extern "C" fn(L),
-    loadfilex: unsafe extern "C" fn(L, *const c_char, *const c_char) -> c_int,
-    pcallk: unsafe extern "C" fn(L, c_int, c_int, c_int, isize, *const c_void) -> c_int,
-    tolstring: unsafe extern "C" fn(L, c_int, *mut usize) -> *const c_char,
-    pushlstring: unsafe extern "C" fn(L, *const c_char, usize) -> *const c_char,
-    pushinteger: unsafe extern "C" fn(L, i64),
-    pushnumber: unsafe extern "C" fn(L, f64),
-    pushboolean: unsafe extern "C" fn(L, c_int),
-    pushnil: unsafe extern "C" fn(L),
-    pushvalue: unsafe extern "C" fn(L, c_int),
-    pushlightuserdata: unsafe extern "C" fn(L, *mut c_void),
-    pushcclosure: unsafe extern "C" fn(L, CFn, c_int),
-    createtable: unsafe extern "C" fn(L, c_int, c_int),
-    setfield: unsafe extern "C" fn(L, c_int, *const c_char),
-    setglobal: unsafe extern "C" fn(L, *const c_char),
-    rawgeti: unsafe extern "C" fn(L, c_int, i64) -> c_int,
-    rawseti: unsafe extern "C" fn(L, c_int, i64),
-    settop: unsafe extern "C" fn(L, c_int),
-    gettop: unsafe extern "C" fn(L) -> c_int,
-    type_: unsafe extern "C" fn(L, c_int) -> c_int,
-    toboolean: unsafe extern "C" fn(L, c_int) -> c_int,
-    tointegerx: unsafe extern "C" fn(L, c_int, *mut c_int) -> i64,
-    tonumberx: unsafe extern "C" fn(L, c_int, *mut c_int) -> f64,
-    touserdata: unsafe extern "C" fn(L, c_int) -> *mut c_void,
-    ref_: unsafe extern "C" fn(L, c_int) -> c_int,
-    unref: unsafe extern "C" fn(L, c_int, c_int),
+pub(crate) struct Api {
+    pub(crate) newstate: unsafe extern "C" fn() -> L,
+    pub(crate) newstate_alloc: unsafe extern "C" fn(Alloc, *mut c_void) -> L,
+    pub(crate) sethook: unsafe extern "C" fn(L, Option<Hook>, c_int, c_int),
+    pub(crate) error: unsafe extern "C-unwind" fn(L) -> c_int,
+    pub(crate) loadbufferx: unsafe extern "C" fn(L, *const c_char, usize, *const c_char, *const c_char) -> c_int,
+    pub(crate) openlibs: unsafe extern "C" fn(L),
+    pub(crate) close: unsafe extern "C" fn(L),
+    pub(crate) loadfilex: unsafe extern "C" fn(L, *const c_char, *const c_char) -> c_int,
+    pub(crate) pcallk: unsafe extern "C" fn(L, c_int, c_int, c_int, isize, *const c_void) -> c_int,
+    pub(crate) tolstring: unsafe extern "C" fn(L, c_int, *mut usize) -> *const c_char,
+    pub(crate) pushlstring: unsafe extern "C" fn(L, *const c_char, usize) -> *const c_char,
+    pub(crate) pushinteger: unsafe extern "C" fn(L, i64),
+    pub(crate) pushnumber: unsafe extern "C" fn(L, f64),
+    pub(crate) pushboolean: unsafe extern "C" fn(L, c_int),
+    pub(crate) pushnil: unsafe extern "C" fn(L),
+    pub(crate) pushvalue: unsafe extern "C" fn(L, c_int),
+    pub(crate) pushlightuserdata: unsafe extern "C" fn(L, *mut c_void),
+    pub(crate) pushcclosure: unsafe extern "C" fn(L, CFn, c_int),
+    pub(crate) createtable: unsafe extern "C" fn(L, c_int, c_int),
+    pub(crate) setfield: unsafe extern "C" fn(L, c_int, *const c_char),
+    pub(crate) setglobal: unsafe extern "C" fn(L, *const c_char),
+    pub(crate) rawgeti: unsafe extern "C" fn(L, c_int, i64) -> c_int,
+    pub(crate) rawseti: unsafe extern "C" fn(L, c_int, i64),
+    pub(crate) settop: unsafe extern "C" fn(L, c_int),
+    pub(crate) gettop: unsafe extern "C" fn(L) -> c_int,
+    pub(crate) type_: unsafe extern "C" fn(L, c_int) -> c_int,
+    pub(crate) toboolean: unsafe extern "C" fn(L, c_int) -> c_int,
+    pub(crate) tointegerx: unsafe extern "C" fn(L, c_int, *mut c_int) -> i64,
+    pub(crate) tonumberx: unsafe extern "C" fn(L, c_int, *mut c_int) -> f64,
+    pub(crate) touserdata: unsafe extern "C" fn(L, c_int) -> *mut c_void,
+    pub(crate) ref_: unsafe extern "C" fn(L, c_int) -> c_int,
+    pub(crate) unref: unsafe extern "C" fn(L, c_int, c_int),
+    pub(crate) getfield: unsafe extern "C" fn(L, c_int, *const c_char) -> c_int,
 }
 
 macro_rules! sym {
@@ -201,6 +202,19 @@ macro_rules! sym {
 }
 
 impl Api {
+    /// La bibliothèque Lua, chargée une fois pour tout le serveur (`None` si absente).
+    pub(crate) fn shared() -> Option<&'static Api> {
+        static SHARED: OnceLock<Option<usize>> = OnceLock::new();
+        let p = *SHARED.get_or_init(|| {
+            let known = API.load(Ordering::Relaxed);
+            if !known.is_null() {
+                return Some(known as usize);
+            }
+            Api::load().ok().map(|a| a as *const Api as usize)
+        });
+        p.map(|p| unsafe { &*(p as *const Api) })
+    }
+
     fn load() -> Result<&'static Api, String> {
         unsafe {
             let mut h = std::ptr::null_mut();
@@ -262,6 +276,7 @@ impl Api {
                 touserdata: sym!(h, "lua_touserdata"),
                 ref_: sym!(h, "luaL_ref"),
                 unref: sym!(h, "luaL_unref"),
+                getfield: sym!(h, "lua_getfield"),
             };
             let api: &'static Api = Box::leak(Box::new(api));
             API.store(api as *const Api as *mut Api, Ordering::Relaxed);

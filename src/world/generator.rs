@@ -393,6 +393,8 @@ pub enum Kind {
     Normal,
     /// Terrain à la manière du jeu depuis la 1.18 (bruits de climat, biomes, grottes)
     Vanilla,
+    /// Générateur fourni par un plugin (`level-type=plugin:<nom>`)
+    Plugin,
 }
 
 impl Kind {
@@ -401,6 +403,7 @@ impl Kind {
         match text.trim().to_ascii_lowercase().as_str() {
             "flat" | "plat" => Kind::Flat,
             "normal" => Kind::Normal,
+            t if t.starts_with("plugin:") => Kind::Plugin,
             _ => Kind::Vanilla,
         }
     }
@@ -409,6 +412,7 @@ impl Kind {
         match text.trim().to_ascii_lowercase().as_str() {
             "flat" | "plat" => Kind::Flat,
             "basalt" | "legacy" => Kind::Normal,
+            t if t.starts_with("plugin:") => Kind::Plugin,
             _ => Kind::Vanilla,
         }
     }
@@ -417,6 +421,7 @@ impl Kind {
             Kind::Flat => "flat",
             Kind::Normal => "normal",
             Kind::Vanilla => "vanilla",
+            Kind::Plugin => "plugin",
         }
     }
 }
@@ -435,6 +440,9 @@ pub struct Generator {
     tunnels_b: Perlin,
     detail: Perlin,
     vanilla: Option<super::vanilla::Vanilla>,
+    /// Générateur d'un plugin, et son nom (gardé même s'il n'a pas pu être chargé)
+    plugin: Option<std::sync::Arc<crate::plugin::generator::LuaGenerator>>,
+    plugin_name: String,
 }
 
 /// Arbre à poser : position du pied du tronc et essence.
@@ -467,6 +475,22 @@ impl Generator {
             tunnels_b: p(8),
             detail: p(9),
             vanilla: if kind == Kind::Vanilla { Some(super::vanilla::Vanilla::new(seed)) } else { None },
+            plugin: None,
+            plugin_name: String::new(),
+        }
+    }
+
+    /// Générateur d'un plugin. `plugin` est absent s'il n'a pas pu être chargé : le monde
+    /// garde alors son type (enregistré tel quel) mais reste vide.
+    pub fn with_plugin(name: &str, seed: u64, blocks: Palette, plugin: Option<std::sync::Arc<crate::plugin::generator::LuaGenerator>>) -> Generator {
+        Generator { plugin, plugin_name: name.to_string(), ..Generator::new(Kind::Plugin, seed, blocks) }
+    }
+
+    /// Type de terrain tel qu'enregistré dans `level.nbt` (`plugin:<nom>` pour un plugin).
+    pub fn stored_name(&self) -> String {
+        match self.kind {
+            Kind::Plugin => format!("plugin:{}", self.plugin_name),
+            k => k.name().to_string(),
         }
     }
 
@@ -526,6 +550,9 @@ impl Generator {
     /// Point d'apparition : la première terre ferme en partant de (0, 0) et en tournant
     /// autour. Renvoie (x, hauteur du sol, z).
     pub fn spawn(&self) -> (i32, i32, i32) {
+        if self.kind == Kind::Plugin {
+            return self.plugin.as_ref().and_then(|p| p.spawn()).unwrap_or((8, 64, 8));
+        }
         if let Some(v) = &self.vanilla {
             return v.spawn();
         }
@@ -543,6 +570,13 @@ impl Generator {
 
     /// Génère un chunk entier.
     pub fn generate(&self, cx: i32, cz: i32) -> Column {
+        if self.kind == Kind::Plugin {
+            let height = (MAX_Y - MIN_Y + 1) as usize;
+            return match &self.plugin {
+                Some(p) => p.generate(&self.blocks, cx, cz),
+                None => Column::from_blocks(&vec![self.blocks.air; 256 * height], self.blocks.air, Biome::Plains),
+            };
+        }
         if let Some(v) = &self.vanilla {
             return v.generate(&self.blocks, cx, cz);
         }
