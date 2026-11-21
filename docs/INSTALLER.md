@@ -205,6 +205,7 @@ démarrage). Arrêtez le serveur avant de le modifier. Les plus utiles :
 | `white-list` | `true` : seuls les joueurs de `white-list.txt` peuvent entrer |
 | `keep-inventory` | `true` : on garde son inventaire à la mort |
 | `spawn-animals` | `false` : pas d'animaux |
+| `tick-distance` | Distance de simulation en chunks (4 à 12) : au-delà, les animaux restent figés |
 | `public-ip` | adresse publique, derrière une box |
 
 Chaque réglage est expliqué dans le fichier lui-même.

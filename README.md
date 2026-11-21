@@ -37,8 +37,10 @@ jeu (Bedrock 1.26.63 à 1.26.66 sous Windows, deux comptes Xbox en même temps).
 - `/locate structure` et `/locate biome` ;
 - générateurs de terrain écrits en Lua par les plugins (`level-type=plugin:<nom>`) ;
 - **animaux, suite** : installés à la découverte des terres (un chunk sur dix environ,
-  selon le biome, comme à la génération dans le jeu) et enregistrés avec le monde
-  (`mobs.json`) ; lapins (déserts, neige, taïgas, forêts fleuries, pelage selon le biome) ;
+  selon le biome, comme à la génération dans le jeu) et enregistrés avec leur région
+  (`entities/`), comme le jeu les range avec leur chunk : seuls ceux qui sont près d'un
+  joueur restent en mémoire, et ils ne bougent qu'à la distance de simulation
+  (`tick-distance=4`, de 4 à 12 comme le serveur officiel) ; lapins (déserts, neige, taïgas, forêts fleuries, pelage selon le biome) ;
   ils suivent le joueur qui tient leur nourriture ; nourris, deux adultes font un petit
   qui grandit en 20 minutes (plus vite si on le nourrit) ; moutons tondus aux cisailles,
   qui refont leur laine en broutant l'herbe ; vaches traites au seau ; poules qui pondent ;

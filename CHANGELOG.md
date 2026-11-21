@@ -17,6 +17,13 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Modifié
 
+- Animaux rangés comme dans le jeu : enregistrés avec leur région (`world/entities/`),
+  ils ne restent en mémoire que près des joueurs et retournent dans leur région quand
+  plus personne n'est proche ; plus de limite au nombre d'animaux du monde. L'ancien
+  fichier `mobs.json` est converti tout seul au premier démarrage (gardé en
+  `mobs.json.ancien`).
+- Distance de simulation réglable (`tick-distance`, 4 par défaut comme le serveur
+  officiel) : au-delà, les animaux restent figés.
 - Les fils de fond (génération du terrain, préparation des chunks, écritures disque)
   tournent en priorité basse sous Linux : la boucle du jeu passe avant eux quand la
   machine est chargée.

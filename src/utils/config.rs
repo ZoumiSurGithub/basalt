@@ -18,6 +18,8 @@ pub struct Config {
     pub gamemode: String,
     pub world_name: String,
     pub view_distance: i32,
+    /// Distance de simulation (en chunks) : au-delà, les créatures restent figées (`tick-distance`)
+    pub tick_distance: i32,
     pub debug: bool,
     /// Mise au point : renvoie le terrain sous d'autres formes aux joueurs entrés (`debug-probes`)
     pub probes: bool,
@@ -82,6 +84,7 @@ impl Default for Config {
             gamemode: "Survival".into(),
             world_name: "Monde".into(),
             view_distance: 6,
+            tick_distance: 4,
             debug: false,
             probes: false,
             max_per_ip: 5,
@@ -177,8 +180,11 @@ auth-keys-file=
 movement-check=true
 # true : les joueurs se voient entre eux
 show-players=true
-# Animaux (vaches, cochons, moutons, poules) autour des joueurs
+# Animaux (vaches, cochons, moutons, poules, lapins) autour des joueurs
 spawn-animals=true
+# Distance de simulation (en chunks, de 4 à 12, comme le serveur officiel) : au-delà,
+# les animaux restent figés jusqu'au retour d'un joueur
+tick-distance=4
 # Distance (en chunks) jusqu'à laquelle un joueur voit les autres
 player-view-distance=4
 # Nombre maximal d'autres joueurs affichés à chaque joueur
@@ -333,6 +339,7 @@ impl Config {
         }
         num!("timeout", timeout_secs);
         num!("view-distance", view_distance);
+        num!("tick-distance", tick_distance);
         num!("max-connections-per-ip", max_per_ip);
         num!("player-view-distance", player_view);
         num!("max-visible-players", max_visible);
@@ -340,6 +347,7 @@ impl Config {
         c.max_visible = c.max_visible.min(500);
         c.max_per_ip = c.max_per_ip.max(1);
         c.view_distance = c.view_distance.max(2).min(16);
+        c.tick_distance = c.tick_distance.clamp(4, 12);
         if c.timeout_secs == 0 {
             c.timeout_secs = 10;
         }

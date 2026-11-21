@@ -2,8 +2,9 @@
 //!
 //! Comme dans le jeu, les animaux apparaissent quand une terre est découverte : à la
 //! première visite d'un chunk, un petit troupeau s'y installe parfois, selon le biome. Ils
-//! sont enregistrés avec le monde (`mobs.json`) et ne vivent (se déplacent) que près des
-//! joueurs. Ils se promènent, sautent les marches, évitent les chutes, nagent, suivent le
+//! sont enregistrés avec leur région (`entities/`, voir `mob_store`) : seuls ceux qui sont
+//! près d'un joueur sont en mémoire, et ils ne bougent qu'à la distance de simulation
+//! (`tick-distance`). Ils se promènent, sautent les marches, évitent les chutes, nagent, suivent le
 //! joueur qui tient leur nourriture, fuient quand on les frappe, meurent et laissent leur
 //! butin (le jeu joue lui-même leurs cris et leurs bruits). Nourris, deux adultes font un petit, qui grandit en vingt minutes. Les moutons se
 //! tondent et refont leur laine en broutant, les vaches se traient, les poules pondent.
@@ -167,14 +168,64 @@ impl Mob {
     }
 }
 
-/// Au plus tant de créatures dans le monde (les nouvelles terres n'en reçoivent plus)
+/// Au plus tant de créatures en mémoire à la fois (au-delà, les terres neuves n'en reçoivent
+/// plus ; celles qui sont enregistrées reviennent toujours)
 const MAX_MOBS: usize = 4000;
 /// Rayon d'affichage
 const VIEW: f32 = 80.0;
-/// Au-delà, une créature ne bouge plus (personne ne la voit)
-const ACTIVE: f32 = 96.0;
 /// Chunks examinés autour de chaque joueur pour y installer des animaux
 const POPULATE_RADIUS: i32 = 4;
+/// Ce qu'on enregistre d'une créature.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct MobRecord {
+    pub species: Species,
+    pub pos: (f32, f32, f32),
+    pub yaw: f32,
+    pub health: f32,
+    pub age: i64,
+    pub color: u8,
+    pub variant: i32,
+    pub sheared: bool,
+}
+
+impl MobRecord {
+    pub fn to_json(&self) -> Json {
+        let n = |v: f32| Json::Num((v as f64 * 100.0).round() / 100.0);
+        Json::Obj(vec![
+            ("kind".into(), Json::Str(self.species.id().into())),
+            ("x".into(), n(self.pos.0)),
+            ("y".into(), n(self.pos.1)),
+            ("z".into(), n(self.pos.2)),
+            ("yaw".into(), n(self.yaw)),
+            ("health".into(), n(self.health)),
+            ("age".into(), Json::Num(self.age as f64)),
+            ("color".into(), Json::Num(self.color as f64)),
+            ("variant".into(), Json::Num(self.variant as f64)),
+            ("sheared".into(), Json::Bool(self.sheared)),
+        ])
+    }
+
+    pub fn from_json(v: &Json) -> Option<MobRecord> {
+        let species = v.get("kind").and_then(|k| k.as_str()).and_then(Species::from_id)?;
+        let num = |k: &str| v.get(k).and_then(|n| n.as_f64()).filter(|n| n.abs() < 3.0e7);
+        Some(MobRecord {
+            species,
+            pos: (num("x")? as f32, num("y")? as f32, num("z")? as f32),
+            yaw: num("yaw").unwrap_or(0.0) as f32,
+            health: (num("health").unwrap_or(species.health() as f64) as f32).clamp(0.5, species.health()),
+            age: num("age").unwrap_or(0.0) as i64,
+            color: num("color").unwrap_or(0.0) as u8 & 15,
+            variant: num("variant").unwrap_or(0.0) as i32,
+            sheared: v.get("sheared").and_then(|s| s.as_bool()).unwrap_or(false),
+        })
+    }
+}
+
+impl Mob {
+    fn record(&self) -> MobRecord {
+        MobRecord { species: self.species, pos: self.pos, yaw: self.yaw, health: self.health, age: self.age, color: self.color, variant: self.variant, sheared: self.sheared }
+    }
+}
 
 impl Server {
     /// Installe des animaux dans les chunks qu'un joueur découvre (une fois par chunk, comme
@@ -191,15 +242,20 @@ impl Server {
             let (pcx, pcz) = ((p.0.floor() as i32) >> 4, (p.2.floor() as i32) >> 4);
             for cx in pcx - POPULATE_RADIUS..=pcx + POPULATE_RADIUS {
                 for cz in pcz - POPULATE_RADIUS..=pcz + POPULATE_RADIUS {
-                    if self.populated.contains(&(cx, cz)) || !self.world.is_ready(cx, cz) {
+                    // Les animaux déjà enregistrés de ce chunk doivent être là avant de décider
+                    if !self.mob_chunks.contains(&(cx, cz)) || !self.world.is_ready(cx, cz) {
+                        continue;
+                    }
+                    let Some(region) = self.mob_store.regions.get_mut(&mob_store::region_of((cx, cz))) else { continue };
+                    if region.populated.contains(&(cx, cz)) {
                         continue;
                     }
                     if budget == 0 {
                         return;
                     }
                     budget -= 1;
-                    self.populated.insert((cx, cz));
-                    self.mobs_dirty = true;
+                    region.populated.insert((cx, cz));
+                    region.dirty = true;
                     if self.mobs.len() < MAX_MOBS && self.mob_rng.below(10) == 0 {
                         self.spawn_herd(cx, cz, p.1 as i32);
                     }
@@ -440,6 +496,8 @@ impl Server {
             .collect();
         let ids: Vec<i64> = self.mobs.keys().copied().collect();
         let tick = self.tick;
+        // Distance de simulation, comme le jeu : au-delà, les créatures restent figées
+        let active = (self.cfg.tick_distance * 16) as f32;
         for id in ids {
             let Some(mut m) = self.mobs.get(&id).cloned() else { continue };
             if let Some(t) = m.dead {
@@ -448,7 +506,7 @@ impl Server {
                 }
                 continue;
             }
-            let near = players.iter().any(|(p, _)| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2) < ACTIVE * ACTIVE);
+            let near = players.iter().any(|(p, _)| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2) < active * active);
             if !near {
                 continue;
             }
@@ -888,68 +946,141 @@ impl Server {
         }
     }
 
-    /// Créatures et chunks peuplés, à enregistrer avec le monde (`mobs.json`).
-    pub(super) fn mobs_json(&self) -> String {
-        let n = |v: f32| Json::Num((v as f64 * 100.0).round() / 100.0);
-        let list: Vec<Json> = self
-            .mobs
-            .values()
-            .filter(|m| m.dead.is_none())
-            .map(|m| {
-                Json::Obj(vec![
-                    ("kind".into(), Json::Str(m.species.id().into())),
-                    ("x".into(), n(m.pos.0)),
-                    ("y".into(), n(m.pos.1)),
-                    ("z".into(), n(m.pos.2)),
-                    ("yaw".into(), n(m.yaw)),
-                    ("health".into(), n(m.health)),
-                    ("age".into(), Json::Num(m.age as f64)),
-                    ("color".into(), Json::Num(m.color as f64)),
-                    ("variant".into(), Json::Num(m.variant as f64)),
-                    ("sheared".into(), Json::Bool(m.sheared)),
-                ])
-            })
-            .collect();
-        let chunks: Vec<Json> = self.populated.iter().map(|(x, z)| Json::Str(format!("{},{}", x, z))).collect();
-        Json::Obj(vec![("mobs".into(), Json::Arr(list)), ("chunks".into(), Json::Arr(chunks))]).to_json()
+    /// Rayon (en chunks) autour d'un joueur où les créatures sont en mémoire : de quoi les
+    /// voir et les faire vivre ; au-delà de `+ 2`, elles retournent dans leur région.
+    fn mob_load_radius(&self) -> i32 {
+        ((VIEW / 16.0).ceil() as i32).max(self.cfg.tick_distance) + 1
     }
 
-    /// Recharge les créatures enregistrées.
-    pub(super) fn load_mobs(&mut self) {
-        let path = std::path::Path::new(&self.cfg.world_dir).join("mobs.json");
-        let Ok(text) = std::fs::read_to_string(&path) else { return };
-        let Ok(doc) = crate::json::parse(&text) else {
-            warn!("{} illisible : animaux non rechargés", path.display());
-            return;
-        };
-        for c in doc.get("chunks").and_then(|c| c.as_arr()).unwrap_or(&[]) {
-            if let Some((x, z)) = c.as_str().and_then(|s| s.split_once(',')) {
-                if let (Ok(x), Ok(z)) = (x.parse(), z.parse()) {
-                    self.populated.insert((x, z));
+    /// Sort de leur région les créatures des chunks qui s'approchent d'un joueur, et y range
+    /// celles dont plus personne n'est proche (comme le jeu, qui les garde avec leur chunk).
+    pub(super) fn stream_mobs(&mut self) {
+        self.mob_store.receive();
+        let centers: Vec<(i32, i32)> = self.clients.values().filter(|c| c.joined && c.stage == Stage::InGame).map(|c| mob_store::chunk_of(c.pos.0, c.pos.2)).collect();
+        let load = self.mob_load_radius();
+        let keep = load + 2;
+        // 1. Chunks qui s'approchent : leurs créatures reviennent
+        for &(pcx, pcz) in &centers {
+            for cx in pcx - load..=pcx + load {
+                for cz in pcz - load..=pcz + load {
+                    if self.mob_chunks.contains(&(cx, cz)) {
+                        continue;
+                    }
+                    let Some(region) = self.mob_store.region(mob_store::region_of((cx, cz))) else { continue };
+                    let records = region.chunks.remove(&(cx, cz)).unwrap_or_default();
+                    self.mob_chunks.insert((cx, cz));
+                    for r in records {
+                        self.spawn_record(r);
+                    }
                 }
             }
         }
-        let mut loaded = 0;
-        for v in doc.get("mobs").and_then(|m| m.as_arr()).unwrap_or(&[]).iter().take(MAX_MOBS) {
-            let Some(species) = v.get("kind").and_then(|k| k.as_str()).and_then(Species::from_id) else { continue };
-            let num = |k: &str| v.get(k).and_then(|n| n.as_f64()).filter(|n| n.abs() < 3.0e7);
-            let (Some(x), Some(y), Some(z)) = (num("x"), num("y"), num("z")) else { continue };
-            let id = self.add_mob(species, (x as f32, y as f32, z as f32));
-            if let Some(m) = self.mobs.get_mut(&id) {
-                m.yaw = num("yaw").unwrap_or(0.0) as f32;
-                m.sent_yaw = m.yaw;
-                m.health = (num("health").unwrap_or(species.health() as f64) as f32).clamp(0.5, species.health());
-                m.age = num("age").unwrap_or(0.0) as i64;
-                m.color = num("color").unwrap_or(0.0) as u8 & 15;
-                m.variant = num("variant").unwrap_or(0.0) as i32;
-                m.sheared = v.get("sheared").and_then(|s| s.as_bool()).unwrap_or(false);
+        // 2. Chunks loin de tout joueur : oubliés
+        let near = |c: &(i32, i32), r: i32| centers.iter().any(|p| (c.0 - p.0).abs() <= r && (c.1 - p.1).abs() <= r);
+        self.mob_chunks.retain(|c| near(c, keep));
+        // 3. Créatures hors des chunks gardés : rangées dans leur région
+        let away: Vec<(i64, (i32, i32))> = self
+            .mobs
+            .values()
+            .filter(|m| m.dead.is_none())
+            .map(|m| (m.id, mob_store::chunk_of(m.pos.0, m.pos.2)))
+            .filter(|(_, c)| !self.mob_chunks.contains(c))
+            .collect();
+        for (id, chunk) in away {
+            let Some(record) = self.mobs.get(&id).map(|m| m.record()) else { continue };
+            // Région pas encore lue : la créature attend en mémoire
+            let Some(region) = self.mob_store.region(mob_store::region_of(chunk)) else { continue };
+            region.chunks.entry(chunk).or_default().push(record);
+            region.dirty = true;
+            self.remove_mob(id);
+        }
+    }
+
+    /// Fait revenir une créature enregistrée.
+    fn spawn_record(&mut self, r: MobRecord) {
+        let id = self.add_mob(r.species, r.pos);
+        if let Some(m) = self.mobs.get_mut(&id) {
+            m.yaw = r.yaw;
+            m.sent_yaw = r.yaw;
+            m.health = r.health;
+            m.age = r.age;
+            m.color = r.color;
+            m.variant = r.variant;
+            m.sheared = r.sheared;
+        }
+    }
+
+    /// Enregistre les régions changées : les créatures rangées et celles en mémoire. À l'arrêt
+    /// (`last`), tout est écrit, quitte à lire d'abord les régions manquantes.
+    pub(super) fn save_mobs(&mut self, last: bool) {
+        let mut live: HashMap<(i32, i32), Vec<MobRecord>> = HashMap::new();
+        for m in self.mobs.values().filter(|m| m.dead.is_none()) {
+            live.entry(mob_store::region_of(mob_store::chunk_of(m.pos.0, m.pos.2))).or_default().push(m.record());
+        }
+        if last {
+            // Les écritures en attente d'abord : les fichiers relus sont à jour
+            crate::background::DISK.flush(Duration::from_secs(60));
+            for r in live.keys() {
+                self.mob_store.load_now(*r);
             }
-            loaded += 1;
         }
-        self.mobs_dirty = false;
-        if loaded > 0 {
-            info!("Animaux rechargés : {}", loaded);
+        let mut waiting = false;
+        let touched: Vec<(i32, i32)> = self
+            .mob_store
+            .regions
+            .iter()
+            .filter(|(r, region)| region.dirty || (self.mobs_dirty || last) && live.contains_key(*r))
+            .map(|(r, _)| *r)
+            .collect();
+        for r in live.keys() {
+            if !self.mob_store.regions.contains_key(r) && (self.mobs_dirty || last) {
+                waiting = true; // région encore en lecture : ce sera pour le prochain enregistrement
+            }
         }
+        for r in touched {
+            let Some(region) = self.mob_store.regions.get_mut(&r) else { continue };
+            let text = region.encode(live.get(&r).map(|v| v.as_slice()).unwrap_or(&[]));
+            region.dirty = false;
+            self.mob_store.write(r, text);
+        }
+        self.mobs_dirty = waiting;
+        if last {
+            info!("Animaux enregistrés : {} autour des joueurs", live.values().map(|v| v.len()).sum::<usize>());
+            return;
+        }
+        // Régions qui ne servent plus (déjà écrites) : libérées
+        let used: HashSet<(i32, i32)> = self.mob_chunks.iter().map(|c| mob_store::region_of(*c)).chain(live.keys().copied()).collect();
+        self.mob_store.regions.retain(|r, region| region.dirty || used.contains(r));
+    }
+
+    /// Prépare l'enregistrement des créatures du monde ouvert ; convertit l'ancien fichier
+    /// unique (`mobs.json`) en régions.
+    pub(super) fn load_mobs(&mut self) {
+        let dir = std::path::PathBuf::from(&self.cfg.world_dir);
+        self.mob_store = mob_store::MobStore::new(dir.join("entities"));
+        self.mob_chunks.clear();
+        let old = dir.join("mobs.json");
+        let Ok(text) = std::fs::read_to_string(&old) else { return };
+        let Some(all) = mob_store::Region::parse(&text) else {
+            warn!("{} illisible : animaux non repris", old.display());
+            return;
+        };
+        let mut regions: HashMap<(i32, i32), mob_store::Region> = HashMap::new();
+        for (chunk, mobs) in all.chunks {
+            regions.entry(mob_store::region_of(chunk)).or_default().chunks.insert(chunk, mobs);
+        }
+        for chunk in all.populated {
+            regions.entry(mob_store::region_of(chunk)).or_default().populated.insert(chunk);
+        }
+        let count: usize = regions.values().map(|r| r.stored()).sum();
+        for (r, region) in &regions {
+            if let Err(e) = self.mob_store.write_now(*r, &region.encode(&[])) {
+                warn!("Conversion des animaux impossible ({}) : l'ancien fichier est gardé", e);
+                return;
+            }
+        }
+        let _ = std::fs::rename(&old, dir.join("mobs.json.ancien"));
+        info!("Animaux convertis au rangement par région : {}", count);
     }
 }
 

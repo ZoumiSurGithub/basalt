@@ -210,9 +210,15 @@ impl Client {
             let mut pos = 4;
             while pos < r.len() {
                 let flags = r[pos];
-                assert_eq!(flags >> 5, 3, "trame fiable ordonnée attendue (position {} sur {}, début {:02x?})", pos, r.len(), &r[..r.len().min(24)]);
+                // En-tête selon la fiabilité : non fiable (déplacements), fiable, fiable ordonnée
+                let header = match flags >> 5 {
+                    0 => 3,
+                    2 => 6,
+                    3 => 10,
+                    other => panic!("fiabilité {} inattendue (position {} sur {}, début {:02x?})", other, pos, r.len(), &r[..r.len().min(24)]),
+                };
                 let len = (u16::from_be_bytes([r[pos + 1], r[pos + 2]]) as usize) / 8;
-                pos += 10;
+                pos += header;
                 if flags & 0x10 != 0 {
                     let count = u32::from_be_bytes([r[pos], r[pos + 1], r[pos + 2], r[pos + 3]]) as usize;
                     let id = u16::from_be_bytes([r[pos + 4], r[pos + 5]]);
@@ -224,7 +230,8 @@ impl Client {
                         let whole: Vec<u8> = self.parts.remove(&id).unwrap().into_iter().flatten().flatten().collect();
                         self.inbox.push_back(whole);
                     }
-                } else {
+                } else if r[pos] == 0xfe || flags >> 5 != 0 {
+                    // (Les trames non fiables hors jeu sont des pings RakNet : ignorées)
                     self.inbox.push_back(r[pos..pos + len].to_vec());
                 }
                 pos += len;
@@ -462,6 +469,8 @@ fn start_opts(dir: &PathBuf, max_per_ip: usize, xbox_auth: bool) -> (SocketAddr,
         cfg.white_list = dir.join("liste-blanche-active").exists();
         // Pas d'animaux (leurs paquets gêneraient les tests), sauf fichier témoin
         cfg.spawn_animals = dir.join("animaux").exists();
+        // Déplacements libres (grands pas d'un coup), sur fichier témoin
+        cfg.movement_check = !dir.join("deplacements-libres").exists();
         cfg.view_distance = 3;
         cfg.max_per_ip = max_per_ip;
         cfg.xbox_auth = xbox_auth;
@@ -2018,8 +2027,13 @@ fn animals_appear_and_wander() {
     // Enregistrés avec le monde à l'arrêt du serveur, puis rechargés
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = handle.join();
-    let saved = std::fs::read_to_string(dir.join("world").join("mobs.json")).expect("mobs.json enregistré");
-    assert!(saved.contains("minecraft:") && saved.contains("\"chunks\""), "{}", &saved[..saved.len().min(200)]);
+    // Rangés par région (entities/r.<x>.<z>.json), comme le jeu les range avec leur chunk
+    let saved: String = std::fs::read_dir(dir.join("world").join("entities"))
+        .expect("dossier entities créé")
+        .filter_map(|e| e.ok())
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .collect();
+    assert!(saved.contains("minecraft:") && saved.contains("\"populated\""), "{}", &saved[..saved.len().min(200)]);
     let (addr, stop, handle) = start(&dir);
     std::thread::sleep(Duration::from_millis(500));
     let mut alex = Client::join(addr, "Alex");
@@ -2033,4 +2047,70 @@ fn animals_appear_and_wander() {
     assert!(again, "les animaux enregistrés reviennent");
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = handle.join();
+}
+
+/// L'ancien fichier unique (`mobs.json`) est converti en régions, et ses animaux reviennent.
+#[test]
+fn old_mobs_file_is_converted() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-ancien-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("world")).unwrap();
+    std::fs::write(dir.join("animaux"), "").unwrap();
+    std::fs::write(dir.join("deplacements-libres"), "").unwrap();
+    // Un lapin (jamais tiré au sort en terrain plat) près du point d'apparition, une autre très loin (région à part)
+    std::fs::write(
+        dir.join("world").join("mobs.json"),
+        r#"{"mobs":[{"kind":"minecraft:rabbit","x":2.5,"y":-60,"z":2.5},{"kind":"minecraft:pig","x":5000.5,"y":-60,"z":5000.5}],"chunks":["0,0"]}"#,
+    )
+    .unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let started = std::time::Instant::now();
+    let mut rabbit = false;
+    while !rabbit && started.elapsed() < Duration::from_secs(20) {
+        if let Some((13, body)) = steve.poll_game(Duration::from_millis(500)) {
+            rabbit |= body.windows(16).any(|w| w == b"minecraft:rabbit");
+        }
+    }
+    // (Le cochon lointain, lui, reste dans sa région : vérifié dans le fichier à la fin. Des
+    // troupeaux neufs peuvent apparaître autour du joueur : on ne compte pas les cochons.)
+    assert!(rabbit, "le lapin convertie revient près du joueur");
+    // Le joueur s'éloigne : le lapin retourne dans sa région (le jeu la retire) ; il revient : elle aussi
+    // (Rend vrai si un lapin est apparue en chemin)
+    let walk = |c: &mut Client, from: f32, to: f32| {
+        let steps = ((to - from).abs() / 4.0).ceil() as i32;
+        let mut seen = false;
+        for i in 1..=steps {
+            let x = from + (to - from) * i as f32 / steps as f32;
+            c.walk_to(x, 0.5);
+            if let Some((13, body)) = c.poll_game(Duration::from_millis(50)) {
+                seen |= body.windows(16).any(|w| w == b"minecraft:rabbit");
+            }
+        }
+        seen
+    };
+    // (Loin, le lapin quitte la mémoire : il n'est plus montré ; il ne peut être renvoyé au
+    // retour que s'il a été rangé puis ressorti de sa région)
+    walk(&mut steve, 0.5, 300.5);
+    for _ in 0..6 {
+        let _ = steve.poll_game(Duration::from_millis(500));
+    }
+    let mut back = walk(&mut steve, 300.5, 0.5);
+    let started = std::time::Instant::now();
+    while !back && started.elapsed() < Duration::from_secs(15) {
+        if let Some((13, body)) = steve.poll_game(Duration::from_millis(500)) {
+            back |= body.windows(16).any(|w| w == b"minecraft:rabbit");
+        }
+    }
+    assert!(back, "le lapin revient avec le joueur");
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = handle.join();
+    let world = dir.join("world");
+    assert!(!world.join("mobs.json").exists() && world.join("mobs.json.ancien").exists());
+    let far = std::fs::read_to_string(world.join("entities").join("r.9.9.json")).expect("région du cochon");
+    assert!(far.contains("minecraft:pig"), "{}", far);
+    let near = std::fs::read_to_string(world.join("entities").join("r.0.0.json")).expect("région de le lapin");
+    assert!(near.contains("minecraft:rabbit") && near.contains("\"0,0\""), "{}", near);
+    let _ = std::fs::remove_dir_all(&dir);
 }

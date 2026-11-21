@@ -1,5 +1,6 @@
 //! Boucle principale : relie le réseau, la console et les plugins.
 
+mod mob_store;
 mod mobs;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -397,7 +398,9 @@ pub struct Server {
     /// Le jeu a refusé l'apparition d'une créature : plus d'animaux
     mobs_refused: bool,
     /// Chunks déjà peuplés d'animaux (une fois par chunk, à la première visite)
-    populated: HashSet<(i32, i32)>,
+    /// Régions d'enregistrement des créatures, et chunks dont les créatures sont en mémoire
+    mob_store: mob_store::MobStore,
+    mob_chunks: HashSet<(i32, i32)>,
     /// Animaux changés depuis le dernier enregistrement
     mobs_dirty: bool,
     /// Objets posés au sol
@@ -706,7 +709,9 @@ impl Server {
             mobs: HashMap::new(),
             mob_rng: mobs::mob_rng(),
             mobs_refused: false,
-            populated: HashSet::new(),
+            // Dossier provisoire : le vrai est fixé à l'ouverture du monde (load_mobs)
+            mob_store: mob_store::MobStore::new(std::path::PathBuf::from("world").join("entities")),
+            mob_chunks: HashSet::new(),
             mobs_dirty: false,
             ground: HashMap::new(),
             plugin_blocks: None,
@@ -6446,22 +6451,9 @@ impl Server {
                 }
             });
         }
-        // Animaux (réécrits quand ils ont changé)
-        if self.mobs_dirty || !self.running {
-            self.mobs_dirty = false;
-            let text = self.mobs_json();
-            if !self.running {
-                info!("Animaux enregistrés : {}", self.mobs.values().filter(|m| m.dead.is_none()).count());
-            }
-            let path = dir.join("mobs.json");
-            crate::background::DISK.run(move || {
-                let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
-                let tmp = path.with_extension("json.tmp");
-                if let Err(e) = std::fs::write(&tmp, text.as_bytes()).and_then(|_| std::fs::rename(&tmp, &path)) {
-                    warn!("Animaux non enregistrés : {}", e);
-                }
-            });
-        }
+        // Animaux : les régions changées (toutes à l'arrêt)
+        let last = !self.running;
+        self.save_mobs(last);
         if let (true, Some(d)) = (self.world.tiles.dirty, &self.data) {
             let ctx = ItemCatalog { data: d, next: &mut self.tile_net_id };
             let doc = self.world.tiles.snapshot(&ctx);
@@ -6612,6 +6604,7 @@ impl Server {
                 {
                     let _t = timings::scope("Tick — animaux");
                     if self.tick % 20 == 7 {
+                        self.stream_mobs();
                         self.populate_chunks();
                     }
                     if !self.mobs.is_empty() {
@@ -6679,6 +6672,8 @@ impl Server {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
+        // Arrêt (commande ou signal) : l'enregistrement qui suit est le dernier
+        self.running = false;
         let addrs: Vec<SocketAddr> = self.clients.keys().copied().collect();
         for a in addrs {
             self.send(&a, bedrock::ID_DISCONNECT, &bedrock::disconnect("Serveur arrêté."));
