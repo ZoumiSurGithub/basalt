@@ -1084,6 +1084,9 @@ pub struct Rules<'a> {
     /// Réserve de secours quand rien ne convient (bouts de rue), et chance de ne rien poser
     pub fallback: &'a dyn Fn(&str) -> Option<String>,
     pub empty_chance: &'a dyn Fn(&str) -> f64,
+    /// Pièces rigides : écart maximal entre leur plancher et le sol dessous (vide en dessous,
+    /// relief au-dessus). Une maison n'est pas posée au bord d'une falaise.
+    pub max_drop: Option<(i32, i32)>,
 }
 
 /// Résultat : les pièces, et les blocs jigsaw à remplacer (position, état, suit le relief).
@@ -1100,9 +1103,10 @@ impl Templates {
     /// le jeu : chaque point d'attache libre pioche une pièce dans sa réserve, la tourne et
     /// la place contre lui si elle ne chevauche rien ; sinon il essaie la suivante.
     ///
-    /// `start_y(t, r)` donne le bas de la pièce de départ, `ground(x, z)` la hauteur du sol.
+    /// `start_y` est le bas de la pièce de départ ; `ground(x, z)` donne la hauteur du sol
+    /// (l'eau comptant comme sol) et celle du vrai sol (sous l'eau).
     #[allow(clippy::too_many_arguments)]
-    pub fn assemble(&self, start: Arc<Template>, rot: u8, (x, z): (i32, i32), start_y: i32, rules: &Rules, rng: &mut Rng, ground: &mut dyn FnMut(i32, i32) -> i32) -> Layout {
+    pub fn assemble(&self, start: Arc<Template>, rot: u8, (x, z): (i32, i32), start_y: i32, rules: &Rules, rng: &mut Rng, ground: &mut dyn FnMut(i32, i32) -> (i32, i32)) -> Layout {
         let mut out = Layout::default();
         let (sx, sy, sz) = start.size_rot(rot);
         let at = (x - sx / 2, start_y, z - sz / 2);
@@ -1166,7 +1170,7 @@ impl Templates {
                             let krel = cand.rotate(k.pos, r);
                             let child_follows = (rules.follows_ground)(&cand_pool);
                             // Hauteur : rigide sur rigide, au bloc près ; sinon d'après le sol
-                            let min_y = if !parent_follows && !child_follows { target.1 - krel.1 } else { ground(target.0, target.2) + 1 - krel.1 };
+                            let min_y = if !parent_follows && !child_follows { target.1 - krel.1 } else { ground(target.0, target.2).0 + 1 - krel.1 };
                             let cat = (target.0 - krel.0, min_y, target.2 - krel.2);
                             let (cx, cy, cz) = cand.size_rot(r);
                             let cbox = if child_follows {
@@ -1179,6 +1183,18 @@ impl Templates {
                             } else {
                                 cbox.inside(&limit) && out.pieces.iter().all(|p| !p.bbox.intersects(&cbox))
                             };
+                            // Terrain trop accidenté sous une pièce rigide : on essaie autre chose
+                            let fits = fits
+                                && match (rules.max_drop, child_follows) {
+                                    (Some((below, above)), false) => {
+                                        let (x0, x1, z0, z1) = (cbox.min.0, cbox.max.0, cbox.min.2, cbox.max.2);
+                                        let (mx, mz) = ((x0 + x1) / 2, (z0 + z1) / 2);
+                                        let floor = cbox.min.1 - 1;
+                                        let gs: Vec<i32> = [(x0, z0), (x1, z0), (x0, z1), (x1, z1), (mx, mz), (mx, z0), (mx, z1), (x0, mz), (x1, mz)].iter().map(|&(x, z)| ground(x, z).1).collect();
+                                        floor - gs.iter().min().copied().unwrap_or(floor) <= below && gs.iter().max().copied().unwrap_or(floor) - floor <= above
+                                    }
+                                    _ => true,
+                                };
                             if !fits {
                                 continue;
                             }

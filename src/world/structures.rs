@@ -1201,8 +1201,9 @@ fn official(b: &mut Builder, t: &Templates, rng: &mut Rng, kind: Kind, sx: i32, 
                         1.0
                     }
                 },
+                max_drop: Some((4, 6)),
             };
-            let layout = t.assemble(start, rot, (x, z), y, &rules, rng, &mut |x, z| ground(b, x, z));
+            let layout = t.assemble(start, rot, (x, z), y, &rules, rng, &mut |x, z| (ground(b, x, z), b.top(x, z)));
             let under = if style.theme == Theme::Desert { "sandstone" } else { "dirt" };
             place_layout(b, rng, &layout, Placing { under: Some(under), air: true, planks: Some(style.planks), clear_trees: true, archaeology: false, carve: false, integrity: 1.0, markers: no_markers, slopes: true });
             true
@@ -1211,8 +1212,8 @@ fn official(b: &mut Builder, t: &Templates, rng: &mut Rng, kind: Kind, sx: i32, 
             let Some((x, y, z)) = placed(b.v, kind, sx, sz) else { return true };
             let tower = if rng.below(4) == 0 { "pillageroutpost/watchtower_overgrown" } else { "pillageroutpost/watchtower" };
             let Some(tower) = t.get(tower) else { return false };
-            let rules = Rules { depth: 0, reach: 40, follows_ground: &|_| false, fallback: &|_| None, empty_chance: &|_| 1.0 };
-            let mut layout = t.assemble(tower, rng.below(4) as u8, (x, z), y - 1, &rules, rng, &mut |x, z| ground(b, x, z));
+            let rules = Rules { depth: 0, reach: 40, follows_ground: &|_| false, fallback: &|_| None, empty_chance: &|_| 1.0, max_drop: None };
+            let mut layout = t.assemble(tower, rng.below(4) as u8, (x, z), y - 1, &rules, rng, &mut |x, z| (ground(b, x, z), b.top(x, z)));
             // Tentes, cages, rondins et cibles autour de la tour, posés sur le sol
             let features = t.pool("pillager_outpost/features");
             for _ in 0..(3 + rng.below(3)) {
@@ -1221,7 +1222,7 @@ fn official(b: &mut Builder, t: &Templates, rng: &mut Rng, kind: Kind, sx: i32, 
                 let dist = 13.0 + rng.unit() * 8.0;
                 let (fx, fz) = (x + (angle.cos() * dist) as i32, z + (angle.sin() * dist) as i32);
                 let fy = ground(b, fx, fz) + 1;
-                let piece = t.assemble(f, rng.below(4) as u8, (fx, fz), fy, &rules, rng, &mut |x, z| ground(b, x, z));
+                let piece = t.assemble(f, rng.below(4) as u8, (fx, fz), fy, &rules, rng, &mut |x, z| (ground(b, x, z), b.top(x, z)));
                 if piece.pieces.iter().all(|p| layout.pieces.iter().all(|q| !overlap(&p.bbox, &q.bbox))) {
                     layout.pieces.extend(piece.pieces);
                 }
@@ -1237,8 +1238,8 @@ fn official(b: &mut Builder, t: &Templates, rng: &mut Rng, kind: Kind, sx: i32, 
             let rot = rng.below(4) as u8;
             // Le point d'ancrage du centre est à y = -27, comme dans le jeu
             let anchor = start.anchor_y("minecraft:city_anchor").unwrap_or(24);
-            let rules = Rules { depth: 7, reach: 116, follows_ground: &|_| false, fallback: &|_| None, empty_chance: &|_| 0.0 };
-            let layout = t.assemble(start, rot, (x, z), -27 - anchor, &rules, rng, &mut |x, z| ground(b, x, z));
+            let rules = Rules { depth: 7, reach: 116, follows_ground: &|_| false, fallback: &|_| None, empty_chance: &|_| 0.0, max_drop: None };
+            let layout = t.assemble(start, rot, (x, z), -27 - anchor, &rules, rng, &mut |x, z| (ground(b, x, z), b.top(x, z)));
             place_layout(b, rng, &layout, Placing { under: None, air: true, planks: None, clear_trees: false, archaeology: false, carve: true, integrity: 1.0, markers: no_markers, slopes: true });
             true
         }
@@ -1250,8 +1251,8 @@ fn official(b: &mut Builder, t: &Templates, rng: &mut Rng, kind: Kind, sx: i32, 
             let rot = rng.below(4) as u8;
             // Enfouies : le bas de la tour est 15 blocs sous la surface
             let y = ground(b, x, z) - 15;
-            let rules = Rules { depth: 7, reach: 80, follows_ground: &|_| false, fallback: &|_| None, empty_chance: &|_| 0.0 };
-            let layout = t.assemble(start, rot, (x, z), y, &rules, rng, &mut |x, z| ground(b, x, z));
+            let rules = Rules { depth: 7, reach: 80, follows_ground: &|_| false, fallback: &|_| None, empty_chance: &|_| 0.0, max_drop: None };
+            let layout = t.assemble(start, rot, (x, z), y, &rules, rng, &mut |x, z| (ground(b, x, z), b.top(x, z)));
             place_layout(b, rng, &layout, Placing { under: None, air: false, planks: None, clear_trees: false, archaeology: true, carve: false, integrity: 1.0, markers: no_markers, slopes: true });
             true
         }
@@ -1351,8 +1352,8 @@ fn official(b: &mut Builder, t: &Templates, rng: &mut Rng, kind: Kind, sx: i32, 
 
 /// Une pièce seule (sans jigsaw), centrée sur (x, z), le bas à `y`.
 fn single(t: &Templates, piece: std::sync::Arc<super::templates::Template>, rot: u8, (x, z): (i32, i32), y: i32, rng: &mut Rng, b: &mut Builder) -> Layout {
-    let rules = Rules { depth: 0, reach: 64, follows_ground: &|_| false, fallback: &|_| None, empty_chance: &|_| 1.0 };
-    t.assemble(piece, rot, (x, z), y, &rules, rng, &mut |x, z| ground(b, x, z))
+    let rules = Rules { depth: 0, reach: 64, follows_ground: &|_| false, fallback: &|_| None, empty_chance: &|_| 1.0, max_drop: None };
+    t.assemble(piece, rot, (x, z), y, &rules, rng, &mut |x, z| (ground(b, x, z), b.top(x, z)))
 }
 
 /// Fond de l'océan sous une ruine : le plus bas autour du centre (la ruine s'y enfonce).
@@ -1493,6 +1494,7 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
     let gravel = b.p.gravel;
     let suspicious = b.id("suspicious_gravel");
     let suspicious_sand = b.id("suspicious_sand");
+    let (grass, dirt) = (b.p.grass, b.p.dirt);
     let sand = b.p.sand;
     let planks = how.planks.map(|n| b.id(n));
     // Cité antique : la caverne. Le volume de chaque pièce est vidé, et ses bords rongés
@@ -1551,7 +1553,7 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
                 let top = b.top(x, z);
                 let g = top.max(SEA_LEVEL);
                 // Chemin sur l'eau : un pont de planches
-                let s = if state == path && top < SEA_LEVEL { planks.unwrap_or(state) } else { state };
+                let s = if top < SEA_LEVEL && (state == path || state == grass || state == dirt) && ry == 0 { planks.unwrap_or(state) } else { state };
                 b.put((x, g + ry, z), s);
                 columns.entry((x, z)).or_insert(g + 1);
                 continue;
@@ -1571,15 +1573,8 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
             b.put((x, y, z), s);
             if ry == 0 && state != air {
                 if let Some(under) = how.under {
-                    // Remblai jusqu'au sol, sur 12 blocs au plus (au bord d'une falaise)
-                    if y - b.top(x, z) <= 12 {
-                        b.foundation((x, y, z), under);
-                    } else {
-                        let s = b.id(under);
-                        for yy in y - 12..y {
-                            b.put((x, yy, z), s);
-                        }
-                    }
+                    // Remblai jusqu'au sol (jamais suspendu dans le vide)
+                    b.foundation((x, y, z), under);
                 }
             }
             columns.entry((x, z)).or_insert(ay);
@@ -1612,7 +1607,14 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
         if state == air && !how.air {
             continue;
         }
-        let y = if follows { ground(b, x, z) + y } else { y };
+        let (y, state) = if follows {
+            // Bout de chemin d'une rue posée sur l'eau : en planches aussi
+            let top = b.top(x, z);
+            let s = if top < SEA_LEVEL && y == 0 && (state == path || state == grass || state == dirt) { planks.unwrap_or(state) } else { state };
+            (top.max(SEA_LEVEL) + y, s)
+        } else {
+            (y, state)
+        };
         b.put((x, y, z), state);
     }
     if how.carve {
@@ -1656,7 +1658,10 @@ fn earthworks(b: &mut Builder, piece: &super::templates::Piece, under: &str) {
             // Remblai : jusqu'au plancher - 1, en descendant de 2 blocs par bloc d'écart
             let bank = floor - 1 - 2 * (d - 1);
             if g < bank && !(g + 1..=bank).any(|y| taken(b, y)) {
-                for y in (g + 1).max(bank - 12)..bank {
+                if bank - g > 8 {
+                    continue; // trop haut : pas de talus, plutôt qu'un bloc de terre suspendu
+                }
+                for y in g + 1..bank {
                     b.put((x, y, z), fill);
                 }
                 b.put((x, bank, z), top_block);
@@ -3933,7 +3938,10 @@ fn placed(v: &Vanilla, kind: Kind, sx: i32, sz: i32) -> Option<(i32, i32, i32)> 
                 return None;
             }
             let top = v.surface(x, z).0;
-            (top > SEA_LEVEL && top <= SEA_LEVEL + 60).then_some((x, top + 1, z))
+            // Pas de village au bord d'une falaise : la place du centre doit être à peu près plane
+            let around: Vec<i32> = [(-8, -8), (8, -8), (-8, 8), (8, 8)].iter().map(|(dx, dz)| v.surface(x + dx, z + dz).0).collect();
+            let flat = around.iter().all(|h| (h - top).abs() <= 6);
+            (flat && top > SEA_LEVEL && top <= SEA_LEVEL + 60).then_some((x, top + 1, z))
         }
         Kind::DesertPyramid => {
             if biome != B::Desert {
