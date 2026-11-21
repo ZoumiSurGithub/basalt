@@ -2714,8 +2714,11 @@ impl Server {
                 return;
             }
         };
-        // Pas de caractères de contrôle ni de codes de couleur venant des joueurs
-        let clean: String = message.chars().filter(|c| !c.is_control() && *c != '§').take(256).collect();
+        // Pas de caractères de contrôle. Les couleurs (§a, ou &a plus facile à taper) sont
+        // réservées aux opérateurs ; chez les autres, les § sont retirés.
+        let op = self.ops.is_op(&name);
+        let clean: String = message.chars().filter(|c| !c.is_control() && (op || *c != '§')).take(256).collect();
+        let clean = if op { ampersand_colors(&clean) } else { clean };
         let clean = clean.trim().to_string();
         if clean.is_empty() {
             return;
@@ -2733,7 +2736,10 @@ impl Server {
         self.emit("chat", &[LVal::Player(name.clone()), LVal::Str(clean.clone())]);
         // Le nom affiché a pu être changé par un plugin (y compris pendant cet événement)
         let shown = self.addr_of(&name).and_then(|a| self.clients.get(&a)).and_then(|c| c.data.as_ref()).map(|d| d.display_name.clone()).unwrap_or(name);
-        self.broadcast(bedrock::ID_TEXT, &bedrock::text_chat(&shown, &clean), None);
+        // Envoyé comme un message du serveur, « <pseudo> message », et non comme un message de
+        // joueur : le jeu applique aux messages de joueurs son filtre de grossièretés (mots
+        // remplacés par des #), que le serveur ne veut pas.
+        self.broadcast(bedrock::ID_TEXT, &bedrock::text_raw(&format!("<{}§r> {}", shown, clean)), None);
     }
 
     /// Sous les pieds d'un joueur (position à hauteur des yeux) : sol, liquide ou vide.
@@ -6584,6 +6590,27 @@ mod tests {
 
 /// Blocs emportés par l'eau ou brûlés par la lave qui coule : herbes, fleurs, torches,
 /// pousses, cultures, rails, poudre de redstone…
+/// Codes de couleur tapés avec & (« &aBonjour ») -> codes du jeu (« §aBonjour »). Seuls
+/// les codes connus, en minuscules, sont convertis : « R&D » reste tel quel.
+fn ampersand_colors(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '&' {
+            if let Some(&next) = chars.peek() {
+                if "0123456789abcdefghijklmnopqrstuv".contains(next) {
+                    out.push('§');
+                    out.push(next);
+                    chars.next();
+                    continue;
+                }
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Hauteur des yeux d'un joueur au-dessus de ses pieds.
 const EYE: f32 = crate::player::EYE_HEIGHT;
 

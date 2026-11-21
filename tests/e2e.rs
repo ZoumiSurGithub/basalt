@@ -1917,3 +1917,46 @@ fn bots_cost() {
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Chat : les opérateurs écrivent en couleur (& ou §), les autres non ; les messages partent
+/// comme messages du serveur, que le jeu ne passe pas à son filtre de grossièretés.
+#[test]
+fn operators_write_in_colour() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-couleurs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let mut alex = Client::join(addr, "Alex");
+    let chat = |c: &mut Client, who: &str, text: &str| {
+        let mut body = vec![0u8, 1, 1];
+        body.push(who.len() as u8);
+        body.extend_from_slice(who.as_bytes());
+        let bytes = text.as_bytes();
+        body.push(bytes.len() as u8);
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(9, &body, Some(0xff));
+    };
+    let expect = |c: &mut Client, needle: &str| {
+        for _ in 0..300 {
+            let body = c.wait_for(9);
+            if body.windows(needle.len()).any(|w| w == needle.as_bytes()) {
+                assert_eq!(body[2], 0, "message envoyé comme texte du serveur (type 0)");
+                return;
+            }
+        }
+        panic!("message « {} » jamais reçu", needle);
+    };
+    chat(&mut steve, "Steve", "&aSalut §ctout le monde, R&D");
+    expect(&mut steve, "<Steve§r> §aSalut §ctout le monde, R&D");
+    chat(&mut alex, "Alex", "&aSalut §ctoi");
+    expect(&mut steve, "<Alex§r> &aSalut ctoi");
+    drop(steve);
+    drop(alex);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
