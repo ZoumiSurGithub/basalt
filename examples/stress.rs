@@ -118,8 +118,19 @@ impl Bot {
             }
             0xfe => {
                 let mut pos = 1;
+                let inflated;
+                let mut p = p;
                 if self.compressed {
                     pos = 2;
+                    // Lot compressé par le serveur (« zlib », algorithme 0)
+                    if p.get(1) == Some(&0x00) {
+                        inflated = match basalt::inflate::inflate(&p[2..], 8 << 20) {
+                            Ok(v) => v,
+                            Err(_) => return,
+                        };
+                        p = &inflated;
+                        pos = 0;
+                    }
                 }
                 while pos < p.len() {
                     let len = match read_varu32(p, &mut pos) {
@@ -255,9 +266,10 @@ fn main() {
     std::fs::write(
         dir.join("server.properties"),
         format!(
-            "server-ip=127.0.0.1\nserver-port={}\nmax-players={}\nxbox-auth=false\nview-distance=4\nplugins-dir=plugins\n",
+            "server-ip=127.0.0.1\nserver-port={}\nmax-players={}\nxbox-auth=false\nview-distance=4\nplugins-dir=plugins\nnetwork-compression={}\n",
             port,
-            count + 10
+            count + 10,
+            std::env::var("COMPRESSION").unwrap_or_else(|_| "true".into())
         ),
     )
     .unwrap();
@@ -309,6 +321,7 @@ fn main() {
     let mut buf = [0u8; 2048];
     let mut steady: Option<(Instant, f64)> = None;
     let mut inputs_sent = 0u64;
+    let mut received_bytes = 0u64;
     let mut last_report = Instant::now();
     loop {
         let now = Instant::now();
@@ -331,6 +344,7 @@ fn main() {
                 }
             }
             while let Ok(n) = b.sock.recv(&mut buf) {
+                received_bytes += n as u64;
                 if n > 0 {
                     b.on_datagram(i, &buf[..n], now);
                 }
@@ -387,6 +401,7 @@ fn main() {
                 println!("Chunks reçus en marche : {:.0} par seconde", chunks as f64 / elapsed.as_secs_f64());
                 println!("Processeur du serveur  : {:.0} % d'un cœur", cpu);
                 println!("Mémoire du serveur     : {:.0} Mo", memory_mb(pid));
+                println!("Données reçues         : {:.1} Mo au total ({:.0} Ko par joueur)", received_bytes as f64 / 1048576.0, received_bytes as f64 / 1024.0 / count as f64);
                 break;
             }
         }
@@ -402,7 +417,7 @@ fn main() {
     let _ = server.wait();
     let lines = reader.join().unwrap_or_default();
     println!("--- Vu par le serveur ---");
-    for l in lines.iter().filter(|l| l.contains("Charge") || l.contains("Trafic") || l.contains("Joueurs :") || l.contains("surcharge") || l.contains("sécurité")).take(12) {
+    for l in lines.iter().filter(|l| l.contains("Charge") || l.contains("Trafic") || l.contains("Réseau") || l.contains("Joueurs :") || l.contains("surcharge") || l.contains("sécurité")).take(12) {
         println!("{}", l);
     }
     let _ = std::fs::remove_dir_all(&dir);

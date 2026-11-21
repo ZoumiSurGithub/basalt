@@ -85,8 +85,6 @@ pub struct Capture {
     pub complete: bool,
     /// Jeton de mise en place du chiffrement, à traiter par le transport
     pub handshake: Option<String>,
-    /// Envoyer les gros paquets sous forme « deflate » (blocs stockés), comme le vrai jeu
-    pub stored_deflate: bool,
 }
 
 /// Découpe un lot du serveur officiel (qui peut contenir des centaines de paquets).
@@ -372,27 +370,13 @@ impl Capture {
             refusal: None,
             complete: false,
             handshake: None,
-            stored_deflate: false,
         }
     }
 
     /// Lot contenant un paquet, sans l'octet 0xfe de tête (le transport l'ajoute au besoin).
+    /// Une fois la compression négociée, un gros paquet (le login) part compressé.
     fn pack(&self, id: u32, body: &[u8]) -> Vec<u8> {
-        let plain = bedrock::encode_packet(id, body, self.compression)[1..].to_vec();
-        if !(self.compression && self.stored_deflate && plain.len() > 512) {
-            return plain;
-        }
-        let batch = &plain[1..];
-        let mut out = Vec::with_capacity(batch.len() + 64);
-        out.push(0x00);
-        let count = batch.chunks(60_000).count();
-        for (i, c) in batch.chunks(60_000).enumerate() {
-            out.push(if i + 1 == count { 1 } else { 0 });
-            out.extend_from_slice(&(c.len() as u16).to_le_bytes());
-            out.extend_from_slice(&(!(c.len() as u16)).to_le_bytes());
-            out.extend_from_slice(c);
-        }
-        out
+        bedrock::encode_packet(id, body, self.compression)[1..].to_vec()
     }
 
     /// Réponse à envoyer (chiffrée) une fois le chiffrement en place.

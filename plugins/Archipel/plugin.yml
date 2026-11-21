@@ -1,0 +1,11 @@
+# Archipel : générateur de terrain fourni en exemple avec Basalt.
+# Des îles dans un océan, avec des palmiers et des phares.
+#
+# Pour l'employer, dans server.properties (pour un nouveau monde, donc un autre world-dir) :
+#   level-type=plugin:archipel
+name: Archipel
+version: 1.0.0
+main: main.lua
+api: 1
+description: Générateur de terrain d'exemple (îles, palmiers, phares)
+author: Basalt

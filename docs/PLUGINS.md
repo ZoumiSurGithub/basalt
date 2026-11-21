@@ -12,6 +12,7 @@ plugin peut faire aujourd'hui, avec des exemples vérifiés sur le serveur.
 - [L'objet joueur](#lobjet-joueur), puis [le monde : lire et poser des blocs](#le-monde--lire-et-poser-des-blocs)
 - [Commandes](#commandes)
 - [Minuteries](#minuteries)
+- [Personnages non joueurs (PNJ)](#personnages-non-joueurs-pnj)
 - [Référence de l'API](#référence-de-lapi)
 - [Sécurité : un plugin n'a que ce que le serveur lui donne](#sécurité--un-plugin-na-que-ce-que-le-serveur-lui-donne)
 - [Fichiers et configuration](#fichiers-et-configuration)
@@ -40,7 +41,7 @@ La console affiche `Plugin chargé : bonjour`.
 | Un seul fichier | `plugins/bonjour.lua` | `bonjour` |
 | Un dossier | `plugins/gardien/main.lua` | `gardien` |
 | Un dossier avec `plugin.yml` | `plugins/gardien/plugin.yml` (voir plus bas) | celui de la fiche |
-| Un générateur de terrain | `plugins/<dossier>/generators/<nom>.lua` | voir [Générateurs de terrain](#générateurs-de-terrain) |
+| Un générateur de terrain | `plugins/<dossier>/generators/<nom>.lua`, dans un plugin avec `plugin.yml` | voir [Générateurs de terrain](#générateurs-de-terrain) |
 
 - Le dossier des plugins se règle avec `plugins-dir` dans `server.properties`.
 - Les plugins sont chargés par ordre alphabétique.
@@ -380,6 +381,35 @@ server.every(200, function()
 end)
 ```
 
+## Personnages non joueurs (PNJ)
+
+Un plugin peut faire apparaître des personnages que les joueurs voient comme des joueurs
+(nom au-dessus de la tête, dans la liste des joueurs). Le serveur les fait marcher : ils
+montent les marches d'un bloc, tombent dans les trous et s'arrêtent devant un mur ; le
+plugin ne leur donne que leur direction.
+
+| Fonction | Effet |
+|---|---|
+| `server.spawnNpc(nom, x, y, z)` | fait apparaître un PNJ, pieds en `x, y, z` (ou le replace s'il existe) |
+| `server.walkNpc(nom, vx, vz)` | le fait marcher en continu : vitesse en blocs par seconde sur x et z (un joueur marche à 4,3) ; `0, 0` l'arrête |
+| `server.teleportNpc(nom, x, y, z)` | le déplace d'un coup |
+| `server.removeNpc(nom)` | le retire |
+| `server.removeNpcs()` | retire tous les PNJ du plugin |
+
+```lua
+server.command("garde", function(args, joueur)
+  local x, y, z = joueur:getPosition()
+  server.spawnNpc("Garde", x, y - 1.62, z) -- getPosition donne la hauteur des yeux
+  server.walkNpc("Garde", 0, 2)            -- vers le sud, 2 blocs par seconde
+end)
+```
+
+- Un PNJ appartient au plugin qui l'a créé : les autres ne peuvent ni le déplacer ni le
+  retirer. Le nom (32 caractères au plus) l'identifie, sans tenir compte des majuscules.
+- 512 PNJ au plus sur le serveur. Ils sont retirés par `reload` et ne sont pas enregistrés :
+  recréez-les à l'événement `enable` si besoin.
+- Les PNJ n'ont ni vie ni inventaire et ne réagissent pas aux coups.
+
 ## Référence de l'API
 
 Tout passe par la table globale `server`.
@@ -585,15 +615,21 @@ Un plugin peut fournir ses propres générateurs de monde : relief, biomes, déc
 
 ### Mettre en place
 
-Un générateur est un fichier `generators/<nom>.lua` dans le dossier du plugin :
+Un générateur est un fichier `generators/<nom>.lua` dans le dossier d'un plugin complet,
+c'est-à-dire avec sa fiche `plugin.yml` et son fichier principal, comme tout plugin :
 
 ```
 plugins/
   MonPlugin/
-    plugin.yml          (facultatif : un dossier avec seulement generators/ suffit)
+    plugin.yml          (obligatoire)
+    main.lua            (obligatoire, même presque vide)
     generators/
       iles.lua
 ```
+
+Un dossier sans `plugin.yml` ni fichier principal n'est pas un plugin : son générateur est
+ignoré (le serveur le signale), et les scripts d'installation et de mise à jour ne le
+copient pas.
 
 Dans `server.properties`, **pour un nouveau monde** (un autre `world-dir`) :
 
@@ -746,7 +782,7 @@ L'API suit l'avancement du serveur. Ne sont pas encore accessibles aux plugins :
 
 - un événement de déplacement (`PlayerMoveEvent`), trop fréquent pour le fil des plugins ;
 - le contenu des inventaires (seuls `joueur:give` et `joueur:getItemInHand` existent) ;
-- les entités autres que les joueurs ;
+- les entités autres que les joueurs et les PNJ (animaux, monstres) ;
 - les coffres remplis par un générateur (ses structures peuvent poser des coffres, vides) ;
 - l'annulation d'une minuterie ;
 - la communication directe entre plugins (en dehors des événements qu'ils écoutent tous).

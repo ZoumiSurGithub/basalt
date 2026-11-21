@@ -34,6 +34,7 @@ jeu (Bedrock 1.26.63 à 1.26.66 sous Windows, deux comptes Xbox en même temps).
   le butin de leurs coffres (voir « Le monde » ci-dessous) ;
 - `/locate structure` et `/locate biome` ;
 - générateurs de terrain écrits en Lua par les plugins (`level-type=plugin:<nom>`) ;
+- personnages non joueurs (PNJ) créés par les plugins, qui marchent seuls (`server.spawnNpc`) ;
 - connexion par RakNet (jeux plus anciens que 1.26.60), avec son chiffrement (ECDH + AES-256) ;
 - installation et mise à jour sous Windows par les scripts fournis ;
 - montée en charge (voir plus bas).
@@ -124,7 +125,8 @@ Le terrain lui-même n'est jamais enregistré : il se régénère à l'identique
 graine. Seuls les blocs modifiés par les joueurs le sont (avec l'eau gardée dans les blocs
 posés dans l'eau). Conséquence : une nouvelle version de Basalt qui améliore le terrain
 l'applique aussi aux zones déjà explorées, sans toucher aux constructions. Les chunks sont
-générés à l'avance, sur plusieurs cœurs, autour des joueurs (environ 3 ms par chunk).
+générés à l'avance, sur plusieurs cœurs, autour des joueurs (environ 1,2 ms par chunk,
+1,6 ms près d'un village).
 
 ### Si la connexion échoue avec le jeu
 
@@ -275,6 +277,13 @@ gameplay (combat, objets au sol, eau qui coule, plugins). Le coût par joueur au
 chaque fonction ajoutée, et une vraie connexion Internet perd des paquets, ce que la
 machine locale ne reproduit pas. Sur le serveur Debian de test, avec deux vrais joueurs, la
 commande `timings` relève 20 ticks par seconde.
+
+**Compression réseau** (`network-compression=true`, par défaut) : les paquets de plus de
+512 octets partent compressés (DEFLATE, compresseur intégré à Basalt). Avec 400 joueurs
+simulés, chaque joueur reçoit environ 110 Ko pour entrer en jeu au lieu de 825 Ko, pour un
+coût processeur négligeable : les chunks sont compressés sur les fils de travail, et les
+gros paquets identiques pour tous (objets, biomes) une seule fois au démarrage. Sur un
+réseau local très rapide, `network-compression=false` économise ce petit travail.
 
 Choix d'architecture faits pour tenir la charge :
 
@@ -484,7 +493,7 @@ est dans **[docs/PLUGINS.md](docs/PLUGINS.md)**.
 | `src/item/` | `Item` (base de tous les objets), `Tool`, `Armor`, `Food`, `VanillaItems` ; `ItemStack` (une pile) |
 | `src/world/` | `World` : le monde, ses blocs modifiés et leur sauvegarde ; `vanilla.rs` : terrain à la manière du jeu ; `structures.rs` : villages, temples, mines, butin, `/locate` ; `liquid.rs` : écoulement de l'eau et de la lave ; `generator.rs` : terrain plat, premier terrain, choix du générateur |
 | `src/permission/` | `Permission`, règles par défaut, liste des opérateurs |
-| `src/utils/` | journal (`log.rs`), `server.properties` (`config.rs`), JSON et base64 (`json.rs`), YAML (`yaml.rs`), décompression (`inflate.rs`) |
+| `src/utils/` | journal (`log.rs`), `server.properties` (`config.rs`), JSON et base64 (`json.rs`), YAML (`yaml.rs`), compression et décompression (`deflate.rs`, `inflate.rs`) |
 | `src/security/` | authentification Xbox (`auth.rs`), SHA-2 et signatures (`crypto.rs`), clé du serveur (`identity.rs`) |
 | `src/network/` | RakNet (`raknet.rs`), signalisation HTTP (`signaling.rs`), liaison WebRTC (`nethernet.rs`, sur son propre fil : `nethernet_thread.rs`), fragments (`framing.rs`) |
 | `src/network/protocol/versions.rs` | versions acceptées et différences entre protocoles |
@@ -493,9 +502,9 @@ est dans **[docs/PLUGINS.md](docs/PLUGINS.md)**.
 | `data/` | fichiers de données du jeu (projet BedrockData, licence CC0) ; `data/<protocole>/packets/` : paquets relevés auprès du serveur officiel par l'outil de capture |
 | `src/plugin/` | fiche `plugin.yml` (`manifest.rs`), moteur Lua et API (`lua.rs`), préambule et bac à sable (`sandbox.lua`), fil d'exécution dédié (`host.rs`), générateurs de terrain en Lua (`generator.rs`) |
 | `examples/stress.rs` | outil de charge : simule des centaines ou milliers de joueurs |
-| `tests/e2e.rs` | faux client : connexion, login, entrée en jeu, combat, objets, fabrication, coffres, plugins, terrain, `/locate`, générateur d'un plugin |
+| `tests/e2e.rs` | faux client : connexion, login, entrée en jeu, combat, objets, fabrication, coffres, plugins, terrain, `/locate`, générateur d'un plugin, PNJ |
 | `plugins/EasyEdit/` | plugin fourni : édition du monde en volume, exemple de plugin en plusieurs fichiers |
-| `plugins/Archipel/` | générateur fourni en exemple : îles, palmiers, phares (`level-type=plugin:archipel`) |
+| `plugins/Archipel/` | plugin fourni en exemple, avec un générateur de terrain : îles, palmiers, phares (`level-type=plugin:archipel`) |
 
 Tests : `cargo test`
 

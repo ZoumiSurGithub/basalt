@@ -58,14 +58,29 @@ pub(crate) fn mix(seed: u64, a: i64, b: i64, salt: u64) -> u64 {
     r.next()
 }
 
+#[inline(always)]
 pub(crate) fn fade(t: f64) -> f64 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
 
+#[inline(always)]
 pub(crate) fn lerp(t: f64, a: f64, b: f64) -> f64 {
     a + t * (b - a)
 }
 
+/// Partie entière inférieure, sans passer par la bibliothèque mathématique (le processeur
+/// de base visé n'a pas d'instruction d'arrondi : `f64::floor` y est un appel de fonction).
+#[inline(always)]
+pub(crate) fn ffloor(x: f64) -> f64 {
+    let t = x as i64 as f64;
+    if t > x {
+        t - 1.0
+    } else {
+        t
+    }
+}
+
+#[inline(always)]
 fn grad3(hash: u8, x: f64, y: f64, z: f64) -> f64 {
     let h = hash & 15;
     let u = if h < 8 { x } else { y };
@@ -96,22 +111,24 @@ impl Perlin {
 
     /// Bruit 3D, environ -1..1.
     pub(crate) fn noise3(&self, x: f64, y: f64, z: f64) -> f64 {
-        let (xf, yf, zf) = (x.floor(), y.floor(), z.floor());
+        let (xf, yf, zf) = (ffloor(x), ffloor(y), ffloor(z));
         let (xi, yi, zi) = ((xf as i64 & 255) as usize, (yf as i64 & 255) as usize, (zf as i64 & 255) as usize);
         let (x, y, z) = (x - xf, y - yf, z - zf);
         let (u, v, w) = (fade(x), fade(y), fade(z));
         let p = &self.perm;
-        let a = p[xi] as usize + yi;
-        let (aa, ab) = (p[a] as usize + zi, p[a + 1] as usize + zi);
-        let b = p[xi + 1] as usize + yi;
-        let (ba, bb) = (p[b] as usize + zi, p[b + 1] as usize + zi);
+        // Indices toujours < 512 : les masques le montrent au compilateur (pas de contrôle)
+        let a = (p[xi] as usize + yi) & 511;
+        let (aa, ab) = ((p[a] as usize + zi) & 511, (p[(a + 1) & 511] as usize + zi) & 511);
+        let b = (p[(xi + 1) & 511] as usize + yi) & 511;
+        let (ba, bb) = ((p[b] as usize + zi) & 511, (p[(b + 1) & 511] as usize + zi) & 511);
+        let (aa1, ab1, ba1, bb1) = ((aa + 1) & 511, (ab + 1) & 511, (ba + 1) & 511, (bb + 1) & 511);
         lerp(
             w,
             lerp(v, lerp(u, grad3(p[aa], x, y, z), grad3(p[ba], x - 1.0, y, z)), lerp(u, grad3(p[ab], x, y - 1.0, z), grad3(p[bb], x - 1.0, y - 1.0, z))),
             lerp(
                 v,
-                lerp(u, grad3(p[aa + 1], x, y, z - 1.0), grad3(p[ba + 1], x - 1.0, y, z - 1.0)),
-                lerp(u, grad3(p[ab + 1], x, y - 1.0, z - 1.0), grad3(p[bb + 1], x - 1.0, y - 1.0, z - 1.0)),
+                lerp(u, grad3(p[aa1], x, y, z - 1.0), grad3(p[ba1], x - 1.0, y, z - 1.0)),
+                lerp(u, grad3(p[ab1], x, y - 1.0, z - 1.0), grad3(p[bb1], x - 1.0, y - 1.0, z - 1.0)),
             ),
         )
     }

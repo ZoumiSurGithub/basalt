@@ -476,7 +476,6 @@ pub fn run_as(host: &str, port: u16, data_dir: Option<&Path>, payload: &Path, na
     };
     let login = build_login_as(protocol, name, &spki, &payload_b64, &sign, now_unix, account);
     let mut capture = Capture::new(protocol, login);
-    capture.stored_deflate = true;
     let mut crypt: Option<Crypt> = None;
 
     let send = |rak: &mut RakClient, crypt: &mut Option<Crypt>, message: &[u8]| {

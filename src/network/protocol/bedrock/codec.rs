@@ -70,18 +70,53 @@ pub fn decode_batch(d: &[u8], compression: bool, max: usize) -> Result<Vec<(u32,
     Ok(out)
 }
 
+/// Taille à partir de laquelle un lot est compressé (en dessous, la compression coûte plus
+/// qu'elle ne rapporte ; le jeu accepte les deux, lot par lot).
+pub const COMPRESS_FROM: usize = 512;
+
+/// Compression de ce qui part (réglage `network-compression`, actif par défaut).
+pub static COMPRESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+fn compressing() -> bool {
+    COMPRESS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Emballe un paquet dans un lot prêt à être envoyé par RakNet.
 pub fn encode_packet(id: u32, body: &[u8], compression: bool) -> Vec<u8> {
+    encode_packet_with(id, body, compression, crate::utils::deflate::Level::Fast)
+}
+
+/// Même chose, avec un effort de compression choisi (`Best` pour ce qui est compressé hors
+/// de la boucle du jeu ou une seule fois : chunks, gros paquets mis en cache).
+pub fn encode_packet_with(id: u32, body: &[u8], compression: bool, level: crate::utils::deflate::Level) -> Vec<u8> {
     let mut inner = Vec::with_capacity(body.len() + 4);
     write_varu32(&mut inner, id);
     inner.extend_from_slice(body);
-    let mut out = Vec::with_capacity(inner.len() + 8);
+    seal_batch(inner, compression, level)
+}
+
+/// Contenu d'un lot (paquets précédés de leur longueur) -> lot à envoyer : compressé
+/// (« zlib », algorithme 0) s'il est assez gros, sinon marqué non compressé (0xff).
+fn seal_batch(inner: Vec<u8>, compression: bool, level: crate::utils::deflate::Level) -> Vec<u8> {
+    let mut framed = Vec::with_capacity(inner.len() + 5);
+    write_varu32(&mut framed, inner.len() as u32);
+    framed.extend_from_slice(&inner);
+    if compression && framed.len() >= COMPRESS_FROM && compressing() {
+        let z = crate::utils::deflate::deflate(&framed, level);
+        if z.len() < framed.len() {
+            let mut out = Vec::with_capacity(z.len() + 2);
+            out.push(0xfe);
+            out.push(0x00);
+            out.extend_from_slice(&z);
+            return out;
+        }
+    }
+    let mut out = Vec::with_capacity(framed.len() + 2);
     out.push(0xfe);
     if compression {
         out.push(0xff); // lot non compressé
     }
-    write_varu32(&mut out, inner.len() as u32);
-    out.extend_from_slice(&inner);
+    out.extend_from_slice(&framed);
     out
 }
 /// Écrivain binaire pour les paquets Bedrock (entiers fixes en petit-boutiste).
@@ -144,17 +179,28 @@ pub fn read_vari32(d: &[u8], pos: &mut usize) -> Option<i32> {
 
 /// Emballe plusieurs paquets dans un seul lot.
 pub fn encode_batch(packets: &[(u32, Vec<u8>)], compression: bool) -> Vec<u8> {
-    let mut out = vec![0xfe];
-    if compression {
-        out.push(0xff);
-    }
+    let mut framed = Vec::with_capacity(packets.iter().map(|p| p.1.len() + 8).sum());
     for (id, body) in packets {
         let mut head = Vec::with_capacity(4);
         write_varu32(&mut head, *id);
-        write_varu32(&mut out, (head.len() + body.len()) as u32);
-        out.extend_from_slice(&head);
-        out.extend_from_slice(body);
+        write_varu32(&mut framed, (head.len() + body.len()) as u32);
+        framed.extend_from_slice(&head);
+        framed.extend_from_slice(body);
     }
+    let mut out = Vec::with_capacity(framed.len() + 2);
+    out.push(0xfe);
+    if compression && framed.len() >= COMPRESS_FROM && compressing() {
+        let z = crate::utils::deflate::deflate(&framed, crate::utils::deflate::Level::Fast);
+        if z.len() < framed.len() {
+            out.push(0x00);
+            out.extend_from_slice(&z);
+            return out;
+        }
+    }
+    if compression {
+        out.push(0xff);
+    }
+    out.extend_from_slice(&framed);
     out
 }
 
@@ -169,4 +215,28 @@ pub(crate) fn read_varu64(d: &[u8], pos: &mut usize) -> Option<u64> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod compression_tests {
+    use super::*;
+
+    /// Un gros paquet part compressé (algorithme 0), un petit en clair (0xff) ; les deux se
+    /// relisent à l'identique.
+    #[test]
+    fn big_batches_are_compressed_small_ones_are_not() {
+        let big: Vec<u8> = (0..20_000u32).map(|i| (i % 7) as u8).collect();
+        let out = encode_packet(58, &big, true);
+        assert_eq!(&out[..2], &[0xfe, 0x00]);
+        assert!(out.len() < big.len() / 10);
+        assert_eq!(decode_batch(&out[1..], true, 1 << 20).unwrap(), vec![(58, big.clone())]);
+        let small = encode_packet(9, b"bonjour", true);
+        assert_eq!(&small[..2], &[0xfe, 0xff]);
+        assert_eq!(decode_batch(&small[1..], true, 1 << 20).unwrap(), vec![(9, b"bonjour".to_vec())]);
+        let batch = encode_batch(&[(1, big.clone()), (2, vec![1, 2, 3])], true);
+        assert_eq!(batch[1], 0x00);
+        assert_eq!(decode_batch(&batch[1..], true, 1 << 20).unwrap(), vec![(1, big), (2, vec![1, 2, 3])]);
+        // Avant la négociation (pas de compression) : ni marqueur ni compression
+        assert_eq!(&encode_packet(9, b"x", false)[..2], &[0xfe, 2]);
+    }
 }

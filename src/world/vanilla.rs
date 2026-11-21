@@ -283,6 +283,25 @@ struct Climate {
     weirdness: f64,
 }
 
+/// Climat entre quatre coins de grille (a = (x0, z0), b = (x0, z1), c = (x1, z0), d = (x1, z1)).
+#[inline]
+fn blend(a: &Climate, b: &Climate, c: &Climate, d: &Climate, fx: f64, fz: f64) -> Climate {
+    let mix4 = |f: fn(&Climate) -> f64| lerp(fx, lerp(fz, f(a), f(b)), lerp(fz, f(c), f(d)));
+    Climate {
+        temperature: mix4(|c| c.temperature),
+        humidity: mix4(|c| c.humidity),
+        continentalness: mix4(|c| c.continentalness),
+        erosion: mix4(|c| c.erosion),
+        weirdness: mix4(|c| c.weirdness),
+    }
+}
+
+thread_local! {
+    /// Petit cache du climat aux coins de grille (graine, x, z) : les chunks voisins,
+    /// les structures et `/locate` retombent souvent sur les mêmes coins.
+    static GRID_CLIMATE: std::cell::RefCell<Vec<Option<(u64, i32, i32, Climate)>>> = std::cell::RefCell::new(vec![None; 1 << 13]);
+}
+
 impl Climate {
     /// Pics et vallées, tirés de l'étrangeté comme dans le jeu (-1 : vallée, 1 : pic).
     fn peaks_valleys(&self) -> f64 {
@@ -617,7 +636,37 @@ impl Vanilla {
 
     /// Biome de surface d'une colonne, sans calculer sa hauteur (rapide).
     pub fn surface_biome_at(&self, x: i32, z: i32) -> B {
-        surface_biome(&self.climate(x, z))
+        surface_biome(&self.blended_climate(x, z))
+    }
+
+    /// Climat à un coin de la grille du relief (x et z multiples de CELL_W), en cache.
+    fn grid_climate(&self, x: i32, z: i32) -> Climate {
+        let key = self.seed as u64;
+        let slot = ((x.wrapping_mul(73_856_093) ^ z.wrapping_mul(19_349_663)) as u32 as usize) & ((1 << 13) - 1);
+        if let Some(c) = GRID_CLIMATE.with(|g| match g.borrow()[slot] {
+            Some((s, gx, gz, c)) if s == key && gx == x && gz == z => Some(c),
+            _ => None,
+        }) {
+            return c;
+        }
+        let c = self.climate(x, z);
+        GRID_CLIMATE.with(|g| g.borrow_mut()[slot] = Some((key, x, z, c)));
+        c
+    }
+
+    /// Climat d'une colonne tel que la génération le voit : interpolé entre les coins de
+    /// la grille (identique au bit près à celui de `generate`).
+    fn blended_climate(&self, x: i32, z: i32) -> Climate {
+        let (gx, gz) = (x.div_euclid(CELL_W) * CELL_W, z.div_euclid(CELL_W) * CELL_W);
+        let (fx, fz) = ((x - gx) as f64 / CELL_W as f64, (z - gz) as f64 / CELL_W as f64);
+        blend(
+            &self.grid_climate(gx, gz),
+            &self.grid_climate(gx, gz + CELL_W),
+            &self.grid_climate(gx + CELL_W, gz),
+            &self.grid_climate(gx + CELL_W, gz + CELL_W),
+            fx,
+            fz,
+        )
     }
 
     fn climate(&self, x: i32, z: i32) -> Climate {
@@ -731,15 +780,16 @@ impl Vanilla {
     fn column_top(&self, x: i32, z: i32) -> i32 {
         let (gx0, gz0) = (x.div_euclid(CELL_W) * CELL_W, z.div_euclid(CELL_W) * CELL_W);
         let (fx, fz) = ((x - gx0) as f64 / CELL_W as f64, (z - gz0) as f64 / CELL_W as f64);
-        let corners: Vec<Shape> = [(0, 0), (CELL_W, 0), (0, CELL_W), (CELL_W, CELL_W)].iter().map(|(dx, dz)| {
+        const OFFSETS: [(i32, i32); 4] = [(0, 0), (CELL_W, 0), (0, CELL_W), (CELL_W, CELL_W)];
+        let corners: [Shape; 4] = OFFSETS.map(|(dx, dz)| {
             let (cx, cz) = (gx0 + dx, gz0 + dz);
-            self.shape(&self.climate(cx, cz), cx, cz)
-        }).collect();
+            self.shape(&self.grid_climate(cx, cz), cx, cz)
+        });
         let top_guess = corners.iter().map(|s| s.height + s.jagged).fold(0.0f64, f64::max) as i32 + 48;
         let start = (top_guess.min(MAX_Y) - MIN_Y) / CELL_H + 1;
         let density = |gy: i32| {
             let y = MIN_Y + gy * CELL_H;
-            let d: Vec<f64> = corners.iter().zip([(0, 0), (CELL_W, 0), (0, CELL_W), (CELL_W, CELL_W)].iter()).map(|(s, (dx, dz))| self.terrain_density(s, gx0 + dx, y, gz0 + dz)).collect();
+            let d: [f64; 4] = std::array::from_fn(|k| self.terrain_density(&corners[k], gx0 + OFFSETS[k].0, y, gz0 + OFFSETS[k].1));
             lerp(fz, lerp(fx, d[0], d[1]), lerp(fx, d[2], d[3]))
         };
         let mut gy = start.min(GRID_Y as i32 - 1);
@@ -763,8 +813,7 @@ impl Vanilla {
 
     /// Hauteur du sol et biome de surface d'une colonne.
     pub fn surface(&self, x: i32, z: i32) -> (i32, B) {
-        let c = self.climate(x, z);
-        (self.column_top(x, z), surface_biome(&c))
+        (self.column_top(x, z), self.surface_biome_at(x, z))
     }
 
     /// Point d'apparition : terre ferme ni enneigée ni montagneuse, près de l'origine.
@@ -772,8 +821,7 @@ impl Vanilla {
         for r in 0..96i32 {
             for (dx, dz) in ring(r) {
                 let (x, z) = (dx * 16 + 8, dz * 16 + 8);
-                let c = self.climate(x, z);
-                let biome = surface_biome(&c);
+                let biome = self.surface_biome_at(x, z);
                 if biome.ocean() || matches!(biome, B::River | B::FrozenRiver | B::JaggedPeaks | B::FrozenPeaks | B::StonyPeaks | B::Swamp | B::MangroveSwamp) {
                     continue;
                 }
@@ -796,12 +844,23 @@ impl Vanilla {
 
         // 1. Climat et forme du relief aux coins de la grille (5 × 5 colonnes)
         let mut shapes = [[Shape { height: 0.0, factor: 1.0, jagged: 0.0 }; 5]; 5];
+        let mut corner_climate = [[Climate { temperature: 0.0, humidity: 0.0, continentalness: 0.0, erosion: 0.0, weirdness: 0.0 }; 5]; 5];
         for (i, row) in shapes.iter_mut().enumerate() {
             for (j, s) in row.iter_mut().enumerate() {
                 let (x, z) = (bx + i as i32 * CELL_W, bz + j as i32 * CELL_W);
-                *s = self.shape(&self.climate(x, z), x, z);
+                let c = self.grid_climate(x, z);
+                corner_climate[i][j] = c;
+                *s = self.shape(&c, x, z);
             }
         }
+        // Climat d'une colonne : interpolé entre les coins de la grille (déjà calculés pour
+        // le relief) plutôt que recalculé 256 fois ; les frontières de biomes restent
+        // douces, au bloc près
+        let climate_at = |x: usize, z: usize| -> Climate {
+            let (i, j) = (x / 4, z / 4);
+            let (fx, fz) = ((x % 4) as f64 / 4.0, (z % 4) as f64 / 4.0);
+            blend(&corner_climate[i][j], &corner_climate[i][j + 1], &corner_climate[i + 1][j], &corner_climate[i + 1][j + 1], fx, fz)
+        };
         // 2. Densité du relief et des grottes sur la grille, puis interpolée bloc par bloc
         let mut terrain = vec![0f64; 25 * GRID_Y];
         let mut caves = vec![0f64; 25 * GRID_Y];
@@ -824,14 +883,24 @@ impl Vanilla {
                 }
             }
         }
-        let interp = |grid: &[f64], x: usize, y: i32, z: usize| -> f64 {
+        // Densités d'une colonne aux hauteurs de la grille (interpolées en x et z une seule
+        // fois), puis le long de y pour chaque bloc : même résultat qu'une interpolation
+        // trilinéaire complète, environ huit fois moins de calcul
+        let column_of = |grid: &[f64], x: usize, z: usize, out: &mut [f64; GRID_Y]| {
             let (i, fx) = (x / 4, (x % 4) as f64 / 4.0);
             let (j, fz) = (z / 4, (z % 4) as f64 / 4.0);
+            let (c00, c01, c10, c11) = ((i * 5 + j) * GRID_Y, (i * 5 + j + 1) * GRID_Y, ((i + 1) * 5 + j) * GRID_Y, ((i + 1) * 5 + j + 1) * GRID_Y);
+            for gy in 0..GRID_Y {
+                out[gy] = lerp(fx, lerp(fz, grid[c00 + gy], grid[c01 + gy]), lerp(fz, grid[c10 + gy], grid[c11 + gy]));
+            }
+        };
+        let along = |col: &[f64; GRID_Y], y: i32| -> f64 {
             let gy = ((y - MIN_Y) / CELL_H) as usize;
             let fy = ((y - MIN_Y) % CELL_H) as f64 / CELL_H as f64;
-            let g = |a: usize, b: usize, c: usize| grid[((i + a) * 5 + j + b) * GRID_Y + (gy + c).min(GRID_Y - 1)];
-            lerp(fx, lerp(fz, lerp(fy, g(0, 0, 0), g(0, 0, 1)), lerp(fy, g(0, 1, 0), g(0, 1, 1))), lerp(fz, lerp(fy, g(1, 0, 0), g(1, 0, 1)), lerp(fy, g(1, 1, 0), g(1, 1, 1))))
+            lerp(fy, col[gy], col[(gy + 1).min(GRID_Y - 1)])
         };
+        let mut terrain_col = [0f64; GRID_Y];
+        let mut caves_col = [0f64; GRID_Y];
 
         // 3. Roche, eau et lave ; sommet du relief de chaque colonne
         let mut tops = [[MIN_Y; 16]; 16];
@@ -843,12 +912,14 @@ impl Vanilla {
         let mut rng = Rng::new(mix(self.seed, cx as i64, cz as i64, 500));
         for x in 0..16usize {
             for z in 0..16usize {
-                let c = self.climate(bx + x as i32, bz + z as i32);
+                let c = climate_at(x, z);
                 climates[x * 16 + z] = c;
                 biomes[x][z] = surface_biome(&c);
+                column_of(&terrain, x, z, &mut terrain_col);
+                column_of(&caves, x, z, &mut caves_col);
                 let mut top = MIN_Y;
                 for y in (MIN_Y..=MAX_Y.min(top_cell)).rev() {
-                    if interp(&terrain, x, y, z) > 0.0 {
+                    if along(&terrain_col, y) > 0.0 {
                         top = y;
                         break;
                     }
@@ -856,8 +927,8 @@ impl Vanilla {
                 tops[x][z] = top;
                 let under_sea = top < SEA_LEVEL;
                 for y in MIN_Y..=top {
-                    let solid = interp(&terrain, x, y, z) > 0.0;
-                    let cave = interp(&caves, x, y, z) < 0.0 && !(under_sea && y > top - 5);
+                    let solid = along(&terrain_col, y) > 0.0;
+                    let cave = along(&caves_col, y) < 0.0 && !(under_sea && y > top - 5);
                     let block = if y == MIN_Y || (y < MIN_Y + 5 && (rng.below(5) as i32) >= y - MIN_Y) {
                         p.bedrock
                     } else if !solid || cave {
@@ -1438,7 +1509,14 @@ impl Vanilla {
             let roll = rng.next();
             let (top, biome) = match own {
                 Some((tops, biomes)) => (tops[lx as usize][lz as usize], biomes[lx as usize][lz as usize]),
-                None => self.surface(x, z),
+                None => {
+                    // Chunk voisin : le biome d'abord, la hauteur seulement si un arbre peut y pousser
+                    let biome = self.surface_biome_at(x, z);
+                    if biome.ocean() || matches!(biome, B::River | B::FrozenRiver | B::Beach | B::Desert | B::StonyShore) {
+                        continue;
+                    }
+                    (self.column_top(x, z), biome)
+                }
             };
             if top < SEA_LEVEL - if biome == B::MangroveSwamp { 3 } else { 0 } || top + 32 > MAX_Y || biome.ocean() || matches!(biome, B::River | B::FrozenRiver | B::Beach | B::Desert | B::StonyShore) {
                 continue;

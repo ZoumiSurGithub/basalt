@@ -854,3 +854,39 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod encode_speed {
+    use super::*;
+    /// Temps d'encodage et de compression d'un chunk (`cargo test encode_speed -- --ignored`).
+    #[test]
+    #[ignore]
+    fn encode_speed() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
+        let data = crate::data::GameData::load(&dir).unwrap();
+        let p = Palette::new(&|n| data.state_from_spec(n));
+        let w = World::with_generator(Generator::new(Kind::Vanilla, 12345, p));
+        for cx in 0..10 {
+            for cz in 0..10 {
+                w.terrain.column((cx, cz));
+            }
+        }
+        let start = std::time::Instant::now();
+        let mut total = 0;
+        for cx in 0..10 {
+            for cz in 0..10 {
+                total += w.chunk_payload(cx, cz).1.len();
+            }
+        }
+        let enc = start.elapsed();
+        let start = std::time::Instant::now();
+        let mut z = 0;
+        for cx in 0..10 {
+            for cz in 0..10 {
+                let (_, payload) = w.chunk_payload(cx, cz);
+                z += crate::network::protocol::bedrock::encode_packet_with(58, &payload, true, crate::utils::deflate::Level::Best).len();
+            }
+        }
+        eprintln!("100 chunks : encodage {:?} ({} Ko), encodage + compression {:?} ({} Ko)", enc, total / 1024, start.elapsed(), z / 1024);
+    }
+}

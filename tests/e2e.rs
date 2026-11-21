@@ -285,9 +285,19 @@ impl Client {
     fn unpack(&mut self, r: &[u8], header: bool) {
         assert_eq!(r[0], 0xfe);
         let mut pos = 1;
+        let inflated;
+        let mut r = r;
         if header {
-            assert_eq!(r[1], 0xff);
-            pos = 2;
+            match r[1] {
+                0xff => pos = 2,
+                // Lot compressé par le serveur (« zlib », algorithme 0)
+                0x00 => {
+                    inflated = basalt::inflate::inflate(&r[2..], 8 << 20).expect("lot compressé illisible");
+                    r = &inflated;
+                    pos = 0;
+                }
+                other => panic!("marqueur de compression inattendu : {:#x}", other),
+            }
         }
         while pos < r.len() {
             let len = read_varu32(r, &mut pos).unwrap() as usize;
@@ -1715,6 +1725,9 @@ fn a_plugin_generator_shapes_the_world() {
     let gens = dir.join("Archipel").join("generators");
     std::fs::create_dir_all(&gens).unwrap();
     std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/plugins/Archipel/generators/archipel.lua"), gens.join("archipel.lua")).unwrap();
+    for f in ["plugin.yml", "main.lua"] {
+        std::fs::copy(format!("{}/plugins/Archipel/{}", env!("CARGO_MANIFEST_DIR"), f), dir.join("Archipel").join(f)).unwrap();
+    }
     std::fs::write(dir.join("terrain-type"), "plugin:archipel").unwrap();
     let (addr, stop, handle) = start(&dir);
     std::thread::sleep(Duration::from_millis(300));
@@ -1746,5 +1759,120 @@ fn a_plugin_generator_shapes_the_world() {
     handle.join().unwrap();
     let doc = basalt::nbt::load_file(&dir.join("world").join("level.nbt")).unwrap().unwrap();
     assert_eq!(doc.get("Generator").and_then(|t| t.as_str()), Some("plugin:archipel"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// PNJ d'un plugin (`server.spawnNpc`, `server.walkNpc`) : les joueurs les voient
+/// apparaître, avancer chacun dans sa direction, puis disparaître.
+#[test]
+fn plugin_npcs_appear_walk_and_disappear() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-npc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let plugin = dir.join("Pnj");
+    std::fs::create_dir_all(&plugin).unwrap();
+    std::fs::write(plugin.join("plugin.yml"), "name: Pnj\nversion: 1.0.0\nmain: main.lua\napi: 1\n").unwrap();
+    std::fs::write(
+        plugin.join("main.lua"),
+        r#"
+server.command("pnj", "test", function(args, joueur)
+  if args[1] == "stop" then server.removeNpcs() return end
+  server.spawnNpc("Bot1", 0.5, -60, 0.5)
+  server.spawnNpc("Bot2", 0.5, -60, 0.5)
+  server.walkNpc("Bot1", 2, 0)
+  server.walkNpc("Bot2", -2, 0)
+end)
+"#,
+    )
+    .unwrap();
+    if !PluginManager::new(&dir).available() {
+        return;
+    }
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(800));
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    let mut steve = Client::join(addr, "Steve");
+    command(&mut steve, "/pnj");
+    // Les deux PNJ apparaissent, sous leur nom
+    let mut ids = Vec::new();
+    while ids.len() < 2 {
+        let body = steve.wait_for(12);
+        for name in [&b"Bot1"[..], &b"Bot2"[..]] {
+            if body.windows(4).any(|w| w == name) {
+                ids.push(body[16 + 1 + 4]);
+            }
+        }
+    }
+    // Ils avancent : des déplacements arrivent pour chacun d'eux
+    let mut moved = std::collections::HashSet::new();
+    let started = std::time::Instant::now();
+    while moved.len() < 2 && started.elapsed() < Duration::from_secs(10) {
+        let (id, body) = steve.recv_game(true);
+        if (id == 18 || id == 19) && ids.contains(&body[0]) {
+            moved.insert(body[0]);
+        }
+    }
+    assert_eq!(moved.len(), 2, "les deux PNJ doivent bouger");
+    // Retirés : ils disparaissent
+    command(&mut steve, "/pnj stop");
+    let mut gone = 0;
+    let started = std::time::Instant::now();
+    while gone < 2 && started.elapsed() < Duration::from_secs(10) {
+        let (id, body) = steve.recv_game(true);
+        if id == 14 && ids.iter().any(|i| body == vec![*i * 2]) {
+            gone += 1;
+        }
+    }
+    assert_eq!(gone, 2, "les PNJ retirés disparaissent");
+    drop(steve);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Plugin privé Bots (absent du dépôt public) : `/bots 4` fait apparaître quatre bots.
+/// `cargo test --test e2e bots_plugin -- --ignored`
+#[test]
+#[ignore]
+fn bots_plugin() {
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins").join("Bots");
+    if !source.join("plugin.yml").is_file() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-bots-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Bots")).unwrap();
+    for f in ["plugin.yml", "main.lua"] {
+        std::fs::copy(source.join(f), dir.join("Bots").join(f)).unwrap();
+    }
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(800));
+    let mut steve = Client::join(addr, "Steve");
+    let text = "/bots 4 4 10";
+    let mut body = vec![text.len() as u8];
+    body.extend_from_slice(text.as_bytes());
+    body.extend_from_slice(&[0, 0, 0]);
+    steve.game(77, &body, Some(0xff));
+    let mut names = std::collections::HashSet::new();
+    let started = std::time::Instant::now();
+    while names.len() < 4 && started.elapsed() < Duration::from_secs(10) {
+        let (id, body) = steve.recv_game(true);
+        if id == 12 {
+            for n in ["Bot1", "Bot2", "Bot3", "Bot4"] {
+                if body.windows(4).any(|w| w == n.as_bytes()) {
+                    names.insert(n);
+                }
+            }
+        }
+    }
+    assert_eq!(names.len(), 4, "quatre bots visibles");
+    drop(steve);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -448,19 +448,21 @@ impl LuaGenerator {
 }
 
 /// Fichier `generators/<nom>.lua` d'un plugin (dossiers parcourus dans l'ordre
-/// alphabétique), ou `plugins/generators/<nom>.lua`.
+/// alphabétique). Seul un vrai plugin compte : un dossier avec un `plugin.yml` valide et
+/// son fichier principal, comme pour le chargement des plugins.
 fn find(plugins_dir: &Path, name: &str) -> Option<(String, PathBuf)> {
     let file = format!("{}.lua", name);
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(plugins_dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
     dirs.sort();
     for d in dirs {
         let candidate = d.join("generators").join(&file);
-        if candidate.is_file() {
-            let plugin = d.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            return Some((plugin, candidate));
+        if !candidate.is_file() {
+            continue;
         }
-        if d.file_name().map(|n| n == "generators").unwrap_or(false) && d.join(&file).is_file() {
-            return Some(("generators".into(), d.join(&file)));
+        let manifest = std::fs::read_to_string(d.join("plugin.yml")).ok().and_then(|s| crate::plugin::manifest::Manifest::parse(&s).ok());
+        match manifest {
+            Some(m) if d.join(&m.main).is_file() => return Some((m.name, candidate)),
+            _ => warn!("Générateur {} ignoré : {} n'est pas un plugin complet (plugin.yml et fichier principal)", name, d.display()),
         }
     }
     None
@@ -924,6 +926,8 @@ mod tests {
     fn write_gen(dir: &Path, name: &str, code: &str) {
         let d = dir.join("Test").join("generators");
         std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(dir.join("Test").join("plugin.yml"), "name: Test\nversion: 1.0.0\nmain: main.lua\napi: 1\n").unwrap();
+        std::fs::write(dir.join("Test").join("main.lua"), "").unwrap();
         std::fs::write(d.join(format!("{}.lua", name)), code).unwrap();
     }
 

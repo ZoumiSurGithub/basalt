@@ -285,8 +285,9 @@ impl<'a> Builder<'a> {
         t
     }
 
+    /// Biome de surface (rapide : sans calculer la hauteur du sol).
     fn biome(&self, x: i32, z: i32) -> B {
-        self.v.surface(x, z).1
+        self.v.surface_biome_at(x, z)
     }
 
     fn chest(&mut self, pos: (i32, i32, i32), front: D, loot: Loot) {
@@ -1206,18 +1207,29 @@ fn ring(r: i32) -> impl Iterator<Item = (i32, i32)> {
 /// Renvoie sa position (bloc) — mêmes règles que `build`.
 fn placed(v: &Vanilla, kind: Kind, sx: i32, sz: i32) -> Option<(i32, i32, i32)> {
     let (x, z) = (sx * 16 + 8, sz * 16 + 8);
+    // Le biome d'abord (rapide), la hauteur du sol seulement s'il convient
+    let biome = v.surface_biome_at(x, z);
     match kind {
         Kind::Village => {
-            let (top, biome) = v.surface(x, z);
-            (Style::for_biome(biome).is_some() && top > SEA_LEVEL && top <= SEA_LEVEL + 60).then_some((x, top + 1, z))
+            if Style::for_biome(biome).is_none() {
+                return None;
+            }
+            let top = v.surface(x, z).0;
+            (top > SEA_LEVEL && top <= SEA_LEVEL + 60).then_some((x, top + 1, z))
         }
         Kind::DesertPyramid => {
-            let (top, biome) = v.surface(x, z);
-            (biome == B::Desert && top > SEA_LEVEL).then_some((x, top + 1, z))
+            if biome != B::Desert {
+                return None;
+            }
+            let top = v.surface(x, z).0;
+            (top > SEA_LEVEL).then_some((x, top + 1, z))
         }
         Kind::JungleTemple => {
-            let (top, biome) = v.surface(x, z);
-            (matches!(biome, B::Jungle | B::BambooJungle) && top > SEA_LEVEL).then_some((x, top + 1, z))
+            if !matches!(biome, B::Jungle | B::BambooJungle) {
+                return None;
+            }
+            let top = v.surface(x, z).0;
+            (top > SEA_LEVEL).then_some((x, top + 1, z))
         }
         Kind::Mineshaft => {
             let top = v.surface(x, z).0;

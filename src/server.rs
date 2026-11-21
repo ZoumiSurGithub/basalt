@@ -21,7 +21,7 @@ use crate::config::Config;
 use crate::permission::{self, NameList, OpList};
 use crate::player::{clean_text, GameMode, PlayerData};
 use crate::entity::item_physics::{self, Cell, Step};
-use crate::lua::{Action, Info, LVal, PlayerSnap};
+use crate::lua::{Action, Info, LVal, NpcOrder, PlayerSnap};
 use crate::plugin::host::PluginHost;
 use crate::inventory::{self, PlayerWindows, Target};
 use crate::data::GameData;
@@ -373,6 +373,8 @@ pub struct Server {
     tick: u64,
     running: bool,
     next_id: i64,
+    /// Personnages non joueurs des plugins, par nom en minuscules
+    npcs: HashMap<String, Npc>,
     /// Objets posés au sol
     ground: HashMap<i64, GroundItem>,
     /// Noms des blocs, partagés avec les plugins
@@ -389,6 +391,8 @@ pub struct Server {
     refused_extras: HashSet<u32>,
     /// Paquets relevés auprès du serveur officiel : protocole -> identifiant -> contenu
     captured: HashMap<i32, HashMap<u32, Vec<u8>>>,
+    /// Les mêmes, déjà emballés et compressés (protocole, identifiant) : envoyés tels quels
+    captured_ready: HashMap<(i32, u32), Arc<Vec<u8>>>,
     /// Paquets relevés que le jeu a refusés : ils ne sont plus envoyés
     refused_captured: HashSet<u32>,
     last_save: Instant,
@@ -428,6 +432,8 @@ pub struct Server {
     liquids: Option<crate::world::liquid::Liquids>,
     /// Prochain numéro de pile pour les objets créés par les blocs (fours)
     tile_net_id: i32,
+    /// Gros paquets déjà compressés, par (identifiant, taille, empreinte du contenu)
+    packet_cache: HashMap<(u32, usize, u64), Arc<Vec<u8>>>,
     /// Résultats des recherches `/locate`, faites sur un fil à part : (destinataire, message)
     locate_tx: std::sync::mpsc::Sender<(Option<SocketAddr>, String)>,
     locate_rx: std::sync::mpsc::Receiver<(Option<SocketAddr>, String)>,
@@ -601,7 +607,8 @@ impl ChunkPool {
                 };
                 let payload = job.view.chunk_payload(job.x, job.z);
                 let pk = build_chunk(job.exp, job.x, job.z, payload, job.features);
-                let packet = bedrock::encode_packet(bedrock::ID_LEVEL_CHUNK, &pk, job.compression);
+                // Hors de la boucle du jeu : compression la plus forte (8 fois plus petit environ)
+                let packet = bedrock::encode_packet_with(bedrock::ID_LEVEL_CHUNK, &pk, job.compression, crate::utils::deflate::Level::Best);
                 if outbox.send((job.addr, job.owner, job.seq, EncodedChunk { x: job.x, z: job.z, version: job.version, packet })).is_err() {
                     return;
                 }
@@ -650,6 +657,7 @@ impl Server {
         rak.max_new_sessions = (cfg.max_players / 8).max(40);
         let plugins = PluginHost::new(Path::new(&cfg.plugins_dir), cfg.plugin_sandbox, &cfg.plugin_trusted, cfg.plugin_memory_mb);
         let (locate_tx, locate_rx) = std::sync::mpsc::channel();
+        bedrock::COMPRESS.store(cfg.network_compression, std::sync::atomic::Ordering::Relaxed);
         let mut s = Server {
             motd: cfg.server_name.clone(),
             cfg,
@@ -659,6 +667,7 @@ impl Server {
             tick: 0,
             running: true,
             next_id: 1,
+            npcs: HashMap::new(),
             ground: HashMap::new(),
             plugin_blocks: None,
             drops_refused: false,
@@ -669,6 +678,7 @@ impl Server {
             chunk_variant_by: None,
             refused_extras: HashSet::new(),
             captured: HashMap::new(),
+            captured_ready: HashMap::new(),
             refused_captured: HashSet::new(),
             last_save: Instant::now(),
             ops: OpList::default(),
@@ -688,6 +698,7 @@ impl Server {
             blocks: None,
             liquids: None,
             tile_net_id: 1_000_000_000,
+            packet_cache: HashMap::new(),
             locate_tx,
             locate_rx,
             locate_busy: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -1224,6 +1235,125 @@ impl Server {
         }
     }
 
+    /// Ordre d'un plugin à ses PNJ. Un PNJ appartient au plugin qui l'a créé : les autres
+    /// ne peuvent ni le déplacer ni le retirer.
+    fn npc_order(&mut self, owner: String, order: NpcOrder) {
+        const MAX_NPCS: usize = 512;
+        let mine = |n: &Npc| n.owner == owner;
+        match order {
+            NpcOrder::Spawn(name, x, y, z) => {
+                let key = name.to_lowercase();
+                if let Some(n) = self.npcs.get(&key) {
+                    if !mine(n) {
+                        warn!("[{}] le PNJ « {} » appartient déjà au plugin {}", owner, name, n.owner);
+                        return;
+                    }
+                }
+                if !self.npcs.contains_key(&key) && self.npcs.len() >= MAX_NPCS {
+                    warn!("[{}] trop de PNJ ({} au plus)", owner, MAX_NPCS);
+                    return;
+                }
+                // Un PNJ replacé change d'identifiant : les joueurs le voient réapparaître
+                let id = self.next_id;
+                self.next_id += 1;
+                self.npcs.insert(key, Npc { id, owner, name, pos: (x, y, z), velocity: (0.0, 0.0), fall: 0.0, yaw: 0.0, moved_tick: self.tick });
+            }
+            NpcOrder::Walk(name, vx, vz) => {
+                if let Some(n) = self.npcs.get_mut(&name.to_lowercase()).filter(|n| mine(n)) {
+                    n.velocity = (vx / 20.0, vz / 20.0);
+                    if vx != 0.0 || vz != 0.0 {
+                        n.yaw = (-vx).atan2(vz).to_degrees();
+                    }
+                    n.moved_tick = self.tick;
+                }
+            }
+            NpcOrder::Teleport(name, x, y, z) => {
+                if let Some(n) = self.npcs.get_mut(&name.to_lowercase()).filter(|n| mine(n)) {
+                    n.pos = (x, y, z);
+                    n.fall = 0.0;
+                    n.moved_tick = self.tick;
+                }
+            }
+            NpcOrder::Remove(name) => {
+                let key = name.to_lowercase();
+                if self.npcs.get(&key).map(|n| mine(n)).unwrap_or(false) {
+                    self.npcs.remove(&key);
+                }
+            }
+            NpcOrder::RemoveAll => self.npcs.retain(|_, n| n.owner != owner),
+        }
+    }
+
+    /// Peut-on traverser ce bloc à pied (air, eau, herbes, fleurs…) ?
+    fn npc_passable(&self, state: u32) -> bool {
+        self.replaceable(state) || self.data.as_ref().and_then(|d| d.block_name(state)).map(washed_away).unwrap_or(false)
+    }
+
+    /// Fait avancer les PNJ qui marchent : ils montent les marches d'un bloc, tombent dans
+    /// les trous et s'arrêtent devant un mur.
+    fn move_npcs(&mut self) {
+        let keys: Vec<String> = self.npcs.iter().filter(|(_, n)| n.velocity != (0.0, 0.0) || n.fall != 0.0 || n.pos.1 > -64.0).map(|(k, _)| k.clone()).collect();
+        for key in keys {
+            let n = match self.npcs.get(&key) {
+                Some(n) => n.clone(),
+                None => continue,
+            };
+            let (mut x, mut y, mut z) = n.pos;
+            let mut fall = n.fall;
+            let free = |s: &Self, x: f32, y: f32, z: f32| {
+                let (bx, by, bz) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
+                s.npc_passable(s.world.get(bx, by, bz)) && s.npc_passable(s.world.get(bx, by + 1, bz))
+            };
+            let mut moved = false;
+            if n.velocity != (0.0, 0.0) {
+                let (nx, nz) = (x + n.velocity.0, z + n.velocity.1);
+                if free(self, nx, y, nz) {
+                    x = nx;
+                    z = nz;
+                    moved = true;
+                } else if fall == 0.0 && free(self, nx, y.floor() + 1.0, nz) {
+                    // Marche d'un bloc
+                    x = nx;
+                    z = nz;
+                    y = y.floor() + 1.0;
+                    moved = true;
+                }
+            }
+            // Chute : le sol est-il sous les pieds ?
+            let below = self.world.get(x.floor() as i32, (y - 0.01).floor() as i32, z.floor() as i32);
+            if self.npc_passable(below) && y > -64.0 {
+                fall = (fall + 0.08).min(3.0);
+                let mut ny = y - fall;
+                // Atterrit sur le premier bloc solide rencontré
+                let mut by = (y - 0.01).floor() as i32;
+                while by as f32 >= ny.floor() {
+                    if !self.npc_passable(self.world.get(x.floor() as i32, by, z.floor() as i32)) {
+                        ny = (by + 1) as f32;
+                        fall = 0.0;
+                        break;
+                    }
+                    by -= 1;
+                }
+                y = ny.max(-64.0);
+                moved = true;
+            } else {
+                fall = 0.0;
+                // Coincé dans un bloc (posé sur lui, terrain qui change) : remonte
+                if !self.npc_passable(self.world.get(x.floor() as i32, y.floor() as i32, z.floor() as i32)) {
+                    y = y.floor() + 1.0;
+                    moved = true;
+                }
+            }
+            if let Some(m) = self.npcs.get_mut(&key) {
+                m.pos = (x, y, z);
+                m.fall = fall;
+                if moved {
+                    m.moved_tick = self.tick;
+                }
+            }
+        }
+    }
+
     /// Montre à chaque joueur les joueurs proches de lui, et seulement ceux-là :
     /// c'est ce qui permet de tenir avec beaucoup de monde.
     fn broadcast_players(&mut self) {
@@ -1244,6 +1374,7 @@ impl Server {
             held: (i16, u8, u32),
             skin: Option<Arc<crate::player::Skin>>,
             mode: i32,
+            npc: bool,
         }
         let refresh = self.tick % VISIBILITY_EVERY == 0;
         let mut players: Vec<Seen> = Vec::new();
@@ -1267,12 +1398,33 @@ impl Server {
                     sprinting: c.sprinting,
                     skin: if refresh { c.skin.clone() } else { None },
                     mode: c.mode.bedrock_id(),
+                    npc: false,
                     held: {
                         let h = c.inv.held();
                         (h.id, h.count.min(1), if h.is_empty() { 0 } else { self.block_for(h.id).unwrap_or(0) })
                     },
                 });
             }
+        }
+        let mut online = online;
+        for n in self.npcs.values() {
+            online.insert(n.id);
+            players.push(Seen {
+                id: n.id,
+                chunk: ((n.pos.0.floor() as i32) >> 4, (n.pos.2.floor() as i32) >> 4),
+                pos: (n.pos.0, n.pos.1 + EYE, n.pos.2),
+                pitch: 0.0,
+                yaw: n.yaw,
+                head_yaw: n.yaw,
+                moved_tick: n.moved_tick,
+                name: if refresh { n.name.clone() } else { String::new() },
+                sneaking: false,
+                sprinting: false,
+                skin: if refresh { Some(npc_skin()) } else { None },
+                mode: 0,
+                npc: true,
+                held: (0, 0, 0),
+            });
         }
         if players.len() < 2 && !refresh {
             return;
@@ -1336,7 +1488,8 @@ impl Server {
                                 let o = &players[i];
                                 if o.id != c.id && !hidden && c.visible.insert(o.id) {
                                     appeared += 1;
-                                    let uuid = crate::crypto::sha256(o.name.to_lowercase().as_bytes());
+                                    let key = if o.npc { format!("npc:{}", o.name.to_lowercase()) } else { o.name.to_lowercase() };
+                                    let uuid = crate::crypto::sha256(key.as_bytes());
                                     let mut id16 = [0u8; 16];
                                     id16.copy_from_slice(&uuid[..16]);
                                     // Son apparence d'abord : le jeu l'associe au joueur qui
@@ -1580,6 +1733,7 @@ impl Server {
                     }
                 }
                 Action::SetBlocks(list) => self.set_blocks_from_plugin(list),
+                Action::Npc(owner, order) => self.npc_order(owner, order),
                 Action::PlayerGive(name, item, count) => {
                     if let (Some(addr), Some(id)) = (self.addr_of(&name), self.item_id(&item)) {
                         self.add_item(&addr, id, count);
@@ -2399,6 +2553,23 @@ impl Server {
             if id != bedrock::ID_LEVEL_CHUNK {
                 info!("[paquets] -> {} : id {} ({} octets)", addr, id, body.len());
             }
+        }
+        // Gros paquets identiques pour tous (recettes, objets, biomes, menu créatif : plus
+        // d'un mégaoctet à chaque connexion) : compressés une fois, gardés pour les suivants
+        if compression && body.len() >= CACHE_FROM && self.cfg.network_compression {
+            let key = (id, body.len(), quick_hash(body));
+            let packet = match self.packet_cache.get(&key) {
+                Some(p) => p.clone(),
+                None => {
+                    let p = Arc::new(bedrock::encode_packet_with(id, body, true, crate::utils::deflate::Level::Best));
+                    if self.packet_cache.len() >= 64 {
+                        self.packet_cache.clear();
+                    }
+                    self.packet_cache.insert(key, p.clone());
+                    p
+                }
+            };
+            return self.net_send(addr, &packet);
         }
         self.net_send(addr, &bedrock::encode_packet(id, body, compression));
     }
@@ -5025,10 +5196,9 @@ impl Server {
                     }
                     if !experiment_skips_items(exp) {
                         let level = if features.editor_migration_version { self.items_level } else { 0 };
+                        let sent = self.send_captured(&addr, bedrock::ID_ITEM_REGISTRY);
                         let registry = match (level, &self.data) {
-                            _ if self.captured(&addr, bedrock::ID_ITEM_REGISTRY).is_some() => {
-                                self.captured(&addr, bedrock::ID_ITEM_REGISTRY).unwrap_or_default()
-                            }
+                            _ if sent => Vec::new(),
                             (2, Some(d)) => {
                                 let list: Vec<(&str, i16, i32, Option<&[u8]>)> =
                                     d.items.iter().map(|i| (i.name.as_str(), i.id, i.version, i.components.as_deref())).collect();
@@ -5037,12 +5207,15 @@ impl Server {
                             (0, _) => bedrock::item_registry(),
                             _ => bedrock::item_registry_basic(),
                         };
-                        self.send(&addr, bedrock::ID_ITEM_REGISTRY, &registry);
+                        if !registry.is_empty() {
+                            self.send(&addr, bedrock::ID_ITEM_REGISTRY, &registry);
+                        }
                     }
                     match exp {
                         0 => {
-                            let biomes = self.captured(&addr, bedrock::ID_BIOME_DEFINITION_LIST).unwrap_or_else(bedrock::biome_definition_list);
-                            self.send(&addr, bedrock::ID_BIOME_DEFINITION_LIST, &biomes)
+                            if !self.send_captured(&addr, bedrock::ID_BIOME_DEFINITION_LIST) {
+                                self.send(&addr, bedrock::ID_BIOME_DEFINITION_LIST, &bedrock::biome_definition_list())
+                            }
                         }
                         _ => self.send(&addr, bedrock::ID_BIOME_DEFINITION_LIST, &bedrock::biome_definition_list_plains()),
                     }
@@ -5616,6 +5789,7 @@ impl Server {
             }
             "reload" => {
                 self.plugins.unload_all();
+                self.npcs.clear();
                 self.load_plugins();
                 info!("Plugins rechargés");
             }
@@ -5748,36 +5922,42 @@ impl Server {
             None => return,
         };
         let mode = self.clients.get(addr).map(|c| c.mode).unwrap_or(GameMode::Survival);
-        let list: Vec<(u32, Vec<u8>)> = vec![
-            (bedrock::ID_UPDATE_ATTRIBUTES, bedrock::update_attributes(id as u64)),
-            (bedrock::ID_UPDATE_ABILITIES, bedrock::update_abilities(id, mode)),
-            (bedrock::ID_SET_ACTOR_DATA, bedrock::set_actor_data_player(id as u64)),
-            (bedrock::ID_SET_TIME, bedrock::set_time(self.world_time() as i32)),
-            (bedrock::ID_CREATIVE_CONTENT, self.captured(addr, bedrock::ID_CREATIVE_CONTENT).unwrap_or_else(bedrock::creative_content_empty)),
-            (bedrock::ID_INVENTORY_CONTENT, bedrock::inventory_content_empty(0, 36, features)),
-            (bedrock::ID_PLAYER_HOTBAR, bedrock::player_hotbar(0)),
-            (bedrock::ID_SET_PLAYER_GAME_TYPE, bedrock::set_time(mode.bedrock_id())),
-            (bedrock::ID_SET_DIFFICULTY, vec![1]),
-            (bedrock::ID_SET_COMMANDS_ENABLED, vec![1]),
-            (bedrock::ID_UPDATE_ADVENTURE_SETTINGS, bedrock::update_adventure_settings()),
-            (bedrock::ID_GAME_RULES_CHANGED, vec![0]),
+        // `None` : paquet relevé auprès du serveur officiel, envoyé déjà compressé
+        let list: Vec<(u32, Option<Vec<u8>>)> = vec![
+            (bedrock::ID_UPDATE_ATTRIBUTES, Some(bedrock::update_attributes(id as u64))),
+            (bedrock::ID_UPDATE_ABILITIES, Some(bedrock::update_abilities(id, mode))),
+            (bedrock::ID_SET_ACTOR_DATA, Some(bedrock::set_actor_data_player(id as u64))),
+            (bedrock::ID_SET_TIME, Some(bedrock::set_time(self.world_time() as i32))),
+            (bedrock::ID_CREATIVE_CONTENT, if self.has_captured(addr, bedrock::ID_CREATIVE_CONTENT) { None } else { Some(bedrock::creative_content_empty()) }),
+            (bedrock::ID_INVENTORY_CONTENT, Some(bedrock::inventory_content_empty(0, 36, features))),
+            (bedrock::ID_PLAYER_HOTBAR, Some(bedrock::player_hotbar(0))),
+            (bedrock::ID_SET_PLAYER_GAME_TYPE, Some(bedrock::set_time(mode.bedrock_id()))),
+            (bedrock::ID_SET_DIFFICULTY, Some(vec![1])),
+            (bedrock::ID_SET_COMMANDS_ENABLED, Some(vec![1])),
+            (bedrock::ID_UPDATE_ADVENTURE_SETTINGS, Some(bedrock::update_adventure_settings())),
+            (bedrock::ID_GAME_RULES_CHANGED, Some(vec![0])),
         ];
         let mut list = list;
         // Liste complète des entités, d'après les données du jeu
-        if let Some(ids) = self.captured(addr, bedrock::ID_AVAILABLE_ACTOR_IDENTIFIERS) {
-            list.push((bedrock::ID_AVAILABLE_ACTOR_IDENTIFIERS, ids));
+        if self.has_captured(addr, bedrock::ID_AVAILABLE_ACTOR_IDENTIFIERS) {
+            list.push((bedrock::ID_AVAILABLE_ACTOR_IDENTIFIERS, None));
         } else if let (Some(ids), 2) = (self.data.as_ref().and_then(|d| d.entity_identifiers.clone()), self.items_level) {
-            list.push((bedrock::ID_AVAILABLE_ACTOR_IDENTIFIERS, ids));
+            list.push((bedrock::ID_AVAILABLE_ACTOR_IDENTIFIERS, Some(ids)));
         }
         // Recettes et ornements d'armure, tels que le serveur officiel les envoie
         for id in [52u32, 302] {
-            if let Some(body) = self.captured(addr, id) {
-                list.push((id, body));
+            if self.has_captured(addr, id) {
+                list.push((id, None));
             }
         }
         for (packet, body) in list {
             if !self.refused_extras.contains(&packet) {
-                self.send(addr, packet, &body);
+                match body {
+                    Some(body) => self.send(addr, packet, &body),
+                    None => {
+                        self.send_captured(addr, packet);
+                    }
+                }
             }
         }
     }
@@ -6010,6 +6190,40 @@ impl Server {
 
     /// Paquet relevé auprès du serveur officiel pour la version de ce joueur, s'il existe
     /// et que le jeu ne l'a pas refusé.
+    /// Envoie un paquet relevé auprès du serveur officiel, déjà compressé s'il est gros.
+    /// Faux s'il n'y en a pas pour la version du joueur.
+    fn send_captured(&mut self, addr: &SocketAddr, id: u32) -> bool {
+        if self.items_level != 2 || self.refused_captured.contains(&id) {
+            return false;
+        }
+        let (protocol, compression) = match self.clients.get(addr) {
+            Some(c) => (c.protocol, c.compression),
+            None => return false,
+        };
+        if compression {
+            if let Some(ready) = self.captured_ready.get(&(protocol, id)).cloned() {
+                if self.cfg.debug {
+                    info!("[paquets] -> {} : id {} (relevé, {} octets compressés)", addr, id, ready.len());
+                }
+                self.net_send(addr, &ready);
+                return true;
+            }
+        }
+        match self.captured(addr, id) {
+            Some(body) => {
+                self.send(addr, id, &body);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn has_captured(&self, addr: &SocketAddr, id: u32) -> bool {
+        self.items_level == 2
+            && !self.refused_captured.contains(&id)
+            && self.clients.get(addr).and_then(|c| self.captured.get(&c.protocol)).map(|m| m.contains_key(&id)).unwrap_or(false)
+    }
+
     fn captured(&self, addr: &SocketAddr, id: u32) -> Option<Vec<u8>> {
         if self.items_level != 2 || self.refused_captured.contains(&id) {
             return None;
@@ -6042,6 +6256,14 @@ impl Server {
             }
             if !found.is_empty() {
                 info!("Données relevées auprès du serveur officiel pour le protocole {} : {} paquets (recettes, objets, biomes…)", protocol, found.len());
+                // Compressés une fois pour toutes (plus d'un mégaoctet par connexion sinon)
+                if self.cfg.network_compression {
+                    for (id, body) in &found {
+                        if body.len() >= CACHE_FROM {
+                            self.captured_ready.insert((protocol, *id), Arc::new(bedrock::encode_packet_with(*id, body, true, crate::utils::deflate::Level::Best)));
+                        }
+                    }
+                }
                 self.captured.insert(protocol, found);
             }
         }
@@ -6204,6 +6426,10 @@ impl Server {
                     let _t = timings::scope("Tick — eau et lave");
                     self.flow_liquids();
                 }
+                if !self.npcs.is_empty() {
+                    let _t = timings::scope("Tick — PNJ des plugins");
+                    self.move_npcs();
+                }
                 // Résultats des recherches /locate
                 while let Ok((to, message)) = self.locate_rx.try_recv() {
                     if to.map(|a| self.clients.contains_key(&a)).unwrap_or(true) {
@@ -6298,6 +6524,66 @@ mod tests {
 
 /// Blocs emportés par l'eau ou brûlés par la lave qui coule : herbes, fleurs, torches,
 /// pousses, cultures, rails, poudre de redstone…
+/// Hauteur des yeux d'un joueur au-dessus de ses pieds.
+const EYE: f32 = crate::player::EYE_HEIGHT;
+
+/// Personnage non joueur créé par un plugin : vu par les joueurs comme un joueur.
+#[derive(Clone)]
+struct Npc {
+    id: i64,
+    owner: String,
+    name: String,
+    /// Position des pieds
+    pos: (f32, f32, f32),
+    /// Déplacement par tick sur x et z
+    velocity: (f32, f32),
+    /// Vitesse de chute (blocs par tick)
+    fall: f32,
+    yaw: f32,
+    moved_tick: u64,
+}
+
+/// Apparence des PNJ : un personnage simple (tête, chemise, pantalon), fabriqué une fois.
+fn npc_skin() -> Arc<crate::player::Skin> {
+    static SKIN: std::sync::OnceLock<Arc<crate::player::Skin>> = std::sync::OnceLock::new();
+    SKIN.get_or_init(|| {
+        let mut data = vec![0u8; 64 * 64 * 4];
+        for y in 0..64usize {
+            for x in 0..64usize {
+                let colour: [u8; 4] = if y < 16 {
+                    [0xc8, 0x96, 0x6e, 0xff] // tête
+                } else if (y < 32 && x < 16) || (y >= 48 && x >= 16 && x < 32) {
+                    [0x2b, 0x3a, 0x67, 0xff] // jambes
+                } else {
+                    [0x3f, 0x9c, 0x8c, 0xff] // corps et bras
+                };
+                data[(y * 64 + x) * 4..(y * 64 + x) * 4 + 4].copy_from_slice(&colour);
+            }
+        }
+        Arc::new(crate::player::Skin {
+            id: "basalt-npc".into(),
+            patch: br#"{"geometry":{"default":"geometry.humanoid.custom"}}"#.to_vec(),
+            width: 64,
+            height: 64,
+            data,
+            cape_width: 0,
+            cape_height: 0,
+            cape: Vec::new(),
+            cape_id: String::new(),
+            geometry: Vec::new(),
+            engine_version: Vec::new(),
+            animation_data: Vec::new(),
+            wide_arms: true,
+            colour: 0xffc8_966e,
+            premium: false,
+            persona: false,
+            cape_on_classic: false,
+            profile_hash: String::new(),
+        })
+    })
+    .clone()
+}
+
 fn washed_away(name: &str) -> bool {
     let n = name.trim_start_matches("minecraft:");
     if n.contains("seagrass") || n.contains("kelp") || n.contains("coral") || n == "sea_pickle" {
@@ -6310,4 +6596,21 @@ fn washed_away(name: &str) -> bool {
             "dandelion" | "poppy" | "allium" | "azure_bluet" | "oxeye_daisy" | "cornflower" | "lily_of_the_valley" | "wither_rose" | "wheat" | "carrots" | "potatoes"
                 | "beetroot" | "snow_layer" | "web" | "bush" | "firefly_bush" | "wildflowers" | "sweet_berry_bush" | "lever" | "unpowered_repeater" | "unpowered_comparator"
         )
+}
+
+/// Paquets à partir de cette taille : compressés une fois et gardés (voir `Server::send`).
+const CACHE_FROM: usize = 16 * 1024;
+
+/// Empreinte rapide d'un contenu (FNV-1a sur des mots de 8 octets) : assez pour
+/// reconnaître un paquet déjà compressé, avec sa taille et son identifiant.
+fn quick_hash(data: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut chunks = data.chunks_exact(8);
+    for c in &mut chunks {
+        h = (h ^ u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])).wrapping_mul(0x0100_0000_01b3);
+    }
+    for &b in chunks.remainder() {
+        h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+    }
+    h
 }

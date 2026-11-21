@@ -335,6 +335,21 @@ pub enum Action {
     PlayerGive(String, String, u16),
     /// Pose des blocs : (x, y, z, état)
     SetBlocks(Vec<(i32, i32, i32, u32)>),
+    /// Personnage non joueur (PNJ) : (plugin, ordre)
+    Npc(String, NpcOrder),
+}
+
+/// Ordres donnés aux PNJ d'un plugin (voir `server.spawnNpc`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum NpcOrder {
+    /// Fait apparaître (ou replace) un PNJ, pieds en (x, y, z)
+    Spawn(String, f32, f32, f32),
+    /// Marche en continu : vitesse en blocs par seconde sur x et z (0, 0 : s'arrête)
+    Walk(String, f32, f32),
+    Teleport(String, f32, f32, f32),
+    Remove(String),
+    /// Retire tous les PNJ du plugin
+    RemoveAll,
 }
 
 /// État d'un joueur tel que les plugins le voient pendant un appel.
@@ -883,6 +898,52 @@ unsafe extern "C" fn l_kick(l: L) -> c_int {
     }
 }
 
+/// `server.spawnNpc(nom, x, y, z)`, `server.walkNpc(nom, vx, vz)`, `server.teleportNpc(nom, x, y, z)`,
+/// `server.removeNpc(nom)`, `server.removeNpcs()`.
+unsafe fn npc_order(l: L, verb: &str) -> c_int {
+    let c = ctx(l);
+    if c.actions.len() >= 4096 {
+        return 0;
+    }
+    let name = arg_str(c, l, 1).map(|n| n.chars().filter(|c| !c.is_control()).take(32).collect::<String>());
+    let n = |i| arg_num(c, l, i).map(|v| v as f32);
+    let order = match (verb, name) {
+        ("spawn", Some(name)) => match (n(2), n(3), n(4)) {
+            (Some(x), Some(y), Some(z)) if !name.is_empty() => NpcOrder::Spawn(name, x, y, z),
+            _ => return bad_call(c, "server.spawnNpc(nom, x, y, z)"),
+        },
+        ("walk", Some(name)) => match (n(2), n(3)) {
+            (Some(vx), Some(vz)) => NpcOrder::Walk(name, vx.clamp(-20.0, 20.0), vz.clamp(-20.0, 20.0)),
+            _ => return bad_call(c, "server.walkNpc(nom, vx, vz)"),
+        },
+        ("teleport", Some(name)) => match (n(2), n(3), n(4)) {
+            (Some(x), Some(y), Some(z)) => NpcOrder::Teleport(name, x, y, z),
+            _ => return bad_call(c, "server.teleportNpc(nom, x, y, z)"),
+        },
+        ("remove", Some(name)) => NpcOrder::Remove(name),
+        ("remove_all", _) => NpcOrder::RemoveAll,
+        _ => return bad_call(c, "server.removeNpc(nom)"),
+    };
+    c.actions.push(Action::Npc(c.name.clone(), order));
+    0
+}
+
+unsafe extern "C" fn l_npc_spawn(l: L) -> c_int {
+    npc_order(l, "spawn")
+}
+unsafe extern "C" fn l_npc_walk(l: L) -> c_int {
+    npc_order(l, "walk")
+}
+unsafe extern "C" fn l_npc_teleport(l: L) -> c_int {
+    npc_order(l, "teleport")
+}
+unsafe extern "C" fn l_npc_remove(l: L) -> c_int {
+    npc_order(l, "remove")
+}
+unsafe extern "C" fn l_npc_remove_all(l: L) -> c_int {
+    npc_order(l, "remove_all")
+}
+
 unsafe extern "C" fn l_stop(l: L) -> c_int {
     ctx(l).actions.push(Action::Stop);
     0
@@ -1207,7 +1268,12 @@ impl PluginManager {
             let plugin = Plugin { name: name.to_string(), manifest: found.manifest.clone(), api, state, ctx, mem, strikes: std::cell::Cell::new(0) };
 
             (api.createtable)(state, 0, 24);
-            let funcs: [(&str, CFn); 21] = [
+            let funcs: [(&str, CFn); 26] = [
+                ("spawnNpc\0", l_npc_spawn),
+                ("walkNpc\0", l_npc_walk),
+                ("teleportNpc\0", l_npc_teleport),
+                ("removeNpc\0", l_npc_remove),
+                ("removeNpcs\0", l_npc_remove_all),
                 ("_block\0", l_block),
                 ("_blocks\0", l_blocks),
                 ("_setblocks\0", l_setblocks),

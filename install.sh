@@ -86,6 +86,7 @@ if [ -d data ]; then
 fi
 # Ne pas écraser les plugins déjà présents
 for f in plugins/*.lua; do
+    [ -e "$f" ] || continue
     [ -e "$DEST/plugins/$(basename "$f")" ] || cp "$f" "$DEST/plugins/"
 done
 # Plugins fournis sous forme de dossier (EasyEdit…) : leur code suit la version du serveur

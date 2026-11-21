@@ -4,6 +4,7 @@
 pub mod log;
 pub mod config;
 pub mod inflate;
+pub mod deflate;
 pub mod json;
 pub mod yaml;
 pub mod console;
