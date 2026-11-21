@@ -1,5 +1,7 @@
 //! Boucle principale : relie le réseau, la console et les plugins.
 
+mod mobs;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::Path;
@@ -365,6 +367,8 @@ struct Client {
     listed: HashMap<i64, [u8; 16]>,
     /// Objets au sol que son jeu affiche
     items_seen: HashSet<i64>,
+    /// Créatures que son jeu affiche
+    mobs_seen: HashSet<i64>,
     /// Données du joueur (vie, expérience, noms…), chargées à son entrée
     data: Option<PlayerData>,
     /// Vrai si le joueur vient pour la première fois (aucune sauvegarde trouvée)
@@ -384,6 +388,11 @@ pub struct Server {
     next_id: i64,
     /// Personnages non joueurs des plugins, par nom en minuscules
     npcs: HashMap<String, Npc>,
+    /// Créatures (animaux) du monde
+    mobs: HashMap<i64, mobs::Mob>,
+    mob_rng: crate::world::generator::Rng,
+    /// Le jeu a refusé l'apparition d'une créature : plus d'animaux
+    mobs_refused: bool,
     /// Objets posés au sol
     ground: HashMap<i64, GroundItem>,
     /// Noms des blocs, partagés avec les plugins
@@ -684,6 +693,9 @@ impl Server {
             running: true,
             next_id: 1,
             npcs: HashMap::new(),
+            mobs: HashMap::new(),
+            mob_rng: mobs::mob_rng(),
+            mobs_refused: false,
             ground: HashMap::new(),
             plugin_blocks: None,
             drops_refused: false,
@@ -3124,6 +3136,10 @@ impl Server {
         if self.clients.get(addr).map(|c| c.mode.is_spectator()).unwrap_or(true) {
             return;
         }
+        // Une créature ?
+        if self.hit_mob(target as i64, (eye.0, eye.1 - EYE, eye.2), damage) {
+            return;
+        }
         let victim = self.clients.iter().find(|(_, c)| c.id as u64 == target && c.id != from && c.joined).map(|(a, c)| (*a, c.pos, !c.mode.takes_damage(), c.id));
         let (victim, pos, creative, victim_id) = match victim {
             Some(v) => v,
@@ -5114,6 +5130,15 @@ impl Server {
                     self.move_actor_refused = true;
                     warn!("Le déplacement des autres joueurs est refusé par le jeu : il est désactivé. Les joueurs peuvent se reconnecter ; ils se verront, immobiles.");
                 }
+                if packet == bedrock::ID_ADD_ACTOR as i32 && !self.mobs_refused {
+                    // Format des créatures pas encore relevé : en cas de refus, plus d'animaux
+                    self.mobs_refused = true;
+                    let ids: Vec<i64> = self.mobs.keys().copied().collect();
+                    for id in ids {
+                        self.remove_mob(id);
+                    }
+                    warn!("Les animaux sont refusés par le jeu : ils sont désactivés. Lancez la capture (Capturer-les-donnees.cmd) avec « summon cow » pour relever leur format.");
+                }
                 if packet == bedrock::ID_ADD_PLAYER as i32 && !self.add_player_refused {
                     // Sans ce repli, chaque arrivée d'un second joueur déconnecterait tout le monde
                     self.add_player_refused = true;
@@ -5692,6 +5717,7 @@ impl Server {
                         visible: HashSet::new(),
                         listed: HashMap::new(),
                         items_seen: HashSet::new(),
+                        mobs_seen: HashSet::new(),
                         data: None,
                         first_visit: false,
                         reported_error: false,
@@ -6537,6 +6563,18 @@ impl Server {
                 if !self.npcs.is_empty() {
                     let _t = timings::scope("Tick — PNJ des plugins");
                     self.move_npcs();
+                }
+                {
+                    let _t = timings::scope("Tick — animaux");
+                    if self.tick % 40 == 7 {
+                        self.spawn_mobs();
+                    }
+                    if !self.mobs.is_empty() {
+                        self.move_mobs();
+                    }
+                    if self.tick % 10 == 3 {
+                        self.show_mobs();
+                    }
                 }
                 // Résultats des recherches /locate
                 while let Ok((to, message)) = self.locate_rx.try_recv() {

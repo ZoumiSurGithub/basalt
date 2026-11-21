@@ -100,7 +100,9 @@ fn capture(args: &[String]) {
     info!("    setblock 0 -60 0 dirt");
     info!("    setblock 0 -60 0 air destroy");
     info!("    tp @a 5 -59 5");
-    info!("La deuxième fait tomber un objet au sol, la troisième téléporte le joueur de capture :");
+    info!("    summon cow 3 -59 3");
+    info!("La deuxième fait tomber un objet au sol, la troisième téléporte le joueur de capture,");
+    info!("la quatrième fait apparaître une vache :");
     info!("leurs formats seront relevés.");
     info!("==================================================================================");
     // Le serveur officiel refuse un second joueur qu'il prend pour le même que le premier

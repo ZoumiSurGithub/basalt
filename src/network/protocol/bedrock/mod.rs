@@ -16,6 +16,7 @@ mod blocks;
 mod items;
 mod combat;
 mod drops;
+mod mobs;
 
 pub use ids::*;
 pub use codec::*;
@@ -30,6 +31,7 @@ pub use blocks::*;
 pub use items::*;
 pub use combat::*;
 pub use drops::*;
+pub use mobs::*;
 
 #[cfg(test)]
 mod tests {

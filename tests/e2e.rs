@@ -272,6 +272,28 @@ impl Client {
         }
     }
 
+    /// Prochain paquet de jeu, ou rien si le serveur se tait pendant `wait`.
+    fn poll_game(&mut self, wait: Duration) -> Option<(u32, Vec<u8>)> {
+        loop {
+            if let Some(p) = self.games.pop_front() {
+                return Some(p);
+            }
+            if let Some(p) = self.inbox.pop_front() {
+                self.unpack(&p, true);
+                continue;
+            }
+            self.flush_acks();
+            self.sock.set_read_timeout(Some(wait)).unwrap();
+            let mut buf = [0u8; 2048];
+            let got = self.sock.recv(&mut buf).ok().map(|n| buf[..n].to_vec());
+            self.sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            match got {
+                Some(d) => self.feed(&d),
+                None => return None,
+            }
+        }
+    }
+
     fn recv_game(&mut self, header: bool) -> (u32, Vec<u8>) {
         loop {
             if let Some(p) = self.games.pop_front() {
@@ -438,6 +460,8 @@ fn start_opts(dir: &PathBuf, max_per_ip: usize, xbox_auth: bool) -> (SocketAddr,
         cfg.root = dir.to_path_buf();
         // Les tests activent la liste blanche en déposant ce fichier témoin
         cfg.white_list = dir.join("liste-blanche-active").exists();
+        // Pas d'animaux (leurs paquets gêneraient les tests), sauf fichier témoin
+        cfg.spawn_animals = dir.join("animaux").exists();
         cfg.view_distance = 3;
         cfg.max_per_ip = max_per_ip;
         cfg.xbox_auth = xbox_auth;
@@ -1959,4 +1983,38 @@ fn operators_write_in_colour() {
     stop.store(true, Ordering::Relaxed);
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Des animaux apparaissent sur l'herbe autour du joueur, et se promènent.
+#[test]
+fn animals_appear_and_wander() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-animaux-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("animaux"), "").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let started = std::time::Instant::now();
+    let mut animal = None;
+    let mut moved = false;
+    while (animal.is_none() || !moved) && started.elapsed() < Duration::from_secs(40) {
+        if let Some((id, body)) = steve.poll_game(Duration::from_millis(500)) {
+            if id == 13 {
+                for kind in ["minecraft:cow", "minecraft:pig", "minecraft:sheep", "minecraft:chicken"] {
+                    if body.windows(kind.len()).any(|w| w == kind.as_bytes()) {
+                        animal = Some(body[0]);
+                    }
+                }
+            }
+            // Il bouge tôt ou tard (promenade)
+            if id == 18 && animal.is_some() {
+                moved = true;
+            }
+        }
+    }
+    assert!(animal.is_some(), "un animal doit apparaître");
+    assert!(moved, "les animaux se déplacent");
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = handle.join();
 }

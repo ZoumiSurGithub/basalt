@@ -46,6 +46,8 @@ pub struct Config {
     pub identity_cpk_jwk: bool,
     pub movement_check: bool,
     pub show_players: bool,
+    /// Animaux (vaches, cochons, moutons, poules) autour des joueurs
+    pub spawn_animals: bool,
     pub player_view: i32,
     pub max_visible: usize,
     pub auth_keys_file: String,
@@ -99,6 +101,7 @@ impl Default for Config {
             identity_cpk_jwk: true,
             movement_check: true,
             show_players: true,
+            spawn_animals: true,
             player_view: 4,
             max_visible: 48,
             auth_keys_file: String::new(),
@@ -174,6 +177,8 @@ auth-keys-file=
 movement-check=true
 # true : les joueurs se voient entre eux
 show-players=true
+# Animaux (vaches, cochons, moutons, poules) autour des joueurs
+spawn-animals=true
 # Distance (en chunks) jusqu'à laquelle un joueur voit les autres
 player-view-distance=4
 # Nombre maximal d'autres joueurs affichés à chaque joueur
@@ -284,6 +289,7 @@ impl Config {
         c.world_name = text_of("world-name", &c.world_name);
         c.movement_check = map.get("movement-check").map(|v| v != "false").unwrap_or(true);
         c.show_players = map.get("show-players").map(|v| v != "false").unwrap_or(true);
+        c.spawn_animals = map.get("spawn-animals").map(|v| v != "false").unwrap_or(true);
         c.http_signaling = map.get("nethernet-signaling").map(|v| v != "false").unwrap_or(true);
         c.xbox_auth = map.get("xbox-auth").map(|v| v != "false").unwrap_or(true);
         c.local_bots = map.get("local-bots").map(|v| v == "true" || v == "on").unwrap_or(false);

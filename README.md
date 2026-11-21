@@ -36,13 +36,19 @@ jeu (Bedrock 1.26.63 à 1.26.66 sous Windows, deux comptes Xbox en même temps).
 - `/locate structure` et `/locate biome` ;
 - générateurs de terrain écrits en Lua par les plugins (`level-type=plugin:<nom>`) ;
 - personnages non joueurs (PNJ) créés par les plugins, qui marchent seuls (`server.spawnNpc`) ;
+- **animaux** (vaches, cochons, moutons de toutes les couleurs, poules) : ils apparaissent
+  par petits troupeaux sur l'herbe autour des joueurs, se promènent, sautent les marches,
+  évitent les chutes, nagent, fuient quand on les frappe, reculent sous les coups, meurent
+  et laissent leur butin (viande, cuir, laine de leur couleur, plumes). Ils ne sont pas
+  enregistrés : loin de tous les joueurs (128 blocs), ils disparaissent. `spawn-animals=false`
+  pour s'en passer ;
 - connexion par RakNet (jeux plus anciens que 1.26.60), avec son chiffrement (ECDH + AES-256) ;
 - installation et mise à jour sous Windows par les scripts fournis ;
 - montée en charge (voir plus bas).
 
 **Pas encore fait :** chargement de vrais mondes Minecraft (format LevelDB),
 mondes multiples (Nether, End), blocs soumis à la gravité (sable, gravier), redstone,
-monstres et animaux, faim qui baisse et expérience gagnée, cycle jour/nuit animé, météo.
+monstres, villageois, élevage (nourrir, reproduire, tondre, traire), faim qui baisse et expérience gagnée, cycle jour/nuit animé, météo.
 
 **Réglages de secours.** Si un joueur est replacé à tort, ou se déconnecte quand un autre
 joueur apparaît, `movement-check=false` et `show-players=false` désactivent ces fonctions
@@ -637,10 +643,10 @@ Tests : `cargo test`
 
 ## Suite proposée
 
-1. **Le jeu** : animaux et monstres (apparition selon le biome, déplacements, butin),
+1. **Le jeu** : monstres (apparition la nuit, poursuite, attaque), villageois, élevage,
    faim qui baisse, expérience, temps de minage selon l'outil, jour et nuit, météo.
 2. **Le monde** : Nether et End, gravité du sable et du gravier, redstone (le piège du
-   temple de la jungle en a besoin), autres structures (épaves, monuments, manoirs…), chargement des mondes Minecraft (format LevelDB).
+   temple de la jungle en a besoin), monuments océaniques, chargement des mondes Minecraft (format LevelDB).
 3. **Plugins** : coffres remplis par les générateurs, inventaires, entités.
 4. **Montée en charge** : mesure avec 1000 joueurs simulés sur une vraie machine.
 
