@@ -44,6 +44,7 @@ impl Queue {
             let (s, r) = channel::<Msg>();
             let pending = &self.pending;
             let spawned = std::thread::Builder::new().name(self.name.to_string()).spawn(move || {
+                super::lower_thread_priority();
                 while let Ok(msg) = r.recv() {
                     match msg {
                         Msg::Job(job) => {

@@ -9,6 +9,18 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ## [Non publié]
 
+### Ajouté
+
+- Guide d'installation pas à pas pour Windows et Linux : `docs/INSTALLER.md`.
+- `/timings report` indique l'état de la machine pendant les mesures (processeur, temps
+  volé par l'hébergeur, attente disque, mémoire, swap) et dit si les à-coups viennent d'elle.
+
+### Modifié
+
+- Les fils de fond (génération du terrain, préparation des chunks, écritures disque)
+  tournent en priorité basse sous Linux : la boucle du jeu passe avant eux quand la
+  machine est chargée.
+
 ### Corrigé
 
 - À-coups du serveur : un animal au bord d'une zone pas encore générée faisait générer

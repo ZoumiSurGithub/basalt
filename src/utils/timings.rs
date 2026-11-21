@@ -30,6 +30,84 @@ struct State {
     since: Instant,
     ticks: u64,
     entries: HashMap<String, Entry>,
+    /// Compteurs de la machine au début des mesures (Linux)
+    machine: Option<Machine>,
+}
+
+/// Compteurs processeur relevés dans /proc (Linux), en unités du système.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Machine {
+    /// Temps total de tous les cœurs
+    pub total: u64,
+    pub idle: u64,
+    /// Attente du disque
+    pub iowait: u64,
+    /// Temps volé par l'hébergeur (machine virtuelle)
+    pub steal: u64,
+    /// Temps processeur de Basalt
+    pub own: u64,
+}
+
+impl Machine {
+    /// Relève les compteurs (None hors Linux).
+    pub fn sample() -> Option<Machine> {
+        let stat = std::fs::read_to_string("/proc/stat").ok()?;
+        let own = std::fs::read_to_string("/proc/self/stat").ok()?;
+        Machine::parse(&stat, &own)
+    }
+
+    fn parse(stat: &str, own: &str) -> Option<Machine> {
+        let line = stat.lines().find(|l| l.starts_with("cpu "))?;
+        let v: Vec<u64> = line.split_whitespace().skip(1).map(|x| x.parse().unwrap_or(0)).collect();
+        if v.len() < 5 {
+            return None;
+        }
+        // user nice system idle iowait irq softirq steal (guest est déjà compté dans user)
+        let total: u64 = v.iter().take(8).sum();
+        // Les champs de /proc/self/stat après le nom (entre parenthèses) : utime et stime sont les 12e et 13e
+        let after = &own[own.rfind(')')? + 1..];
+        let f: Vec<&str> = after.split_whitespace().collect();
+        let own = f.get(11)?.parse::<u64>().ok()? + f.get(12)?.parse::<u64>().ok()?;
+        Some(Machine { total, idle: v[3], iowait: v[4], steal: v.get(7).copied().unwrap_or(0), own })
+    }
+}
+
+/// Bilan de la machine entre deux relevés, en pourcentages.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MachineUse {
+    pub cores: usize,
+    /// Processeur de toute la machine occupé (hors attente)
+    pub busy: f64,
+    pub iowait: f64,
+    pub steal: f64,
+    /// Basalt, en % d'un cœur
+    pub own_core: f64,
+}
+
+fn machine_use(a: Machine, b: Machine, cores: usize) -> Option<MachineUse> {
+    let total = b.total.checked_sub(a.total)? as f64;
+    if total <= 0.0 {
+        return None;
+    }
+    let pct = |x: u64, y: u64| y.saturating_sub(x) as f64 / total * 100.0;
+    let idle = pct(a.idle, b.idle);
+    let iowait = pct(a.iowait, b.iowait);
+    let steal = pct(a.steal, b.steal);
+    Some(MachineUse {
+        cores,
+        busy: (100.0 - idle - iowait - steal).max(0.0),
+        iowait,
+        steal,
+        own_core: b.own.saturating_sub(a.own) as f64 / (total / cores.max(1) as f64) * 100.0,
+    })
+}
+
+/// Mémoire de la machine : (disponible, totale, swap utilisé), en Mo.
+fn memory() -> Option<(u64, u64, u64)> {
+    let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let get = |k: &str| info.lines().find(|l| l.starts_with(k)).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse::<u64>().ok());
+    let swap = get("SwapTotal:")?.saturating_sub(get("SwapFree:")?);
+    Some((get("MemAvailable:")? / 1024, get("MemTotal:")? / 1024, swap / 1024))
 }
 
 /// Une mesure en cours ; elle s'enregistre quand elle sort de portée.
@@ -119,7 +197,7 @@ pub fn disable() -> bool {
 /// Remet les compteurs à zéro.
 pub fn reset() {
     if let Ok(mut guard) = STATE.lock() {
-        *guard = Some(State { since: Instant::now(), ticks: 0, entries: HashMap::new() });
+        *guard = Some(State { since: Instant::now(), ticks: 0, entries: HashMap::new(), machine: Machine::sample() });
     }
 }
 
@@ -161,6 +239,11 @@ pub fn snapshot() -> Option<(f64, u64, Vec<Line>)> {
 /// Rapport complet, en texte. `header` : lignes de contexte (version, joueurs…).
 pub fn report(header: &[String]) -> Option<String> {
     let (elapsed, ticks, lines) = snapshot()?;
+    let start = STATE.lock().ok().and_then(|g| g.as_ref().and_then(|s| s.machine));
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let usage = start.zip(Machine::sample()).and_then(|(a, b)| machine_use(a, b, cores));
+    let pause_worst = lines.iter().find(|l| l.name.starts_with("Pause de 1 ms")).map(|l| l.worst_ms).unwrap_or(0.0);
+    let pause_slow = lines.iter().find(|l| l.name.starts_with("Pause de 1 ms")).map(|l| l.slow).unwrap_or(0);
     let mut out = String::new();
     out.push_str("Rapport de mesures de Basalt\n");
     out.push_str("============================\n");
@@ -169,6 +252,16 @@ pub fn report(header: &[String]) -> Option<String> {
         out.push('\n');
     }
     out.push_str(&format!("Durée mesurée : {:.1} s — {} ticks, soit {:.2} ticks/s (objectif 20)\n", elapsed, ticks, ticks as f64 / elapsed));
+    if let Some(u) = &usage {
+        out.push_str(&format!(
+            "Machine pendant les mesures : {} cœur(s) occupé(s) à {:.0} % — Basalt {:.0} % d'un cœur — attente disque {:.1} % — temps volé par l'hébergeur {:.1} %\n",
+            u.cores, u.busy, u.own_core, u.iowait, u.steal
+        ));
+    }
+    if let Some((free, total, swap)) = memory() {
+        out.push_str(&format!("Mémoire de la machine : {} Mo libres sur {} Mo — swap utilisé : {} Mo\n", free, total, swap));
+    }
+    out.push_str(&verdict(pause_worst, pause_slow, usage.as_ref(), memory()));
     out.push_str("\nComment lire ce tableau\n");
     out.push_str("  % du temps : part du temps écoulé passée dans cette étape. Le serveur a du retard\n");
     out.push_str("               quand « Tick complet » et les étapes réseau approchent 100 % à eux tous.\n");
@@ -191,6 +284,40 @@ pub fn report(header: &[String]) -> Option<String> {
         out.push_str("(aucune mesure : laissez tourner le serveur quelques secondes après « timings on »)\n");
     }
     Some(out)
+}
+
+/// Explication en clair des à-coups, d'après la pause et les compteurs de la machine.
+fn verdict(pause_worst: f64, pause_slow: u64, usage: Option<&MachineUse>, mem: Option<(u64, u64, u64)>) -> String {
+    if pause_worst < 50.0 {
+        return "Diagnostic : la machine rend la main à temps ; les à-coups éventuels viennent des étapes ci-dessous.\n".into();
+    }
+    let mut why = Vec::new();
+    if let Some(u) = usage {
+        if u.steal >= 2.0 {
+            why.push(format!("l'hébergeur prend du processeur à la machine virtuelle ({:.1} % volé)", u.steal));
+        }
+        if u.iowait >= 5.0 {
+            why.push(format!("le disque est lent ou saturé ({:.1} % d'attente disque)", u.iowait));
+        }
+        if u.busy >= 85.0 {
+            why.push(format!("le processeur est plein ({:.0} %) : d'autres programmes tournent", u.busy));
+        }
+    }
+    if let Some((free, total, swap)) = mem {
+        if swap >= 64 || (total > 0 && free * 10 < total) {
+            why.push(format!("la mémoire manque ({} Mo libres, {} Mo en swap)", free, swap));
+        }
+    }
+    let mut out = format!(
+        "Diagnostic : une simple pause de 1 ms a duré jusqu'à {:.0} ms ({} fois plus de 50 ms). Ce n'est pas du travail de Basalt : le système ne lui rendait pas la main, et tout s'est figé en même temps (d'où les « pire » élevés sur des étapes sans rapport).\n",
+        pause_worst, pause_slow
+    );
+    if why.is_empty() {
+        out.push_str("  Cause probable : la machine elle-même (machine virtuelle mise en pause, mise en veille, gros programme lancé à côté). Regardez « top » (colonne st et wa) pendant un à-coup.\n");
+    } else {
+        out.push_str(&format!("  Cause probable : {}.\n", why.join(" ; ")));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -233,5 +360,20 @@ mod tests {
         assert!(snapshot().unwrap().2.iter().all(|l| l.name != "après extinction"), "les chiffres restent, sans nouvelle mesure");
         reset();
         assert!(snapshot().unwrap().2.is_empty());
+    }
+
+    #[test]
+    fn machine_counters_and_verdict() {
+        let stat = "cpu  100 0 50 800 20 0 0 30 0 0\ncpu0 1 2 3\n";
+        let own = "1234 (basalt (dev)) S 1 2 3 4 5 6 7 8 9 10 40 10 0 0";
+        let a = Machine::parse(stat, own).unwrap();
+        assert_eq!(a, Machine { total: 1000, idle: 800, iowait: 20, steal: 30, own: 50 });
+        let b = Machine { total: 2000, idle: 1500, iowait: 120, steal: 130, own: 150 };
+        let u = machine_use(a, b, 2).unwrap();
+        assert!((u.steal - 10.0).abs() < 1e-9 && (u.iowait - 10.0).abs() < 1e-9 && (u.busy - 10.0).abs() < 1e-9);
+        assert!((u.own_core - 20.0).abs() < 1e-9, "100 unités sur 500 par cœur");
+        assert!(verdict(3.0, 0, Some(&u), None).contains("rend la main à temps"));
+        let v = verdict(3762.0, 16, Some(&u), Some((100, 2000, 500)));
+        assert!(v.contains("3762") && v.contains("volé") && v.contains("disque") && v.contains("mémoire"), "{}", v);
     }
 }

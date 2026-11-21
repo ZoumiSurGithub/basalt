@@ -431,6 +431,9 @@ l'indique alors clairement au démarrage, et les pseudos ne sont plus vérifiés
 
 ## Installation
 
+**Guide pas à pas pour Windows et Linux, connexion et ouverture aux joueurs d'Internet :
+[docs/INSTALLER.md](docs/INSTALLER.md).** Résumé ci-dessous.
+
 ### Linux en une commande (depuis GitHub)
 
 Rien à compiler : la dernière version publiée est téléchargée dans le dossier courant.

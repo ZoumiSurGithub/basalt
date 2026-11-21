@@ -626,17 +626,20 @@ impl ChunkPool {
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).saturating_sub(1).clamp(1, 4);
         for i in 0..threads {
             let (inbox, outbox): (Arc<Mutex<Receiver<ChunkJob>>>, Sender<(SocketAddr, i64, u64, EncodedChunk)>) = (inbox.clone(), outbox.clone());
-            let _ = std::thread::Builder::new().name(format!("chunks-{}", i)).spawn(move || loop {
-                let job = match inbox.lock().unwrap_or_else(|e| e.into_inner()).recv() {
-                    Ok(j) => j,
-                    Err(_) => return,
-                };
-                let payload = job.view.chunk_payload(job.x, job.z);
-                let pk = build_chunk(job.exp, job.x, job.z, payload, job.features);
-                // Hors de la boucle du jeu : compression la plus forte (8 fois plus petit environ)
-                let packet = bedrock::encode_packet_with(bedrock::ID_LEVEL_CHUNK, &pk, job.compression, crate::utils::deflate::Level::Best);
-                if outbox.send((job.addr, job.owner, job.seq, EncodedChunk { x: job.x, z: job.z, version: job.version, packet })).is_err() {
-                    return;
+            let _ = std::thread::Builder::new().name(format!("chunks-{}", i)).spawn(move || {
+                crate::utils::lower_thread_priority();
+                loop {
+                    let job = match inbox.lock().unwrap_or_else(|e| e.into_inner()).recv() {
+                        Ok(j) => j,
+                        Err(_) => return,
+                    };
+                    let payload = job.view.chunk_payload(job.x, job.z);
+                    let pk = build_chunk(job.exp, job.x, job.z, payload, job.features);
+                    // Hors de la boucle du jeu : compression la plus forte (8 fois plus petit environ)
+                    let packet = bedrock::encode_packet_with(bedrock::ID_LEVEL_CHUNK, &pk, job.compression, crate::utils::deflate::Level::Best);
+                    if outbox.send((job.addr, job.owner, job.seq, EncodedChunk { x: job.x, z: job.z, version: job.version, packet })).is_err() {
+                        return;
+                    }
                 }
             });
         }
@@ -2251,6 +2254,7 @@ impl Server {
                 let (view, tx, busy) = (self.world.view(), self.locate_tx.clone(), self.locate_busy.clone());
                 let (x, z) = (here.0.floor() as i32, here.2.floor() as i32);
                 let spawned = std::thread::Builder::new().name("locate".into()).spawn(move || {
+                    crate::utils::lower_thread_priority();
                     let message = match (view.vanilla(), wanted) {
                         (Some(v), Wanted::Structure(t)) => match st::locate(v, t, x, z) {
                             Some((px, py, pz)) => {
@@ -2448,6 +2452,9 @@ impl Server {
                             "§a"
                         };
                         self.reply(sender, &format!("{}{:>5.1} %§f  {} §7({:.2} ms par tick, pire {:.1} ms)", color, line.share, line.name, per_tick, line.worst_ms));
+                    }
+                    if let Some(p) = top.2.iter().find(|l| l.name.starts_with("Pause de 1 ms")).filter(|l| l.worst_ms >= 50.0) {
+                        self.reply(sender, &format!("§cÀ-coups venant de la machine : une pause de 1 ms a duré jusqu'à {:.0} ms. Détails dans le rapport.", p.worst_ms));
                     }
                     self.reply(sender, &format!("§6Rapport complet : §f{}", path.display()));
                 }

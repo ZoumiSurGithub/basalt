@@ -122,16 +122,19 @@ impl Terrain {
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).saturating_sub(1).clamp(1, 4);
         for i in 0..threads {
             let (terrain, rx): (Arc<Terrain>, Arc<Mutex<Receiver<(i32, i32)>>>) = (terrain.clone(), rx.clone());
-            let _ = std::thread::Builder::new().name(format!("terrain-{}", i)).spawn(move || loop {
-                let key = match rx.lock().unwrap_or_else(|e| e.into_inner()).recv() {
-                    Ok(k) => k,
-                    Err(_) => return,
-                };
-                if !terrain.ready(key) {
-                    let column = Arc::new(terrain.generator.generate(key.0, key.1));
-                    terrain.insert(key, column);
+            let _ = std::thread::Builder::new().name(format!("terrain-{}", i)).spawn(move || {
+                crate::utils::lower_thread_priority();
+                loop {
+                    let key = match rx.lock().unwrap_or_else(|e| e.into_inner()).recv() {
+                        Ok(k) => k,
+                        Err(_) => return,
+                    };
+                    if !terrain.ready(key) {
+                        let column = Arc::new(terrain.generator.generate(key.0, key.1));
+                        terrain.insert(key, column);
+                    }
+                    terrain.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
                 }
-                terrain.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
             });
         }
         tx
