@@ -170,17 +170,18 @@ pub fn set_actor_data(id: i64, entries: &[(u32, Meta)]) -> Vec<u8> {
 }
 
 pub const ID_LEVEL_SOUND_EVENT: u32 = 123;
-/// Sons d'une créature (LevelSoundEvent)
-pub const SOUND_AMBIENT: u32 = 10;
-pub const SOUND_DEATH: u32 = 14;
-pub const SOUND_HURT: u32 = 17;
-pub const SOUND_EAT: u32 = 31;
+/// Sons d'une créature (LevelSoundEvent) : depuis la 1.26, le son est désigné par son nom
+pub const SOUND_AMBIENT: &str = "ambient";
+pub const SOUND_DEATH: &str = "death";
+pub const SOUND_HURT: &str = "hurt";
+pub const SOUND_EAT: &str = "eat";
 
 /// LevelSoundEvent : un son joué à une position, avec la créature qui l'émet (son cri).
-/// Disposition d'après la documentation du protocole (pas encore relevée).
-pub fn level_sound(sound: u32, pos: (f32, f32, f32), entity: &str, baby: bool, unique_id: i64) -> Vec<u8> {
+/// Disposition relevée auprès du serveur officiel 1.26.65 : nom du son, position, données
+/// en plus, entité, petit, volume relatif, identifiant unique, puis un octet nul.
+pub fn level_sound(sound: &str, pos: (f32, f32, f32), entity: &str, baby: bool, unique_id: i64) -> Vec<u8> {
     let mut w = W::default();
-    w.varu32(sound);
+    w.string(sound);
     w.f32(pos.0);
     w.f32(pos.1);
     w.f32(pos.2);
@@ -189,6 +190,7 @@ pub fn level_sound(sound: u32, pos: (f32, f32, f32), entity: &str, baby: bool, u
     w.bool(baby);
     w.bool(false); // volume relatif
     w.0.extend_from_slice(&unique_id.to_le_bytes());
+    w.u8(0);
     w.0
 }
 
@@ -240,6 +242,10 @@ mod tests {
         assert_eq!(&p[p.len() - 4..], &[0, 0, 0, 0], "quatre octets nuls à la fin");
         // 69 données d'entité, comme le paquet officiel
         assert_eq!(mob_metadata(0.9, 1.4, 0, 0, MOB_FLAGS).len(), 69);
+        // Son relevé auprès du serveur officiel (« disappeared » d'un joueur), à l'identique
+        let recorded = "0b64697361707065617265640000003fcdcc8f420000003f01106d696e6563726166743a706c61796572000001000000f0ffffff00";
+        let ours: String = level_sound("disappeared", (0.5, 71.9, 0.5), "minecraft:player", false, -68_719_476_735).iter().map(|b| format!("{:02x}", b)).collect();
+        assert_eq!(ours, recorded);
     }
 }
 

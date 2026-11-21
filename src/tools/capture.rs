@@ -22,7 +22,7 @@ use crate::json::base64_encode;
 pub const REMOVAL_FILE: &str = "player_list_remove";
 
 /// Paquets à conserver : (identifiant, nom du fichier).
-pub const WANTED: [(u32, &str); 14] = [
+pub const WANTED: [(u32, &str); 15] = [
     (11, "start_game"),
     // Apparition d'un autre joueur : relevée pour connaître son format (jamais renvoyée telle
     // quelle). Elle n'arrive que si un second joueur est présent : voir le « témoin ».
@@ -36,6 +36,8 @@ pub const WANTED: [(u32, &str); 14] = [
     // Créature (vache, commande summon pendant la capture) : relevée pour connaître son format
     // et ses données d'entité. Jamais renvoyée telle quelle.
     (13, "add_actor"),
+    // Son d'une créature (cri de la vache invoquée) : relevé pour connaître son format
+    (123, "level_sound_event"),
     // Téléportation du joueur (commande tp tapée dans la console du serveur officiel pendant
     // la capture) : relevée pour connaître le format du déplacement imposé par le serveur aux
     // jeux 1.26.60 et plus. Jamais renvoyée telle quelle.

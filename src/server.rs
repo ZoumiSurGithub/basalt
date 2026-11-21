@@ -5175,7 +5175,7 @@ impl Server {
                 } else if [bedrock::ID_ACTOR_EVENT, bedrock::ID_SET_ACTOR_MOTION, bedrock::ID_RESPAWN, bedrock::ID_DEATH_INFO, bedrock::ID_LEVEL_SOUND_EVENT].contains(&(packet as u32))
                     && self.refused_extras.insert(packet as u32)
                 {
-                    warn!("Le paquet {} (vie et mort) est refusé par le jeu : il n'est plus envoyé.", packet);
+                    warn!("Le paquet {} (vie, mort ou sons) est refusé par le jeu : il n'est plus envoyé.", packet);
                 }
                 if packet == 122 && self.cfg.debug && !self.experiment_locked {
                     self.experiment = 0;

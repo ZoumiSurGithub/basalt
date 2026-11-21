@@ -102,7 +102,7 @@ fn capture(args: &[String]) {
     info!("    tp @a 5 -59 5");
     info!("    summon cow 3 -59 3");
     info!("La deuxième fait tomber un objet au sol, la troisième téléporte le joueur de capture,");
-    info!("la quatrième fait apparaître une vache :");
+    info!("la quatrième fait apparaître une vache (restez près d'elle jusqu'à ce qu'elle meugle) :");
     info!("leurs formats seront relevés.");
     info!("==================================================================================");
     // Le serveur officiel refuse un second joueur qu'il prend pour le même que le premier

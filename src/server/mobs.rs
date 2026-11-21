@@ -393,7 +393,7 @@ impl Server {
     }
 
     /// Cri, bruit de coup, de mort ou de repas d'une créature.
-    fn mob_sound(&mut self, id: i64, sound: u32) {
+    fn mob_sound(&mut self, id: i64, sound: &str) {
         let Some(m) = self.mobs.get(&id) else { return };
         let (_, h) = m.size();
         let packet = bedrock::level_sound(sound, (m.pos.0, m.pos.1 + h * 0.8, m.pos.2), m.species.id(), m.baby(), id);
