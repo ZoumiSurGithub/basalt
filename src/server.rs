@@ -1795,6 +1795,7 @@ impl Server {
     /// jeu sont ignorés.
     fn set_blocks_from_plugin(&mut self, list: Vec<(i32, i32, i32, u32)>) {
         let mut outcome = Outcome::default();
+        let mut linked: Vec<(i32, i32, i32)> = Vec::new();
         let mut chunks: HashSet<(i32, i32)> = HashSet::new();
         for (x, y, z, state) in list {
             let known = self.data.as_ref().map(|d| d.block_name(state).is_some()).unwrap_or(false);
@@ -1802,6 +1803,9 @@ impl Server {
                 continue;
             }
             outcome.changed += 1;
+            if outcome.changed <= 4096 {
+                linked.push((x, y, z));
+            }
             chunks.insert((x >> 4, z >> 4));
             if outcome.blocks.len() <= 512 {
                 outcome.blocks.push(((x, y, z), state));
@@ -1815,6 +1819,9 @@ impl Server {
         }
         outcome.chunks = chunks.into_iter().collect();
         self.refresh_after_edit(&outcome);
+        for p in linked {
+            self.settle_links(p);
+        }
     }
 
     /// Après une édition de plugin : envoie les blocs changés, ou les chunks entiers s'ils
@@ -3623,6 +3630,7 @@ impl Server {
             self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block_layer(x, y, z, air, 1), None);
         }
         self.settle_stairs((x, y, z));
+        self.settle_links((x, y, z));
         // Une porte part en entier : l'autre moitié disparaît avec elle
         let other_half = self.data.as_ref().and_then(|d| {
             let p = match d.prop(old, "upper_block_bit")? {
@@ -4371,6 +4379,7 @@ impl Server {
             self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block_layer(x, y, z, water, 1), None);
         }
         self.settle_stairs((x, y, z));
+        self.settle_links((x, y, z));
         if let Some(upper) = upper {
             if self.world.set(x, y + 1, z, upper) {
                 self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y + 1, z, upper), None);
@@ -4420,6 +4429,25 @@ impl Server {
                 let (x, y, z) = (pos.0 + dx, pos.1, pos.2 + dz);
                 let at = |ax: i32, az: i32| placement::stair_of(d, self.world.get(x + ax, y, z + az)).map(|(f, top, _)| (f, top));
                 if let Some(new) = placement::settled_stair(d, self.world.get(x, y, z), &at) {
+                    changes.push(((x, y, z), new));
+                }
+            }
+        }
+        for (p, state) in changes {
+            self.change_block(p, state);
+        }
+    }
+
+    /// Barrières, murets, vitres et barreaux autour d'un bloc changé : chacun se relie (ou se
+    /// détache) de ses voisins. Le bloc lui-même, ses quatre voisins, et celui du dessous (un
+    /// muret devient haut ou garde son poteau selon ce qu'il porte).
+    fn settle_links(&mut self, pos: (i32, i32, i32)) {
+        let mut changes: Vec<((i32, i32, i32), u32)> = Vec::new();
+        if let Some(d) = &self.data {
+            for (dx, dy, dz) in [(0, 0, 0), (1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1), (0, -1, 0)] {
+                let (x, y, z) = (pos.0 + dx, pos.1 + dy, pos.2 + dz);
+                let at = |ax: i32, ay: i32, az: i32| self.world.get(x + ax, y + ay, z + az);
+                if let Some(new) = placement::linked_state(d, self.world.get(x, y, z), &at) {
                     changes.push(((x, y, z), new));
                 }
             }

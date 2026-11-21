@@ -361,3 +361,146 @@ pub fn double_slab_of(data: &GameData, slab: u32) -> Option<u32> {
     };
     data.default_state(&double)
 }
+
+// --- Barrières, murets, vitres et barreaux : liaisons avec les voisins ------------------
+
+/// Sorte de bloc qui se relie à ses voisins.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Link {
+    /// Barrière ; `true` pour celle en briques du Nether (qui ne se lie qu'aux siennes)
+    Fence(bool),
+    Wall,
+    /// Vitre ou barreaux de fer
+    Pane,
+}
+
+/// Le bloc se relie-t-il à ses voisins, et comment ?
+pub fn link_of(data: &GameData, state: u32) -> Option<Link> {
+    let name = data.block_name(state)?;
+    if data.prop(state, "wall_post_bit").is_some() {
+        return Some(Link::Wall);
+    }
+    data.prop(state, "minecraft:connection_east")?;
+    Some(if name.contains("fence") { Link::Fence(name.contains("nether_brick")) } else { Link::Pane })
+}
+
+/// Bloc plein, contre lequel une barrière ou un muret s'appuie. Les blocs qui ne remplissent
+/// pas leur case (escaliers, dalles, portes, plantes, torches…) n'en sont pas.
+pub fn is_full_block(data: &GameData, state: u32) -> bool {
+    let name = match data.block_name(state) {
+        Some(n) => n.trim_start_matches("minecraft:"),
+        None => return false,
+    };
+    if name.contains("air") || name.contains("water") || name.contains("lava") {
+        return false;
+    }
+    const PARTIAL: &[&str] = &[
+        "stairs", "slab", "fence", "wall", "pane", "bars", "door", "sign", "torch", "lantern", "carpet", "button", "lever", "plate", "rail", "bed",
+        "chest", "banner", "pot", "head", "skull", "candle", "cake", "ladder", "vine", "chain", "anvil", "cauldron", "hopper", "brewing", "enchanting",
+        "lectern", "grindstone", "bell", "campfire", "scaffolding", "snow_layer", "leaves", "cactus", "web", "sapling", "coral", "kelp", "seagrass",
+        "pickle", "cluster", "bud", "dripstone", "azalea", "mushroom", "flower", "grass", "fern", "bush", "petals", "litter", "lily", "roots",
+        "sprouts", "wart", "crop", "stem", "poppy", "dandelion", "allium", "bluet", "tulip", "daisy", "cornflower", "rose", "torchflower",
+        "pitcher", "peony", "lilac", "sunflower", "eyeblossom", "deadbush", "hanging", "spore", "frogspawn", "tripwire", "redstone_wire",
+        "repeater", "comparator", "daylight", "flower_pot", "end_portal", "nether_portal", "portal", "string",
+    ];
+    if PARTIAL.iter().any(|p| name.contains(p)) {
+        return name.ends_with("mushroom_block") || name == "mushroom_stem" || name == "grass_block";
+    }
+    !matches!(name, "wheat" | "carrots" | "potatoes" | "beetroot" | "sugar_cane" | "farmland" | "grass_path" | "end_rod" | "chorus_plant" | "chorus_flower" | "conduit" | "beacon")
+}
+
+/// L'état d'un bloc qui se relie, d'après ses voisins. `at(dx, dy, dz)` donne l'état d'un
+/// voisin. None si le bloc ne se relie pas ou que son état ne change pas.
+pub fn linked_state(data: &GameData, state: u32, at: &dyn Fn(i32, i32, i32) -> u32) -> Option<u32> {
+    let link = link_of(data, state)?;
+    let gate = |s: u32| data.block_name(s).map(|n| n.contains("fence_gate")).unwrap_or(false);
+    let joins = |s: u32| -> bool {
+        let other = link_of(data, s);
+        match link {
+            Link::Fence(nether) => other == Some(Link::Fence(nether)) || gate(s) || is_full_block(data, s),
+            Link::Wall | Link::Pane => matches!(other, Some(Link::Wall) | Some(Link::Pane)) || gate(s) || is_full_block(data, s),
+        }
+    };
+    // Est, nord, sud, ouest
+    let sides = [("east", (1, 0)), ("north", (0, -1)), ("south", (0, 1)), ("west", (-1, 0))];
+    let linked: Vec<bool> = sides.iter().map(|(_, (dx, dz))| joins(at(*dx, 0, *dz))).collect();
+    let new = match link {
+        Link::Fence(_) | Link::Pane => {
+            let changes: Vec<(String, Prop)> = sides.iter().zip(&linked).map(|((side, _), on)| (format!("minecraft:connection_{}", side), Prop::Int(*on as i32))).collect();
+            let refs: Vec<(&str, Prop)> = changes.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+            data.with_props(state, &refs)?
+        }
+        Link::Wall => {
+            let above = at(0, 1, 0);
+            let covered = is_full_block(data, above);
+            let height = if covered { "tall" } else { "short" };
+            // Poteau, sauf pour un muret droit (deux côtés opposés seulement) dégagé au-dessus
+            let straight = (linked[0] && linked[3] && !linked[1] && !linked[2]) || (linked[1] && linked[2] && !linked[0] && !linked[3]);
+            let above_wall = link_of(data, above) == Some(Link::Wall);
+            let post = !straight || above_wall;
+            let mut changes: Vec<(String, Prop)> =
+                sides.iter().zip(&linked).map(|((side, _), on)| (format!("wall_connection_type_{}", side), Prop::Str(if *on { height } else { "none" }.to_string()))).collect();
+            changes.push(("wall_post_bit".to_string(), Prop::Int(post as i32)));
+            let refs: Vec<(&str, Prop)> = changes.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+            data.with_props(state, &refs)?
+        }
+    };
+    (new != state).then_some(new)
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+
+    fn data() -> Option<GameData> {
+        GameData::load(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data")).ok()
+    }
+
+    /// Petit monde : des blocs posés par position, de l'air ailleurs.
+    fn around<'a>(d: &'a GameData, blocks: &'a [((i32, i32, i32), &'a str)]) -> impl Fn((i32, i32, i32)) -> u32 + 'a {
+        let air = d.default_state("minecraft:air").unwrap();
+        move |p| blocks.iter().find(|(q, _)| *q == p).map(|(_, n)| d.state_from_spec(&format!("minecraft:{}", n)).unwrap()).unwrap_or(air)
+    }
+
+    fn settled(d: &GameData, blocks: &[((i32, i32, i32), &str)], at: (i32, i32, i32)) -> Vec<(String, String)> {
+        let get = around(d, blocks);
+        let here = get(at);
+        let state = linked_state(d, here, &|dx, dy, dz| get((at.0 + dx, at.1 + dy, at.2 + dz))).unwrap_or(here);
+        let mut keys = d.prop_keys(state);
+        keys.sort();
+        keys.into_iter().map(|k| {
+            let v = match d.prop(state, &k) {
+                Some(Prop::Int(i)) => i.to_string(),
+                Some(Prop::Str(s)) => s,
+                None => String::new(),
+            };
+            (k.trim_start_matches("minecraft:").to_string(), v)
+        }).collect()
+    }
+
+    fn has(props: &[(String, String)], key: &str, value: &str) -> bool {
+        props.iter().any(|(k, v)| k == key && v == value)
+    }
+
+    #[test]
+    fn fences_walls_and_panes_link_to_their_neighbours() {
+        let Some(d) = data() else { return };
+        // Barrière entre une barrière (est) et un bloc de pierre (nord) ; rien au sud ni à l'ouest
+        let p = settled(&d, &[((0, 0, 0), "oak_fence"), ((1, 0, 0), "spruce_fence"), ((0, 0, -1), "stone"), ((-1, 0, 0), "nether_brick_fence")], (0, 0, 0));
+        assert!(has(&p, "connection_east", "1") && has(&p, "connection_north", "1"), "{:?}", p);
+        assert!(has(&p, "connection_south", "0") && has(&p, "connection_west", "0"), "la barrière du Nether ne se lie pas au bois : {:?}", p);
+        // Muret droit : pas de poteau ; avec un bloc posé dessus : côtés hauts
+        let walls = [((0, 0, 0), "cobblestone_wall"), ((1, 0, 0), "cobblestone_wall"), ((-1, 0, 0), "stone")];
+        let p = settled(&d, &walls, (0, 0, 0));
+        assert!(has(&p, "wall_connection_type_east", "short") && has(&p, "wall_connection_type_west", "short") && has(&p, "wall_post_bit", "0"), "{:?}", p);
+        let covered = [((0, 0, 0), "cobblestone_wall"), ((1, 0, 0), "cobblestone_wall"), ((0, 1, 0), "stone")];
+        let p = settled(&d, &covered, (0, 0, 0));
+        assert!(has(&p, "wall_connection_type_east", "tall") && has(&p, "wall_post_bit", "1"), "{:?}", p);
+        // Muret en coin : poteau
+        let corner = [((0, 0, 0), "cobblestone_wall"), ((1, 0, 0), "cobblestone_wall"), ((0, 0, 1), "cobblestone_wall")];
+        assert!(has(&settled(&d, &corner, (0, 0, 0)), "wall_post_bit", "1"));
+        // Vitre contre une vitre et contre un muret ; pas contre une barrière ni une fleur
+        let p = settled(&d, &[((0, 0, 0), "glass_pane"), ((0, 0, 1), "glass_pane"), ((0, 0, -1), "cobblestone_wall"), ((1, 0, 0), "oak_fence"), ((-1, 0, 0), "poppy")], (0, 0, 0));
+        assert!(has(&p, "connection_south", "1") && has(&p, "connection_north", "1") && has(&p, "connection_east", "0") && has(&p, "connection_west", "0"), "{:?}", p);
+    }
+}
