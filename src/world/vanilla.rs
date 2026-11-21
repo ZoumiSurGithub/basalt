@@ -2232,7 +2232,11 @@ mod pictures {
     #[ignore]
     fn vanilla_speed() {
         let v = Vanilla::new(5);
-        let p = Palette::new(&|_| None);
+        let data = crate::data::GameData::load(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data")).unwrap();
+        let mut p = Palette::new(&|n| data.state_from_spec(n));
+        if let Ok(t) = crate::world::templates::Templates::load(std::path::Path::new("/tmp/vs/structures"), &|n| data.state_from_spec(n)) {
+            p = p.with_templates(Some(std::sync::Arc::new(t)));
+        }
         let start = std::time::Instant::now();
         for cx in 0..10 {
             for cz in 0..10 {

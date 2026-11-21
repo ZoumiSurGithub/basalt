@@ -11,7 +11,11 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Corrigé
 
-- Un animal frappé ne fait plus deux bruits différents à la fois.
+- À-coups du serveur : un animal au bord d'une zone pas encore générée faisait générer
+  le terrain dans la boucle du jeu (jusqu'à plusieurs dixièmes de seconde avec une
+  grande structure) ; les plans de structures récents ne sont plus tous oubliés d'un
+  coup ; l'arrivée dans une région neuve installe les animaux peu à peu.
+- Les animaux ne font plus leurs cris et leurs bruits en double : le jeu les joue déjà lui-même.
 
 ## [0.0.1] — 2026-11-21
 

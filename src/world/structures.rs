@@ -128,13 +128,17 @@ const GRID: [(Kind, i32, i32, u64, i32); 12] = [
 /// Plans déjà calculés (y compris « rien ici »), partagés par les fils de génération.
 #[derive(Default)]
 pub struct PlanCache {
-    plans: Mutex<HashMap<(Kind, i32, i32), Arc<Plan>>>,
+    /// Deux générations : les plans récents, et ceux d'avant le dernier tri. Un plan
+    /// demandé de nouveau repasse dans les récents ; les autres sont oubliés au tri suivant.
+    /// (Auparavant tout était vidé d'un coup : les grandes structures proches, comme une
+    /// cité antique, étaient alors recalculées en boucle.)
+    plans: Mutex<(HashMap<(Kind, i32, i32), Arc<Plan>>, HashMap<(Kind, i32, i32), Arc<Plan>>)>,
     /// Vrai dès qu'un chunk a été généré avec les plans officiels (sans eux, les épaves,
     /// ruines océaniques, igloos et portails en ruine n'existent pas : `/locate` le sait)
     official: std::sync::atomic::AtomicBool,
 }
 
-const CACHE_PLANS: usize = 512;
+const CACHE_PLANS: usize = 2048;
 
 /// Chunk de départ d'une structure dans une case de la grille (`spacing` chunks de côté,
 /// au moins `separation` chunks entre deux structures).
@@ -175,16 +179,24 @@ pub fn near(v: &Vanilla, p: &Palette, cache: &PlanCache, cx: i32, cz: i32) -> Ve
     }
     let mut out = Vec::new();
     for key in starts {
-        let known = cache.plans.lock().ok().and_then(|m| m.get(&key).cloned());
+        let known = cache.plans.lock().ok().and_then(|mut m| {
+            if let Some(p) = m.0.get(&key) {
+                return Some(p.clone());
+            }
+            let p = m.1.remove(&key)?;
+            m.0.insert(key, p.clone());
+            Some(p)
+        });
         let plan = match known {
             Some(plan) => plan,
             None => {
                 let plan = Arc::new(build(v, p, key));
                 if let Ok(mut m) = cache.plans.lock() {
-                    if m.len() >= CACHE_PLANS {
-                        m.clear();
+                    if m.0.len() >= CACHE_PLANS {
+                        let recent = std::mem::take(&mut m.0);
+                        m.1 = recent;
                     }
-                    m.insert(key, plan.clone());
+                    m.0.insert(key, plan.clone());
                 }
                 plan
             }

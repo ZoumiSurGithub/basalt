@@ -5,7 +5,7 @@
 //! sont enregistrés avec le monde (`mobs.json`) et ne vivent (se déplacent) que près des
 //! joueurs. Ils se promènent, sautent les marches, évitent les chutes, nagent, suivent le
 //! joueur qui tient leur nourriture, fuient quand on les frappe, meurent et laissent leur
-//! butin. Nourris, deux adultes font un petit, qui grandit en vingt minutes. Les moutons se
+//! butin (le jeu joue lui-même leurs cris et leurs bruits). Nourris, deux adultes font un petit, qui grandit en vingt minutes. Les moutons se
 //! tondent et refont leur laine en broutant, les vaches se traient, les poules pondent.
 
 use super::*;
@@ -174,6 +174,9 @@ impl Server {
             return;
         }
         let players: Vec<(f32, f32, f32)> = self.clients.values().filter(|c| c.joined && c.stage == Stage::InGame).map(|c| (c.pos.0, c.pos.1 - EYE, c.pos.2)).collect();
+        // Quelques chunks par passage au plus : un joueur qui arrive dans une région neuve (ou
+        // qui se connecte) ne provoque pas d'à-coup
+        let mut budget = 12;
         for p in players {
             let (pcx, pcz) = ((p.0.floor() as i32) >> 4, (p.2.floor() as i32) >> 4);
             for cx in pcx - POPULATE_RADIUS..=pcx + POPULATE_RADIUS {
@@ -181,10 +184,14 @@ impl Server {
                     if self.populated.contains(&(cx, cz)) || !self.world.is_ready(cx, cz) {
                         continue;
                     }
+                    if budget == 0 {
+                        return;
+                    }
+                    budget -= 1;
                     self.populated.insert((cx, cz));
                     self.mobs_dirty = true;
                     if self.mobs.len() < MAX_MOBS && self.mob_rng.below(10) == 0 {
-                        self.spawn_herd(cx, cz);
+                        self.spawn_herd(cx, cz, p.1 as i32);
                     }
                 }
             }
@@ -192,7 +199,7 @@ impl Server {
     }
 
     /// Un troupeau dans ce chunk, de l'espèce qui convient au biome.
-    fn spawn_herd(&mut self, cx: i32, cz: i32) {
+    fn spawn_herd(&mut self, cx: i32, cz: i32, near_y: i32) {
         let (x, z) = (cx * 16 + self.mob_rng.below(16) as i32, cz * 16 + self.mob_rng.below(16) as i32);
         let biome = self.world.generator().vanilla().map(|v| v.surface_biome_at(x, z));
         let species = match biome {
@@ -231,8 +238,8 @@ impl Server {
         for _ in 0..count {
             let (dx, dz) = (self.mob_rng.below(5) as i32 - 2, self.mob_rng.below(5) as i32 - 2);
             let (bx, bz) = (x + dx, z + dz);
-            let Some(y) = self.surface_y(bx, bz) else { continue };
-            let below = self.world.get(bx, y - 1, bz);
+            let Some(y) = self.surface_y(bx, bz, near_y) else { continue };
+            let below = self.mob_get(bx, y - 1, bz);
             let ok = below == grass || (species == Species::Rabbit && (below == sand || below == snow));
             if ok {
                 let id = self.add_mob(species, (bx as f32 + 0.5, y as f32, bz as f32 + 0.5));
@@ -243,18 +250,20 @@ impl Server {
         }
     }
 
-    /// Hauteur où se tenir au sommet de cette colonne (deux blocs libres sur un sol solide).
-    fn surface_y(&self, x: i32, z: i32) -> Option<i32> {
+    /// Hauteur où se tenir au sommet de cette colonne (deux blocs libres sur un sol solide),
+    /// cherchée dans les 64 blocs autour de `near` (la hauteur du joueur).
+    fn surface_y(&self, x: i32, z: i32, near: i32) -> Option<i32> {
         let water = self.world.generator().blocks.water;
-        let mut y = crate::world::MAX_Y - 2;
-        while y > crate::world::MIN_Y + 1 {
+        let mut y = (near + 64).min(crate::world::MAX_Y - 2);
+        let bottom = (near - 64).max(crate::world::MIN_Y + 1);
+        while y > bottom {
             if !self.mob_free(x, y - 1, z) {
-                if self.world.get(x, y - 1, z) == water || !self.mob_free(x, y, z) || !self.mob_free(x, y + 1, z) {
+                if self.mob_get(x, y - 1, z) == water || !self.mob_free(x, y, z) || !self.mob_free(x, y + 1, z) {
                     return None;
                 }
                 return Some(y);
             }
-            if self.world.get(x, y - 1, z) == water {
+            if self.mob_get(x, y - 1, z) == water {
                 return None; // eau en surface
             }
             y -= 1;
@@ -262,14 +271,25 @@ impl Server {
         None
     }
 
+    /// Bloc à une position, sans jamais faire générer de terrain dans le tick : un chunk pas
+    /// encore prêt compte comme un mur de pierre (la génération d'un chunk, surtout s'il
+    /// contient une grande structure, prend jusqu'à plusieurs dixièmes de seconde).
+    fn mob_get(&self, x: i32, y: i32, z: i32) -> u32 {
+        if self.world.is_ready(x >> 4, z >> 4) {
+            self.world.get(x, y, z)
+        } else {
+            self.world.generator().blocks.stone
+        }
+    }
+
     /// Un bloc que l'on traverse (air, herbe haute, fleur, eau…).
     fn mob_free(&self, x: i32, y: i32, z: i32) -> bool {
-        let s = self.world.get(x, y, z);
+        let s = self.mob_get(x, y, z);
         s == self.world.generator().blocks.water || self.npc_passable(s)
     }
 
     fn mob_water(&self, x: f32, y: f32, z: f32) -> bool {
-        self.world.get(x.floor() as i32, y.floor() as i32, z.floor() as i32) == self.world.generator().blocks.water
+        self.mob_get(x.floor() as i32, y.floor() as i32, z.floor() as i32) == self.world.generator().blocks.water
     }
 
     /// Ajoute une créature adulte.
@@ -392,14 +412,6 @@ impl Server {
         }
     }
 
-    /// Cri, bruit de coup, de mort ou de repas d'une créature.
-    fn mob_sound(&mut self, id: i64, sound: &str) {
-        let Some(m) = self.mobs.get(&id) else { return };
-        let (_, h) = m.size();
-        let packet = bedrock::level_sound(sound, (m.pos.0, m.pos.1 + h * 0.8, m.pos.2), m.species.id(), m.baby(), id);
-        self.send_to_viewers(id, bedrock::ID_LEVEL_SOUND_EVENT, &packet);
-    }
-
     /// Un tick de vie des créatures proches des joueurs : promenade, nourriture, amours,
     /// fuite, gravité, collisions.
     pub(super) fn move_mobs(&mut self) {
@@ -430,6 +442,8 @@ impl Server {
             }
             let (cx, cz) = ((m.pos.0.floor() as i32) >> 4, (m.pos.2.floor() as i32) >> 4);
             if !self.world.is_ready(cx, cz) {
+                // Demandé aux fils de génération ; l'animal attend qu'il soit prêt
+                self.world.prepare(cx, cz);
                 continue;
             }
             let had_love = m.love > 0;
@@ -444,7 +458,7 @@ impl Server {
                 self.send_to_viewers(m.id, bedrock::ID_MOVE_ACTOR_ABSOLUTE, &packet);
                 self.mobs_dirty = true;
             }
-            let (love, species) = (m.love, m.species);
+            let love = m.love;
             self.mobs.insert(id, m);
             if grew {
                 self.mob_changed(id);
@@ -454,10 +468,6 @@ impl Server {
             }
             if had_love && love == 0 {
                 self.mob_changed(id); // l'envie passe
-            }
-            // Cris de temps en temps
-            if self.mob_rng.below(if species == Species::Rabbit { 1200 } else { 400 }) == 0 {
-                self.mob_sound(id, bedrock::SOUND_AMBIENT);
             }
             self.mob_habits(id);
         }
@@ -498,8 +508,8 @@ impl Server {
                 let (x, y, z) = (m.pos.0.floor() as i32, m.pos.1.floor() as i32, m.pos.2.floor() as i32);
                 let g = &self.world.generator().blocks;
                 let (short_grass, air, grass, dirt) = (g.short_grass, g.air, g.grass, g.dirt);
-                let feet = self.world.get(x, y, z);
-                let below = self.world.get(x, y - 1, z);
+                let feet = self.mob_get(x, y, z);
+                let below = self.mob_get(x, y - 1, z);
                 let eaten = if feet == short_grass {
                     self.world.set(x, y, z, air);
                     self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, air), None);
@@ -760,11 +770,10 @@ impl Server {
         self.mobs_dirty = true;
         self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_HURT, 0));
         if dead {
-            self.mob_sound(id, bedrock::SOUND_DEATH);
             self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_DEATH, 0));
             self.mob_loot(id);
         }
-        // Pas de son « hurt » envoyé : le jeu le joue déjà de lui-même à l'événement du coup
+        // Aucun son envoyé : le jeu joue lui-même les cris, les bruits de coup et de mort
         true
     }
 
@@ -830,15 +839,12 @@ impl Server {
                 used = true;
             }
         }
-        if used {
-            self.mob_sound(id, bedrock::SOUND_EAT);
-            if !creative {
-                if let Some(c) = self.clients.get_mut(addr) {
-                    c.inv.consume_held();
-                }
-                self.send_inventory(addr);
-                self.show_held(addr);
+        if used && !creative {
+            if let Some(c) = self.clients.get_mut(addr) {
+                c.inv.consume_held();
             }
+            self.send_inventory(addr);
+            self.show_held(addr);
         }
         if changed {
             self.mob_changed(id);
