@@ -149,6 +149,49 @@ pub fn mob_metadata(width: f32, height: f32, variant: i32, color: u8, flags: i64
     list
 }
 
+/// Indicateurs (numéros du jeu) : bébé, amoureux, tondu.
+pub const FLAG_BABY: i64 = 1 << 11;
+pub const FLAG_IN_LOVE: i64 = 1 << 7;
+pub const FLAG_SHEARED: i64 = 1 << 31;
+
+/// Événements d'entité propres aux animaux (ActorEvent)
+pub const EVENT_EAT_GRASS: u8 = 10;
+pub const EVENT_LOVE_PARTICLES: u8 = 21;
+
+/// SetActorData : données d'entité changées (bébé devenu adulte, mouton tondu…).
+pub fn set_actor_data(id: i64, entries: &[(u32, Meta)]) -> Vec<u8> {
+    let mut w = W::default();
+    w.varu64(id as u64);
+    write_metadata(&mut w, entries);
+    w.varu32(0); // propriétés entières
+    w.varu32(0); // propriétés décimales
+    w.varu64(0); // tick
+    w.0
+}
+
+pub const ID_LEVEL_SOUND_EVENT: u32 = 123;
+/// Sons d'une créature (LevelSoundEvent)
+pub const SOUND_AMBIENT: u32 = 10;
+pub const SOUND_DEATH: u32 = 14;
+pub const SOUND_HURT: u32 = 17;
+pub const SOUND_EAT: u32 = 31;
+
+/// LevelSoundEvent : un son joué à une position, avec la créature qui l'émet (son cri).
+/// Disposition d'après la documentation du protocole (pas encore relevée).
+pub fn level_sound(sound: u32, pos: (f32, f32, f32), entity: &str, baby: bool, unique_id: i64) -> Vec<u8> {
+    let mut w = W::default();
+    w.varu32(sound);
+    w.f32(pos.0);
+    w.f32(pos.1);
+    w.f32(pos.2);
+    w.vari32(-1); // données en plus : aucune
+    w.string(entity);
+    w.bool(baby);
+    w.bool(false); // volume relatif
+    w.0.extend_from_slice(&unique_id.to_le_bytes());
+    w.0
+}
+
 /// AddActor : une créature apparaît chez le joueur.
 #[allow(clippy::too_many_arguments)]
 pub fn add_actor(id: i64, kind: &str, pos: (f32, f32, f32), motion: (f32, f32, f32), yaw: f32, health: f32, metadata: &[(u32, Meta)]) -> Vec<u8> {

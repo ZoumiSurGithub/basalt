@@ -393,6 +393,10 @@ pub struct Server {
     mob_rng: crate::world::generator::Rng,
     /// Le jeu a refusé l'apparition d'une créature : plus d'animaux
     mobs_refused: bool,
+    /// Chunks déjà peuplés d'animaux (une fois par chunk, à la première visite)
+    populated: HashSet<(i32, i32)>,
+    /// Animaux changés depuis le dernier enregistrement
+    mobs_dirty: bool,
     /// Objets posés au sol
     ground: HashMap<i64, GroundItem>,
     /// Noms des blocs, partagés avec les plugins
@@ -696,6 +700,8 @@ impl Server {
             mobs: HashMap::new(),
             mob_rng: mobs::mob_rng(),
             mobs_refused: false,
+            populated: HashSet::new(),
+            mobs_dirty: false,
             ground: HashMap::new(),
             plugin_blocks: None,
             drops_refused: false,
@@ -5166,7 +5172,7 @@ impl Server {
                         c.items_seen.clear();
                     }
                     warn!("Les objets au sol sont refusés par le jeu : le butin ira de nouveau directement dans l'inventaire.");
-                } else if [bedrock::ID_ACTOR_EVENT, bedrock::ID_SET_ACTOR_MOTION, bedrock::ID_RESPAWN, bedrock::ID_DEATH_INFO].contains(&(packet as u32))
+                } else if [bedrock::ID_ACTOR_EVENT, bedrock::ID_SET_ACTOR_MOTION, bedrock::ID_RESPAWN, bedrock::ID_DEATH_INFO, bedrock::ID_LEVEL_SOUND_EVENT].contains(&(packet as u32))
                     && self.refused_extras.insert(packet as u32)
                 {
                     warn!("Le paquet {} (vie et mort) est refusé par le jeu : il n'est plus envoyé.", packet);
@@ -5520,6 +5526,9 @@ impl Server {
                     if let Some((target, action)) = bedrock::read_attack(&body) {
                         if bedrock::is_attack(action) {
                             self.on_attack(&addr, target);
+                        } else if action == 0 {
+                            // Clic droit sur une entité : nourrir, tondre, traire un animal
+                            self.interact_mob(&addr, target as i64);
                         }
                     }
                 }
@@ -6418,6 +6427,19 @@ impl Server {
                 }
             });
         }
+        // Animaux (réécrits quand ils ont changé)
+        if self.mobs_dirty {
+            self.mobs_dirty = false;
+            let text = self.mobs_json();
+            let path = dir.join("mobs.json");
+            crate::background::DISK.run(move || {
+                let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
+                let tmp = path.with_extension("json.tmp");
+                if let Err(e) = std::fs::write(&tmp, text.as_bytes()).and_then(|_| std::fs::rename(&tmp, &path)) {
+                    warn!("Animaux non enregistrés : {}", e);
+                }
+            });
+        }
         if let (true, Some(d)) = (self.world.tiles.dirty, &self.data) {
             let ctx = ItemCatalog { data: d, next: &mut self.tile_net_id };
             let doc = self.world.tiles.snapshot(&ctx);
@@ -6476,6 +6498,7 @@ impl Server {
             }
         }
         self.load_ground_items();
+        self.load_mobs();
         self.self_test();
         self.start_signaling();
         let mut events = Vec::new();
@@ -6566,8 +6589,8 @@ impl Server {
                 }
                 {
                     let _t = timings::scope("Tick — animaux");
-                    if self.tick % 40 == 7 {
-                        self.spawn_mobs();
+                    if self.tick % 20 == 7 {
+                        self.populate_chunks();
                     }
                     if !self.mobs.is_empty() {
                         self.move_mobs();

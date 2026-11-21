@@ -26,6 +26,7 @@ jeu (Bedrock 1.26.63 à 1.26.66 sous Windows, deux comptes Xbox en même temps).
 | Objets au sol | lâcher (inventaire, Q, Ctrl+Q), physique, fusion des tas, ramassage, disparition au bout de 5 minutes |
 | Commandes | chat et commandes en jeu, `/tp` et téléportation par les plugins |
 | Anti-triche | contrôle des déplacements (le tricheur est replacé), fabrication vérifiée, inventaire tenu par le serveur |
+| Animaux | vaches, cochons, moutons (toutes couleurs), poules : apparition en troupeaux sur l'herbe, promenade, sauts, nage, fuite et recul sous les coups, mort et butin |
 | Plugins Lua | événements à la PocketMine, commandes, accès au monde, EasyEdit fourni (entièrement en plugin) |
 
 **Écrit et testé automatiquement, pas encore essayé avec le vrai jeu :**
@@ -35,20 +36,21 @@ jeu (Bedrock 1.26.63 à 1.26.66 sous Windows, deux comptes Xbox en même temps).
   le butin de leurs coffres (voir « Le monde » ci-dessous) ;
 - `/locate structure` et `/locate biome` ;
 - générateurs de terrain écrits en Lua par les plugins (`level-type=plugin:<nom>`) ;
+- **animaux, suite** : installés à la découverte des terres (un chunk sur dix environ,
+  selon le biome, comme à la génération dans le jeu) et enregistrés avec le monde
+  (`mobs.json`) ; lapins (déserts, neige, taïgas, forêts fleuries, pelage selon le biome) ;
+  ils suivent le joueur qui tient leur nourriture ; nourris, deux adultes font un petit
+  qui grandit en 20 minutes (plus vite si on le nourrit) ; moutons tondus aux cisailles,
+  qui refont leur laine en broutant l'herbe ; vaches traites au seau ; poules qui pondent ;
+  cris, bruits de coups et de mort. `spawn-animals=false` pour s'en passer ;
 - personnages non joueurs (PNJ) créés par les plugins, qui marchent seuls (`server.spawnNpc`) ;
-- **animaux** (vaches, cochons, moutons de toutes les couleurs, poules) : ils apparaissent
-  par petits troupeaux sur l'herbe autour des joueurs, se promènent, sautent les marches,
-  évitent les chutes, nagent, fuient quand on les frappe, reculent sous les coups, meurent
-  et laissent leur butin (viande, cuir, laine de leur couleur, plumes). Ils ne sont pas
-  enregistrés : loin de tous les joueurs (128 blocs), ils disparaissent. `spawn-animals=false`
-  pour s'en passer ;
 - connexion par RakNet (jeux plus anciens que 1.26.60), avec son chiffrement (ECDH + AES-256) ;
 - installation et mise à jour sous Windows par les scripts fournis ;
 - montée en charge (voir plus bas).
 
 **Pas encore fait :** chargement de vrais mondes Minecraft (format LevelDB),
 mondes multiples (Nether, End), blocs soumis à la gravité (sable, gravier), redstone,
-monstres, villageois, élevage (nourrir, reproduire, tondre, traire), faim qui baisse et expérience gagnée, cycle jour/nuit animé, météo.
+monstres, villageois, chevaux, loups et autres animaux, faim qui baisse et expérience gagnée, cycle jour/nuit animé, météo.
 
 **Réglages de secours.** Si un joueur est replacé à tort, ou se déconnecte quand un autre
 joueur apparaît, `movement-check=false` et `show-players=false` désactivent ces fonctions
@@ -643,7 +645,7 @@ Tests : `cargo test`
 
 ## Suite proposée
 
-1. **Le jeu** : monstres (apparition la nuit, poursuite, attaque), villageois, élevage,
+1. **Le jeu** : monstres (apparition la nuit, poursuite, attaque), villageois, autres animaux,
    faim qui baisse, expérience, temps de minage selon l'outil, jour et nuit, météo.
 2. **Le monde** : Nether et End, gravité du sable et du gravier, redstone (le piège du
    temple de la jungle en a besoin), monuments océaniques, chargement des mondes Minecraft (format LevelDB).

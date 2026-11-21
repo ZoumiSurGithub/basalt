@@ -2015,6 +2015,22 @@ fn animals_appear_and_wander() {
     }
     assert!(animal.is_some(), "un animal doit apparaître");
     assert!(moved, "les animaux se déplacent");
+    // Enregistrés avec le monde à l'arrêt du serveur, puis rechargés
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = handle.join();
+    let saved = std::fs::read_to_string(dir.join("world").join("mobs.json")).expect("mobs.json enregistré");
+    assert!(saved.contains("minecraft:") && saved.contains("\"chunks\""), "{}", &saved[..saved.len().min(200)]);
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut alex = Client::join(addr, "Alex");
+    let started = std::time::Instant::now();
+    let mut again = false;
+    while !again && started.elapsed() < Duration::from_secs(20) {
+        if let Some((id, _)) = alex.poll_game(Duration::from_millis(500)) {
+            again = id == 13;
+        }
+    }
+    assert!(again, "les animaux enregistrés reviennent");
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = handle.join();
 }
