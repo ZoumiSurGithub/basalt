@@ -196,7 +196,7 @@ pub fn level_sound(sound: &str, pos: (f32, f32, f32), entity: &str, baby: bool, 
 
 /// AddActor : une créature apparaît chez le joueur.
 #[allow(clippy::too_many_arguments)]
-pub fn add_actor(id: i64, kind: &str, pos: (f32, f32, f32), motion: (f32, f32, f32), yaw: f32, health: f32, metadata: &[(u32, Meta)]) -> Vec<u8> {
+pub fn add_actor(id: i64, kind: &str, pos: (f32, f32, f32), motion: (f32, f32, f32), yaw: f32, health: (f32, f32), metadata: &[(u32, Meta)]) -> Vec<u8> {
     let mut w = W::default();
     w.vari64(id); // identifiant unique
     w.varu64(id as u64); // identifiant d'exécution
@@ -209,7 +209,7 @@ pub fn add_actor(id: i64, kind: &str, pos: (f32, f32, f32), motion: (f32, f32, f
     w.f32(yaw); // tête
     w.f32(yaw); // corps
     // Attributs : (nom, minimum, valeur, maximum), comme le serveur officiel
-    let attributes: [(&str, f32, f32, f32); 2] = [("minecraft:health", 0.0, health, health), ("minecraft:movement", 0.0, 0.25, f32::MAX)];
+    let attributes: [(&str, f32, f32, f32); 2] = [("minecraft:health", 0.0, health.0, health.1), ("minecraft:movement", 0.0, 0.25, f32::MAX)];
     w.varu32(attributes.len() as u32);
     for (name, min, value, max) in attributes {
         w.string(name);
@@ -237,7 +237,7 @@ mod tests {
         write_metadata(&mut w, &[(38, Meta::Float(1.0)), (0, Meta::Long(3 << 48))]);
         assert_eq!(&w.0[..8], &[2, 0x26, 3, 3, 0, 0, 0x80, 0x3f]);
         assert_eq!(&w.0[8..11], &[0, 7, 7]);
-        let p = add_actor(5, "minecraft:cow", (1.0, 2.0, 3.0), (0.0, 0.0, 0.0), 90.0, 10.0, &mob_metadata(0.9, 1.4, 0, 0, MOB_FLAGS));
+        let p = add_actor(5, "minecraft:cow", (1.0, 2.0, 3.0), (0.0, 0.0, 0.0), 90.0, (10.0, 10.0), &mob_metadata(0.9, 1.4, 0, 0, MOB_FLAGS));
         assert_eq!(&p[..3], &[10, 5, 13]);
         assert_eq!(&p[p.len() - 4..], &[0, 0, 0, 0], "quatre octets nuls à la fin");
         // 69 données d'entité, comme le paquet officiel

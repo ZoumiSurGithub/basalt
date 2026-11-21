@@ -21,11 +21,29 @@ pub(super) enum Species {
     Sheep,
     Chicken,
     Rabbit,
+    Mooshroom,
+    Goat,
+    Llama,
+    Horse,
+    Donkey,
+    Mule,
 }
 
 impl Species {
     const FARM: [Species; 4] = [Species::Cow, Species::Pig, Species::Sheep, Species::Chicken];
-    const ALL: [Species; 5] = [Species::Cow, Species::Pig, Species::Sheep, Species::Chicken, Species::Rabbit];
+    const ALL: [Species; 11] = [
+        Species::Cow,
+        Species::Pig,
+        Species::Sheep,
+        Species::Chicken,
+        Species::Rabbit,
+        Species::Mooshroom,
+        Species::Goat,
+        Species::Llama,
+        Species::Horse,
+        Species::Donkey,
+        Species::Mule,
+    ];
 
     fn id(self) -> &'static str {
         match self {
@@ -34,27 +52,41 @@ impl Species {
             Species::Sheep => "minecraft:sheep",
             Species::Chicken => "minecraft:chicken",
             Species::Rabbit => "minecraft:rabbit",
+            Species::Mooshroom => "minecraft:mooshroom",
+            Species::Goat => "minecraft:goat",
+            Species::Llama => "minecraft:llama",
+            Species::Horse => "minecraft:horse",
+            Species::Donkey => "minecraft:donkey",
+            Species::Mule => "minecraft:mule",
         }
     }
     fn from_id(s: &str) -> Option<Species> {
         Species::ALL.into_iter().find(|k| k.id() == s)
     }
+    /// Équidés et lamas : vie tirée au sort, apprivoisés avant de se reproduire
+    fn mount(self) -> bool {
+        matches!(self, Species::Llama | Species::Horse | Species::Donkey | Species::Mule)
+    }
+    /// Vie maximale (celle du jeu ; les montures tirent la leur entre 15 et 30)
     fn health(self) -> f32 {
         match self {
-            Species::Cow | Species::Pig => 10.0,
+            Species::Cow | Species::Pig | Species::Mooshroom | Species::Goat => 10.0,
             Species::Sheep => 8.0,
             Species::Chicken => 4.0,
             Species::Rabbit => 3.0,
+            Species::Llama | Species::Horse | Species::Donkey | Species::Mule => 30.0,
         }
     }
     /// Largeur et hauteur de la boîte de collision d'un adulte (celles du jeu)
     fn size(self) -> (f32, f32) {
         match self {
-            Species::Cow => (0.9, 1.3),
+            Species::Cow | Species::Mooshroom | Species::Goat => (0.9, 1.3),
             Species::Pig => (0.9, 0.9),
             Species::Sheep => (0.9, 1.3),
             Species::Chicken => (0.4, 0.7),
             Species::Rabbit => (0.4, 0.5),
+            Species::Llama => (0.9, 1.87),
+            Species::Horse | Species::Donkey | Species::Mule => (1.4, 1.6),
         }
     }
     /// Taille d'affichage (« minecraft:scale » des fichiers du jeu) : le lapin est un petit
@@ -72,26 +104,62 @@ impl Species {
         match self {
             Species::Chicken => 0.07,
             Species::Rabbit => 0.12,
+            Species::Goat | Species::Horse => 0.1,
             _ => 0.09,
         }
     }
-    /// Nourriture : ce qui l'attire, le fait grandir ou le rend amoureux
-    fn food(self) -> &'static [&'static str] {
+    /// Ce qui l'attire : il suit le joueur qui le tient
+    fn tempt(self) -> &'static [&'static str] {
         match self {
-            Species::Cow | Species::Sheep => &["wheat"],
+            Species::Cow | Species::Sheep | Species::Mooshroom | Species::Goat => &["wheat"],
             Species::Pig => &["carrot", "potato", "beetroot"],
             Species::Chicken => &["wheat_seeds", "pumpkin_seeds", "melon_seeds", "beetroot_seeds", "torchflower_seeds", "pitcher_pod"],
             Species::Rabbit => &["carrot", "golden_carrot", "dandelion"],
+            Species::Llama => &["hay_block"],
+            Species::Horse | Species::Donkey | Species::Mule => &[],
+        }
+    }
+    /// Ce qui le rend amoureux (les montures doivent d'abord être apprivoisées ; la mule
+    /// ne se reproduit pas)
+    fn breed_items(self) -> &'static [&'static str] {
+        match self {
+            Species::Llama => &["hay_block"],
+            Species::Horse | Species::Donkey => &["golden_carrot", "golden_apple", "enchanted_golden_apple"],
+            Species::Mule => &[],
+            other => other.tempt(),
+        }
+    }
+    /// Ce qui fait grandir un petit : (objet, part de la croissance totale)
+    fn grow_items(self) -> &'static [(&'static str, f32)] {
+        const EQUINE: [(&str, f32); 7] = [("wheat", 0.016667), ("sugar", 0.025), ("hay_block", 0.15), ("apple", 0.05), ("golden_carrot", 0.05), ("golden_apple", 0.2), ("enchanted_golden_apple", 0.2)];
+        match self {
+            Species::Horse | Species::Donkey | Species::Mule => &EQUINE,
+            Species::Llama => &[("wheat", 0.1), ("hay_block", 0.9)],
+            Species::Cow | Species::Sheep | Species::Mooshroom | Species::Goat => &[("wheat", 0.1)],
+            Species::Pig => &[("carrot", 0.1), ("potato", 0.1), ("beetroot", 0.1)],
+            Species::Chicken => &[("wheat_seeds", 0.1), ("pumpkin_seeds", 0.1), ("melon_seeds", 0.1), ("beetroot_seeds", 0.1), ("torchflower_seeds", 0.1), ("pitcher_pod", 0.1)],
+            Species::Rabbit => &[("carrot", 0.1), ("golden_carrot", 0.1), ("dandelion", 0.1)],
+        }
+    }
+    /// Ce qui le soigne : (objet, points de vie rendus)
+    fn heal_items(self) -> &'static [(&'static str, f32)] {
+        const EQUINE: [(&str, f32); 7] = [("wheat", 2.0), ("sugar", 1.0), ("hay_block", 20.0), ("apple", 3.0), ("golden_carrot", 4.0), ("golden_apple", 10.0), ("enchanted_golden_apple", 10.0)];
+        match self {
+            Species::Horse | Species::Donkey | Species::Mule => &EQUINE,
+            Species::Llama => &[("wheat", 2.0), ("hay_block", 10.0)],
+            _ => &[],
         }
     }
     /// Butin : (objet, quantité minimale, maximale)
     fn drops(self) -> &'static [(&'static str, u8, u8)] {
         match self {
-            Species::Cow => &[("minecraft:beef", 1, 3), ("minecraft:leather", 0, 2)],
+            Species::Cow | Species::Mooshroom => &[("minecraft:beef", 1, 3), ("minecraft:leather", 0, 2)],
             Species::Pig => &[("minecraft:porkchop", 1, 3)],
             Species::Sheep => &[("minecraft:mutton", 1, 2), ("minecraft:white_wool", 1, 1)],
             Species::Chicken => &[("minecraft:chicken", 1, 1), ("minecraft:feather", 0, 2)],
             Species::Rabbit => &[("minecraft:rabbit", 0, 1), ("minecraft:rabbit_hide", 0, 1)],
+            Species::Llama | Species::Horse | Species::Donkey | Species::Mule => &[("minecraft:leather", 0, 2)],
+            Species::Goat => &[],
         }
     }
 }
@@ -139,6 +207,16 @@ pub(super) struct Mob {
     variant: i32,
     /// Ticks avant le prochain œuf (poule)
     egg: u32,
+    /// Vie maximale (tirée au sort pour les montures)
+    max_health: f32,
+    /// Motif de la robe (cheval)
+    mark: i32,
+    /// Apprivoisé (montures)
+    tamed: bool,
+    /// Qualités d'une monture, tirées à sa naissance : vitesse, saut, force (lama)
+    move_speed: f32,
+    jump: f32,
+    strength: u8,
 }
 
 impl Mob {
@@ -186,6 +264,12 @@ pub(super) struct MobRecord {
     pub color: u8,
     pub variant: i32,
     pub sheared: bool,
+    pub max_health: f32,
+    pub mark: i32,
+    pub tamed: bool,
+    pub move_speed: f32,
+    pub jump: f32,
+    pub strength: u8,
 }
 
 impl MobRecord {
@@ -202,17 +286,30 @@ impl MobRecord {
             ("color".into(), Json::Num(self.color as f64)),
             ("variant".into(), Json::Num(self.variant as f64)),
             ("sheared".into(), Json::Bool(self.sheared)),
+            ("max_health".into(), n(self.max_health)),
+            ("mark".into(), Json::Num(self.mark as f64)),
+            ("tamed".into(), Json::Bool(self.tamed)),
+            ("speed".into(), Json::Num((self.move_speed as f64 * 10000.0).round() / 10000.0)),
+            ("jump".into(), Json::Num((self.jump as f64 * 10000.0).round() / 10000.0)),
+            ("strength".into(), Json::Num(self.strength as f64)),
         ])
     }
 
     pub fn from_json(v: &Json) -> Option<MobRecord> {
         let species = v.get("kind").and_then(|k| k.as_str()).and_then(Species::from_id)?;
         let num = |k: &str| v.get(k).and_then(|n| n.as_f64()).filter(|n| n.abs() < 3.0e7);
+        let max_health = (num("max_health").unwrap_or(species.health() as f64) as f32).clamp(1.0, species.health());
         Some(MobRecord {
             species,
             pos: (num("x")? as f32, num("y")? as f32, num("z")? as f32),
             yaw: num("yaw").unwrap_or(0.0) as f32,
-            health: (num("health").unwrap_or(species.health() as f64) as f32).clamp(0.5, species.health()),
+            health: (num("health").unwrap_or(max_health as f64) as f32).clamp(0.5, max_health),
+            max_health,
+            mark: num("mark").unwrap_or(0.0) as i32,
+            tamed: v.get("tamed").and_then(|s| s.as_bool()).unwrap_or(false),
+            move_speed: num("speed").unwrap_or(0.0) as f32,
+            jump: num("jump").unwrap_or(0.0) as f32,
+            strength: num("strength").unwrap_or(0.0).clamp(0.0, 5.0) as u8,
             age: num("age").unwrap_or(0.0) as i64,
             color: num("color").unwrap_or(0.0) as u8 & 15,
             variant: num("variant").unwrap_or(0.0) as i32,
@@ -223,7 +320,22 @@ impl MobRecord {
 
 impl Mob {
     fn record(&self) -> MobRecord {
-        MobRecord { species: self.species, pos: self.pos, yaw: self.yaw, health: self.health, age: self.age, color: self.color, variant: self.variant, sheared: self.sheared }
+        MobRecord {
+            species: self.species,
+            pos: self.pos,
+            yaw: self.yaw,
+            health: self.health,
+            age: self.age,
+            color: self.color,
+            variant: self.variant,
+            sheared: self.sheared,
+            max_health: self.max_health,
+            mark: self.mark,
+            tamed: self.tamed,
+            move_speed: self.move_speed,
+            jump: self.jump,
+            strength: self.strength,
+        }
     }
 }
 
@@ -264,27 +376,74 @@ impl Server {
         }
     }
 
-    /// Un troupeau dans ce chunk, de l'espèce qui convient au biome.
+    /// Un troupeau dans ce chunk, de l'espèce qui convient au biome (règles d'apparition du
+    /// jeu : chevaux et ânes dans les plaines, lamas sur les collines venteuses et les plateaux
+    /// de savane, chèvres sur les sommets, champimeuhs dans les champs de champignons).
     fn spawn_herd(&mut self, cx: i32, cz: i32, near_y: i32) {
         let (x, z) = (cx * 16 + self.mob_rng.below(16) as i32, cz * 16 + self.mob_rng.below(16) as i32);
         let biome = self.world.generator().vanilla().map(|v| v.surface_biome_at(x, z));
+        let roll = self.mob_rng.below(10);
+        let farm = Species::FARM[self.mob_rng.below(4) as usize];
         let species = match biome {
-            None => Species::FARM[self.mob_rng.below(4) as usize],
+            None => farm,
             Some(b) => match b {
-                B::Desert | B::SnowyPlains | B::IceSpikes | B::SnowySlopes | B::Grove => Species::Rabbit,
-                B::Plains | B::SunflowerPlains | B::Meadow | B::Forest | B::BirchForest | B::OldGrowthBirchForest | B::DarkForest | B::Savanna | B::SavannaPlateau | B::WindsweptSavanna | B::WindsweptForest | B::WindsweptHills | B::Jungle | B::SparseJungle | B::BambooJungle | B::CherryGrove => Species::FARM[self.mob_rng.below(4) as usize],
+                B::MushroomFields => Species::Mooshroom,
+                B::JaggedPeaks | B::FrozenPeaks => Species::Goat,
+                B::SnowySlopes => {
+                    if roll < 5 {
+                        Species::Goat
+                    } else {
+                        Species::Rabbit
+                    }
+                }
+                B::Desert | B::SnowyPlains | B::IceSpikes | B::Grove => Species::Rabbit,
+                B::Plains | B::SunflowerPlains => match roll {
+                    0 | 1 => Species::Horse,
+                    2 => Species::Donkey,
+                    _ => farm,
+                },
+                B::Savanna => match roll {
+                    0 | 1 => Species::Horse,
+                    2 => Species::Donkey,
+                    _ => farm,
+                },
+                B::SavannaPlateau | B::WindsweptHills | B::WindsweptGravellyHills | B::WindsweptForest => {
+                    if roll < 3 {
+                        Species::Llama
+                    } else {
+                        farm
+                    }
+                }
+                B::Meadow => {
+                    if roll < 2 {
+                        Species::Donkey
+                    } else {
+                        farm
+                    }
+                }
+                B::Forest | B::BirchForest | B::OldGrowthBirchForest | B::DarkForest | B::WindsweptSavanna | B::Jungle | B::SparseJungle | B::BambooJungle | B::CherryGrove => farm,
                 B::FlowerForest | B::Taiga | B::SnowyTaiga | B::OldGrowthPineTaiga | B::OldGrowthSpruceTaiga => {
                     if self.mob_rng.below(4) == 0 {
                         Species::Rabbit
                     } else {
-                        Species::FARM[self.mob_rng.below(4) as usize]
+                        farm
                     }
                 }
                 _ => return,
             },
         };
-        let variant = if species == Species::Rabbit {
-            match biome {
+        // Taille du troupeau, part de petits et pelage commun (règles du jeu)
+        let (lo, hi, babies) = match species {
+            Species::Rabbit => (2, 3, 0),
+            Species::Mooshroom => (4, 8, 5),
+            Species::Goat => (1, 3, 5),
+            Species::Llama => (4, 6, 10),
+            Species::Horse => (2, 6, 20),
+            Species::Donkey => (1, 3, 20),
+            _ => (2, 4, 0),
+        };
+        let herd_variant = match species {
+            Species::Rabbit => match biome {
                 Some(B::Desert) => 4,
                 Some(B::SnowyPlains | B::IceSpikes | B::SnowySlopes | B::Grove | B::SnowyTaiga) => {
                     if self.mob_rng.below(5) == 0 {
@@ -294,23 +453,39 @@ impl Server {
                     }
                 }
                 _ => [0, 0, 2, 5][self.mob_rng.below(4) as usize],
-            }
-        } else {
-            0
+            },
+            // Robe du cheval (7 couleurs), lama (crème, blanc, marron, gris)
+            Species::Horse => self.mob_rng.below(7) as i32,
+            Species::Llama => self.mob_rng.below(4) as i32,
+            _ => 0,
         };
-        let count = if species == Species::Rabbit { 2 + self.mob_rng.below(2) } else { 2 + self.mob_rng.below(3) };
+        let count = lo + self.mob_rng.below(hi - lo + 1);
         let g = &self.world.generator().blocks;
-        let (grass, sand, snow) = (g.grass, g.sand, g.snow);
+        let (grass, sand, snow, snow_layer) = (g.grass, g.sand, g.snow, g.snow_layer);
         for _ in 0..count {
             let (dx, dz) = (self.mob_rng.below(5) as i32 - 2, self.mob_rng.below(5) as i32 - 2);
             let (bx, bz) = (x + dx, z + dz);
             let Some(y) = self.surface_y(bx, bz, near_y) else { continue };
             let below = self.mob_get(bx, y - 1, bz);
-            let ok = below == grass || (species == Species::Rabbit && (below == sand || below == snow));
-            if ok {
-                let id = self.add_mob(species, (bx as f32 + 0.5, y as f32, bz as f32 + 0.5));
-                if let Some(m) = self.mobs.get_mut(&id) {
-                    m.variant = variant;
+            let ok = match species {
+                Species::Rabbit => below == grass || below == sand || below == snow || below == snow_layer,
+                // Sommets, collines et champs de champignons : tout sol solide
+                Species::Goat | Species::Llama | Species::Mooshroom => true,
+                _ => below == grass,
+            };
+            if !ok {
+                continue;
+            }
+            let baby = babies > 0 && self.mob_rng.below(100) < babies;
+            let mark = if species == Species::Horse { self.mob_rng.below(5) as i32 } else { 0 };
+            // Chèvre « hurleuse » : 2 sur 100
+            let variant = if species == Species::Goat { (self.mob_rng.below(100) < 2) as i32 } else { herd_variant };
+            let id = self.add_mob(species, (bx as f32 + 0.5, y as f32, bz as f32 + 0.5));
+            if let Some(m) = self.mobs.get_mut(&id) {
+                m.variant = variant;
+                m.mark = mark;
+                if baby {
+                    m.age = -GROW_TICKS;
                 }
             }
         }
@@ -377,6 +552,15 @@ impl Server {
         };
         let yaw = self.mob_rng.unit() as f32 * 360.0;
         let egg = 6000 + self.mob_rng.below(6000);
+        // Montures : vie, vitesse, saut et force tirés au sort comme dans le jeu
+        let r = |rng: &mut Rng, lo: f32, hi: f32| lo + rng.unit() as f32 * (hi - lo);
+        let max_health = if species.mount() { (15 + self.mob_rng.below(16)) as f32 } else { species.health() };
+        let (move_speed, jump, strength) = match species {
+            Species::Horse => (r(&mut self.mob_rng, 0.1125, 0.3375), r(&mut self.mob_rng, 0.4, 1.0), 0),
+            Species::Donkey | Species::Mule => (0.175, 0.5, 0),
+            Species::Llama => (0.25, 0.0, 1 + self.mob_rng.below(5) as u8),
+            _ => (0.0, 0.0, 0),
+        };
         let mob = Mob {
             id,
             species,
@@ -384,7 +568,7 @@ impl Server {
             vel: (0.0, 0.0, 0.0),
             yaw,
             on_ground: true,
-            health: species.health(),
+            health: max_health,
             age: 0,
             love: 0,
             sheared: false,
@@ -398,6 +582,12 @@ impl Server {
             color,
             variant: 0,
             egg,
+            max_health,
+            mark: 0,
+            tamed: false,
+            move_speed,
+            jump,
+            strength,
         };
         self.mobs.insert(id, mob);
         self.mobs_dirty = true;
@@ -410,8 +600,11 @@ impl Server {
         let mut meta = bedrock::mob_metadata(w, h, m.variant, m.color, m.flags());
         let scale = m.species.scale(m.baby());
         for (k, v) in meta.iter_mut() {
-            if *k == 38 {
-                *v = bedrock::Meta::Float(scale);
+            match *k {
+                38 => *v = bedrock::Meta::Float(scale),
+                // Motif de la robe du cheval
+                43 => *v = bedrock::Meta::Int(m.mark),
+                _ => {}
             }
         }
         meta
@@ -419,7 +612,7 @@ impl Server {
 
     /// Paquet d'apparition d'une créature.
     fn mob_packet(m: &Mob) -> Vec<u8> {
-        bedrock::add_actor(m.id, m.species.id(), m.pos, m.vel, m.yaw, m.species.health(), &Self::mob_meta(m))
+        bedrock::add_actor(m.id, m.species.id(), m.pos, m.vel, m.yaw, (m.health.max(0.5), m.max_health), &Self::mob_meta(m))
     }
 
     /// Envoie aux joueurs qui la voient l'état changé d'une créature (bébé devenu adulte,
@@ -635,7 +828,7 @@ impl Server {
             // Amoureux : rejoint l'autre
             m.target = Some(partner);
             stop_at = 0.8;
-        } else if let Some(p) = players.iter().filter(|(_, held)| m.species.food().contains(&held.as_str())).map(|(p, _)| *p).find(|p| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2) < 100.0 && (p.1 - m.pos.1).abs() < 4.0) {
+        } else if let Some(p) = players.iter().filter(|(_, held)| m.species.tempt().contains(&held.as_str())).map(|(p, _)| *p).find(|p| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2) < 100.0 && (p.1 - m.pos.1).abs() < 4.0) {
             // Attiré par sa nourriture : suit le joueur, s'arrête à deux pas
             m.target = Some((p.0, p.2));
             stop_at = 2.5;
@@ -678,7 +871,7 @@ impl Server {
         }
         self.mobs
             .values()
-            .filter(|o| o.id != m.id && o.species == m.species && o.love > 0 && !o.baby() && o.dead.is_none())
+            .filter(|o| o.id != m.id && mate(m.species, o.species).is_some() && o.love > 0 && !o.baby() && o.dead.is_none())
             .map(|o| (o.pos.0, o.pos.2, (o.pos.0 - m.pos.0).powi(2) + (o.pos.2 - m.pos.2).powi(2)))
             .filter(|o| o.2 < 64.0)
             .min_by(|a, b| a.2.total_cmp(&b.2))
@@ -691,7 +884,8 @@ impl Server {
         let mut done: HashSet<i64> = HashSet::new();
         for (i, a) in lovers.iter().enumerate() {
             for b in &lovers[i + 1..] {
-                if done.contains(&a.0) || done.contains(&b.0) || a.1 != b.1 {
+                let Some(kind) = mate(a.1, b.1) else { continue };
+                if done.contains(&a.0) || done.contains(&b.0) {
                     continue;
                 }
                 let d = (a.2 .0 - b.2 .0).powi(2) + (a.2 .1 - b.2 .1).powi(2) + (a.2 .2 - b.2 .2).powi(2);
@@ -708,13 +902,23 @@ impl Server {
                     self.mob_changed(id);
                 }
                 let at = ((a.2 .0 + b.2 .0) / 2.0, a.2 .1.max(b.2 .1), (a.2 .2 + b.2 .2) / 2.0);
-                // Le petit tient de l'un de ses parents (couleur de laine, pelage)
-                let (color, variant) = self.mobs.get(&if self.mob_rng.below(2) == 0 { a.0 } else { b.0 }).map(|m| (m.color, m.variant)).unwrap_or((0, 0));
-                let baby = self.add_mob(a.1, at);
+                // Le petit tient de l'un de ses parents (couleur de laine, pelage, robe) ; le motif
+                // de la robe d'un poulain vient de l'un ou l'autre
+                let (color, mut variant) = self.mobs.get(&if self.mob_rng.below(2) == 0 { a.0 } else { b.0 }).map(|m| (m.color, m.variant)).unwrap_or((0, 0));
+                let mark = self.mobs.get(&if self.mob_rng.below(2) == 0 { a.0 } else { b.0 }).map(|m| m.mark).unwrap_or(0);
+                match kind {
+                    // Champimeuh : très rarement (1 sur 1024) l'autre couleur que ses parents
+                    Species::Mooshroom if self.mob_rng.below(1024) == 0 => variant = 1 - variant.clamp(0, 1),
+                    Species::Goat => variant = (self.mob_rng.below(100) < 2) as i32,
+                    Species::Mule => variant = 0,
+                    _ => {}
+                }
+                let baby = self.add_mob(kind, at);
                 if let Some(m) = self.mobs.get_mut(&baby) {
                     m.age = -GROW_TICKS;
                     m.color = color;
                     m.variant = variant;
+                    m.mark = if kind == Species::Horse { mark } else { 0 };
                 }
                 self.send_to_viewers(a.0, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(a.0, bedrock::EVENT_LOVE_PARTICLES, 0));
                 // Un peu d'expérience pour l'éleveur, comme dans le jeu : pas encore gérée
@@ -868,9 +1072,24 @@ impl Server {
         }
         let mut changed = false;
         let mut used = false;
+        const COLORS: [&str; 16] = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black"];
+        // Un objet changé contre un autre dans la main (seau → seau de lait, bol → soupe)
+        let swap = |server: &mut Server, into: &str| {
+            if !creative {
+                if let Some(item) = server.item_id(into) {
+                    if let Some(c) = server.clients.get_mut(addr) {
+                        c.inv.replace_held(item);
+                    }
+                }
+                server.send_inventory(addr);
+                server.show_held(addr);
+            }
+        };
+        let grow = m.species.grow_items().iter().find(|(name, _)| *name == held).map(|(_, g)| *g);
+        let heal = m.species.heal_items().iter().find(|(name, _)| *name == held).map(|(_, h)| *h);
+        let breeds = m.species.breed_items().contains(&held.as_str()) && (!m.species.mount() || m.tamed);
         if held == "shears" && m.species == Species::Sheep && !m.baby() && !m.sheared {
             // Tonte : 1 à 3 laines de sa couleur
-            const COLORS: [&str; 16] = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black"];
             if let Some(wool) = self.item_id(&format!("{}_wool", COLORS[m.color as usize & 15])) {
                 let count = 1 + self.mob_rng.below(3) as u8;
                 for _ in 0..count {
@@ -882,32 +1101,39 @@ impl Server {
                 s.sheared = true;
             }
             changed = true;
-        } else if held == "bucket" && m.species == Species::Cow && !m.baby() {
+        } else if held == "shears" && m.species == Species::Mooshroom && !m.baby() {
+            // Champimeuh tondue : 5 champignons de sa couleur, et elle redevient une vache
+            let mushroom = if m.variant == 1 { "brown_mushroom" } else { "red_mushroom" };
+            if let Some(item) = self.item_id(mushroom) {
+                let vel = ((self.mob_rng.unit() as f32 - 0.5) * 0.2, 0.25, (self.mob_rng.unit() as f32 - 0.5) * 0.2);
+                self.drop_item((m.pos.0, m.pos.1 + 1.0, m.pos.2), vel, item, 5, 10);
+            }
+            self.transform_mob(id, Species::Cow);
+        } else if held == "bucket" && matches!(m.species, Species::Cow | Species::Mooshroom | Species::Goat) && !m.baby() {
             // Traite : le seau vide devient un seau de lait
-            if !creative {
-                if let Some(milk) = self.item_id("milk_bucket") {
-                    if let Some(c) = self.clients.get_mut(addr) {
-                        c.inv.replace_held(milk);
-                    }
-                }
-                self.send_inventory(addr);
-                self.show_held(addr);
+            swap(self, "milk_bucket");
+        } else if held == "bowl" && m.species == Species::Mooshroom && !m.baby() {
+            // Champimeuh : un bol devient une soupe de champignons
+            swap(self, "mushroom_stew");
+        } else if let (Some(h), true) = (heal, m.health < m.max_health) {
+            // Monture blessée : le repas la soigne
+            if let Some(s) = self.mobs.get_mut(&id) {
+                s.health = (s.health + h).min(s.max_health);
             }
-        } else if m.species.food().contains(&held.as_str()) {
-            if m.baby() {
-                // Un petit nourri grandit plus vite (un dixième du temps restant)
-                if let Some(s) = self.mobs.get_mut(&id) {
-                    s.age = (s.age - s.age / 10).min(-1);
-                }
-                used = true;
-            } else if m.age == 0 && m.love == 0 {
-                if let Some(s) = self.mobs.get_mut(&id) {
-                    s.love = LOVE_TICKS;
-                }
-                self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_LOVE_PARTICLES, 0));
-                changed = true;
-                used = true;
+            used = true;
+        } else if let (Some(g), true) = (grow, m.baby()) {
+            // Un petit nourri grandit plus vite (la part de croissance de ce repas)
+            if let Some(s) = self.mobs.get_mut(&id) {
+                s.age = (s.age + (GROW_TICKS as f32 * g) as i64).min(-1);
             }
+            used = true;
+        } else if breeds && !m.baby() && m.age == 0 && m.love == 0 {
+            if let Some(s) = self.mobs.get_mut(&id) {
+                s.love = LOVE_TICKS;
+            }
+            self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_LOVE_PARTICLES, 0));
+            changed = true;
+            used = true;
         }
         if used && !creative {
             if let Some(c) = self.clients.get_mut(addr) {
@@ -920,6 +1146,60 @@ impl Server {
             self.mob_changed(id);
         }
         true
+    }
+
+    /// `/summon` : fait apparaître un animal (pelage, robe, qualités tirés au sort comme à
+    /// l'apparition naturelle). `baby` : un petit (événement « minecraft:entity_born »).
+    pub(super) fn summon_mob(&mut self, name: &str, pos: (f32, f32, f32), baby: bool) -> Result<(), String> {
+        let short = name.trim_start_matches("minecraft:").to_ascii_lowercase();
+        let Some(species) = Species::from_id(&format!("minecraft:{}", short)) else {
+            return Err(format!("Basalt ne sait pas encore faire apparaître : {}", name));
+        };
+        if !pos.1.is_finite() || pos.1 < crate::world::MIN_Y as f32 || pos.1 > crate::world::MAX_Y as f32 {
+            return Err("Position hors du monde".into());
+        }
+        let variant = match species {
+            Species::Horse => self.mob_rng.below(7) as i32,
+            Species::Llama => self.mob_rng.below(4) as i32,
+            Species::Goat => (self.mob_rng.below(100) < 2) as i32,
+            _ => 0,
+        };
+        let mark = if species == Species::Horse { self.mob_rng.below(5) as i32 } else { 0 };
+        let id = self.add_mob(species, pos);
+        if let Some(m) = self.mobs.get_mut(&id) {
+            m.variant = variant;
+            m.mark = mark;
+            if baby {
+                m.age = -GROW_TICKS;
+            }
+        }
+        // Son chunk compte désormais parmi ceux qui sont en mémoire (sinon il serait rangé aussitôt)
+        let chunk = mob_store::chunk_of(pos.0, pos.2);
+        if !self.mob_chunks.contains(&chunk) {
+            if let Some(region) = self.mob_store.region(mob_store::region_of(chunk)) {
+                for r in region.chunks.remove(&chunk).unwrap_or_default() {
+                    self.spawn_record(r);
+                }
+                self.mob_chunks.insert(chunk);
+            }
+        }
+        Ok(())
+    }
+
+    /// Change l'espèce d'une créature (champimeuh tondue → vache) : elle est retirée puis
+    /// remontrée aux joueurs sous sa nouvelle forme, à la même place.
+    fn transform_mob(&mut self, id: i64, into: Species) {
+        let Some(m) = self.mobs.get_mut(&id) else { return };
+        m.species = into;
+        m.variant = 0;
+        m.max_health = m.max_health.min(into.health());
+        m.health = m.health.min(m.max_health);
+        let viewers: Vec<SocketAddr> = self.clients.iter_mut().filter_map(|(a, c)| c.mobs_seen.remove(&id).then_some(*a)).collect();
+        for v in viewers {
+            self.send(&v, bedrock::ID_REMOVE_ACTOR, &bedrock::remove_actor(id));
+        }
+        self.mobs_dirty = true;
+        // Remontrée au prochain passage de show_mobs
     }
 
     /// Butin d'une créature morte, lâché sur place (rien pour un petit).
@@ -1007,6 +1287,15 @@ impl Server {
             m.color = r.color;
             m.variant = r.variant;
             m.sheared = r.sheared;
+            m.max_health = r.max_health;
+            m.mark = r.mark;
+            m.tamed = r.tamed;
+            // Monture enregistrée avant que ses qualités existent : celles tirées à l'apparition restent
+            if r.move_speed > 0.0 {
+                m.move_speed = r.move_speed;
+                m.jump = r.jump;
+                m.strength = r.strength;
+            }
         }
     }
 
@@ -1084,8 +1373,67 @@ impl Server {
     }
 }
 
+/// Espèce du petit de deux parents (None s'ils ne peuvent pas en avoir) : même espèce, ou
+/// cheval et âne qui font une mule ; la mule n'a pas de petit.
+fn mate(a: Species, b: Species) -> Option<Species> {
+    match (a, b) {
+        (Species::Mule, _) | (_, Species::Mule) => None,
+        (Species::Horse, Species::Donkey) | (Species::Donkey, Species::Horse) => Some(Species::Mule),
+        (a, b) if a == b => Some(a),
+        _ => None,
+    }
+}
+
 /// Générateur de hasard des créatures, d'après l'heure de démarrage.
 pub(super) fn mob_rng() -> Rng {
     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1);
     Rng::new(seed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mates_and_foods_follow_the_game() {
+        assert_eq!(mate(Species::Horse, Species::Donkey), Some(Species::Mule));
+        assert_eq!(mate(Species::Donkey, Species::Horse), Some(Species::Mule));
+        assert_eq!(mate(Species::Mule, Species::Mule), None, "la mule n'a pas de petit");
+        assert_eq!(mate(Species::Cow, Species::Mooshroom), None);
+        assert_eq!(mate(Species::Goat, Species::Goat), Some(Species::Goat));
+        assert!(Species::Horse.mount() && Species::Llama.mount() && !Species::Goat.mount());
+        assert!(Species::Horse.breed_items().contains(&"golden_carrot") && Species::Horse.tempt().is_empty());
+        assert_eq!(Species::Llama.breed_items(), &["hay_block"]);
+        assert!(Species::Mule.breed_items().is_empty());
+        assert!(Species::Horse.heal_items().iter().any(|(i, h)| *i == "hay_block" && *h == 20.0));
+        for s in Species::ALL {
+            assert_eq!(Species::from_id(s.id()), Some(s));
+            assert!(!s.grow_items().is_empty(), "{:?} : un petit doit pouvoir grandir plus vite", s);
+        }
+    }
+
+    #[test]
+    fn mount_qualities_are_saved() {
+        let r = MobRecord {
+            species: Species::Horse,
+            pos: (1.0, 64.0, 2.0),
+            yaw: 0.0,
+            health: 22.0,
+            age: 0,
+            color: 0,
+            variant: 3,
+            sheared: false,
+            max_health: 27.0,
+            mark: 4,
+            tamed: true,
+            move_speed: 0.3125,
+            jump: 0.75,
+            strength: 0,
+        };
+        assert_eq!(MobRecord::from_json(&r.to_json()), Some(r));
+        // Ancien enregistrement (sans les nouveaux champs) : valeurs du jeu par défaut
+        let old = crate::json::parse(r#"{"kind":"minecraft:cow","x":0,"y":0,"z":0}"#).unwrap();
+        let cow = MobRecord::from_json(&old).unwrap();
+        assert_eq!((cow.max_health, cow.health, cow.tamed, cow.mark), (10.0, 10.0, false, 0));
+    }
 }

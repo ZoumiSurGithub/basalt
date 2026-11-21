@@ -2114,3 +2114,41 @@ fn old_mobs_file_is_converted() {
     assert!(near.contains("minecraft:rabbit") && near.contains("\"0,0\""), "{}", near);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `/summon` fait apparaître un animal (même sans animaux naturels), et refuse les inconnus.
+#[test]
+fn summon_makes_an_animal_appear() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-summon-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    let wait_for = |c: &mut Client, text: Option<&str>, kind: Option<&[u8]>| {
+        let (mut said, mut shown) = (text.is_none(), kind.is_none());
+        let started = std::time::Instant::now();
+        while !(said && shown) && started.elapsed() < Duration::from_secs(10) {
+            if let Some((id, body)) = c.poll_game(Duration::from_millis(300)) {
+                said |= id == 9 && text.map(|t| String::from_utf8_lossy(&body).contains(t)).unwrap_or(false);
+                shown |= id == 13 && kind.map(|k| body.windows(k.len()).any(|w| w == k)).unwrap_or(false);
+            }
+        }
+        (said, shown)
+    };
+    command(&mut steve, "/summon minecraft:horse ~2 ~ ~2 minecraft:entity_born");
+    assert_eq!(wait_for(&mut steve, Some("Objet invoqué : horse"), Some(b"minecraft:horse")), (true, true));
+    command(&mut steve, "/summon mooshroom");
+    assert_eq!(wait_for(&mut steve, Some("Objet invoqué : mooshroom"), Some(b"minecraft:mooshroom")), (true, true));
+    command(&mut steve, "/summon licorne");
+    assert_eq!(wait_for(&mut steve, Some("ne sait pas encore"), None), (true, true));
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = handle.join();
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -11,6 +11,14 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Ajouté
 
+- Nouveaux animaux, avec les règles d'apparition du jeu : champimeuh (champs de
+  champignons ; bol → soupe, seau → lait, cisailles → 5 champignons et elle redevient
+  vache), chèvre (sommets ; 2 % de « hurleuses » ; lait), lama (collines venteuses,
+  plateaux de savane ; 4 pelages), cheval (plaines, savanes ; 7 robes et 5 motifs), âne
+  et mule (un cheval et un âne font une mule, qui n'a pas de petit). Vie, vitesse et saut
+  des montures tirés au sort ; elles se soignent et leurs petits grandissent avec leur
+  nourriture. Pas encore : les monter et les apprivoiser (donc les faire se reproduire).
+- Commande `/summon <animal> [position] [minecraft:entity_born]`.
 - Guide d'installation pas à pas pour Windows et Linux : `docs/INSTALLER.md`.
 - `/timings report` indique l'état de la machine pendant les mesures (processeur, temps
   volé par l'hébergeur, attente disque, mémoire, swap) et dit si les à-coups viennent d'elle.

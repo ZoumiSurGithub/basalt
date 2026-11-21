@@ -25,7 +25,7 @@ pub struct VanillaCommands;
 impl VanillaCommands {
     /// Commandes intégrées, telles qu'annoncées au jeu (description traduite par le client).
     pub fn all() -> &'static [CommandDef] {
-        static ALL: [CommandDef; 26] = [
+        static ALL: [CommandDef; 27] = [
             def("help", "commands.help.description", "/help", false),
             def("list", "commands.list.description", "/list", false),
             def("me", "commands.me.description", "/me <message:text>", false),
@@ -46,6 +46,12 @@ impl VanillaCommands {
                 "locate",
                 "commands.locate.description",
                 "/locate <mode:structure> <structure:village|desert_pyramid|jungle_temple|mineshaft|pillager_outpost|ancient_city|trail_ruins|trial_chambers|shipwreck|ocean_ruin|igloo|ruined_portal|mansion> | /locate <mode:biome> <biome:biomes>",
+                true,
+            ),
+            def(
+                "summon",
+                "commands.summon.description",
+                "/summon <entityType:cow|pig|sheep|chicken|rabbit|mooshroom|goat|llama|horse|donkey|mule> [spawnPos:pos] [spawnEvent:minecraft:entity_born|entity_born]",
                 true,
             ),
             def("kick", "commands.kick.description", "/kick <name:player> [reason:text]", true),

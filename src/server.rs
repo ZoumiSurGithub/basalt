@@ -2229,6 +2229,19 @@ impl Server {
                     self.reply(sender, &format!("{} téléporté en {:.2}, {:.2}, {:.2}", name, destination.0, destination.1, destination.2));
                 }
             }
+            "summon" => {
+                // /summon <animal> [x y z] [minecraft:entity_born] : un animal (un petit avec l'événement)
+                if args.is_empty() {
+                    return usage(self);
+                }
+                let pos = if args.len() >= 4 { crate::command::position(args, 1, here) } else { Some(here) };
+                let Some(pos) = pos else { return usage(self) };
+                let baby = args.iter().skip(1).any(|a| a == "minecraft:entity_born" || a == "entity_born");
+                match self.summon_mob(arg(0), pos, baby) {
+                    Ok(()) => self.reply(sender, &format!("Objet invoqué : {}", arg(0).trim_start_matches("minecraft:"))),
+                    Err(e) => self.reply(sender, &format!("§c{}", e)),
+                }
+            }
             "locate" => {
                 use crate::world::structures::{self as st, Target};
                 use std::sync::atomic::Ordering;
