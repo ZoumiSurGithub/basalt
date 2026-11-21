@@ -1246,6 +1246,38 @@ impl Vanilla {
             beds.extend_from_slice(plan.beds_in(cx, cz));
         }
 
+        // Blocs de structure sous l'eau qui n'ont pas pris la place de l'eau (enfoncés dans
+        // le sable, ou posés contre un autre bloc de la structure) : s'ils touchent l'eau, ils
+        // en sont pleins aussi, comme dans le jeu
+        if !touched.is_empty() {
+            let mut wet_set: std::collections::HashSet<(u8, i16, u8)> = wet.iter().copied().collect();
+            for _ in 0..4 {
+                let mut added = false;
+                for &(x, y, z) in &touched {
+                    let yy = y as i32;
+                    if yy > SEA_LEVEL || wet_set.contains(&(x, y, z)) {
+                        continue;
+                    }
+                    let s = blocks[at(x as usize, z as usize, yy)];
+                    if s == p.air || s == p.water {
+                        continue;
+                    }
+                    let near_water = [(1i32, 0i32, 0i32), (-1, 0, 0), (0, 0, 1), (0, 0, -1), (0, 1, 0)].iter().any(|(dx, dy, dz)| {
+                        let (nx, ny, nz) = (x as i32 + dx, yy + dy, z as i32 + dz);
+                        (0..16).contains(&nx) && (0..16).contains(&nz) && ny <= MAX_Y && (blocks[at(nx as usize, nz as usize, ny)] == p.water || wet_set.contains(&(nx as u8, ny as i16, nz as u8)))
+                    });
+                    if near_water {
+                        wet_set.insert((x, y, z));
+                        wet.push((x, y, z));
+                        added = true;
+                    }
+                }
+                if !added {
+                    break;
+                }
+            }
+        }
+
         // Plantes restées en l'air au-dessus d'un bloc de structure (moitié haute d'une
         // grande herbe dont le bas a été remplacé par un chemin, fleur sur du vide…) : retirées
         if !touched.is_empty() {
