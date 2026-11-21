@@ -11,6 +11,15 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Ajouté
 
+- Laisses : une laisse en main sur un animal l'attache au joueur, un clic droit sur une
+  barrière l'y noue (nœud visible), clic sur l'animal ou le nœud pour détacher ; elle tire
+  au-delà de 4 blocs, fort au-delà de 6 et casse à 10, comme dans le jeu. Les animaux
+  noués à une barrière le restent après un redémarrage.
+- Comportements du jeu pour chaque animal : vitesses du jeu (promenade, fuite, nourriture,
+  petit qui suit ses parents), les petits suivent un adulte, les lapins fuient les joueurs
+  qui ne leur tendent pas de carotte, les animaux évitent l'eau en se promenant et
+  regardent parfois les joueurs proches. Le lama ne suit plus la nourriture ; chevaux, ânes
+  et mules apprivoisés suivent les pommes et carottes dorées. Son de l'œuf pondu.
 - Nouveaux animaux, avec les règles d'apparition du jeu : champimeuh (champs de
   champignons ; bol → soupe, seau → lait, cisailles → 5 champignons et elle redevient
   vache), chèvre (sommets ; 2 % de « hurleuses » ; lait), lama (collines venteuses,
@@ -26,8 +35,10 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   à leur mort.
   Les autres joueurs voient le cavalier assis sur sa monture (sa position leur est donnée
   d'après celle de la monture, pas d'après son jeu qui le place dessous).
-  Les sauts d'une monture se voient chez les autres joueurs ; une monture qui refuse
-  d'être apprivoisée se cabre.
+  Les sauts d'une monture se voient chez les autres joueurs (en l'air, comme dans le jeu) ;
+  une monture qui refuse d'être apprivoisée se cabre. Sons envoyés par le serveur comme le
+  serveur officiel : selle posée, tonte, traite, repas, monture en colère, saut et
+  atterrissage (pour les autres joueurs).
 - Commande `/summon <animal> [position] [minecraft:entity_born]`.
 - Guide d'installation pas à pas pour Windows et Linux : `docs/INSTALLER.md`.
 - `/timings report` indique l'état de la machine pendant les mesures (processeur, temps

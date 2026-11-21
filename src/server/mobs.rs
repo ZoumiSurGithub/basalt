@@ -13,6 +13,27 @@ use super::*;
 use crate::world::generator::Rng;
 use crate::world::vanilla::B;
 
+/// Qui tient la laisse : un joueur, ou un nœud attaché à une barrière (son identifiant et
+/// la position de la barrière).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Leash {
+    Player(SocketAddr),
+    Knot(i64, (i32, i32, i32)),
+}
+
+/// Distances de la laisse du jeu (« minecraft:leashable ») : au-delà de la première elle
+/// tire doucement, de la deuxième fort, et casse à la troisième.
+const LEASH_SOFT: f32 = 4.0;
+const LEASH_HARD: f32 = 6.0;
+const LEASH_MAX: f32 = 10.0;
+
+/// Vitesse au sol (blocs par tick) d'une créature qui veut aller à `speed` (vitesse du jeu ×
+/// multiplicateur) : le jeu s'en sert à la fois comme élan et comme vitesse, d'où le carré ;
+/// le sol en garde 0,546 à chaque tick.
+fn ground_speed(speed: f32) -> f32 {
+    (speed * speed / 0.454).min(0.4)
+}
+
 /// Espèces connues.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Species {
@@ -128,13 +149,25 @@ impl Species {
             (_, false) => 1.0,
         }
     }
-    /// Vitesse de marche (blocs par tick)
-    fn speed(self) -> f32 {
+    /// Vitesse du jeu (« minecraft:movement ») ; celle du cheval est tirée à sa naissance
+    fn movement(self) -> f32 {
         match self {
-            Species::Chicken => 0.07,
-            Species::Rabbit => 0.12,
-            Species::Goat | Species::Horse => 0.1,
-            _ => 0.09,
+            Species::Rabbit => 0.3,
+            Species::Goat => 0.4,
+            Species::Donkey | Species::Mule => 0.175,
+            _ => 0.25,
+        }
+    }
+    /// Multiplicateurs de vitesse du jeu : promenade, fuite, attirée par la nourriture,
+    /// petit qui suit un parent (« speed_multiplier » des comportements du jeu)
+    fn multipliers(self) -> (f32, f32, f32, f32) {
+        match self {
+            Species::Cow | Species::Mooshroom | Species::Sheep => (0.8, 1.25, 1.25, 1.1),
+            Species::Pig => (1.0, 1.25, 1.2, 1.1),
+            Species::Chicken => (1.0, 1.5, 1.0, 1.1),
+            Species::Rabbit => (0.6, 2.2, 1.0, 1.1),
+            Species::Goat => (0.6, 1.0, 0.75, 1.0),
+            Species::Llama | Species::Horse | Species::Donkey | Species::Mule => (0.7, 1.2, 1.2, 1.0),
         }
     }
     /// Ce qui l'attire : il suit le joueur qui le tient
@@ -144,8 +177,9 @@ impl Species {
             Species::Pig => &["carrot", "potato", "beetroot"],
             Species::Chicken => &["wheat_seeds", "pumpkin_seeds", "melon_seeds", "beetroot_seeds", "torchflower_seeds", "pitcher_pod"],
             Species::Rabbit => &["carrot", "golden_carrot", "dandelion"],
-            Species::Llama => &["hay_block"],
-            Species::Horse | Species::Donkey | Species::Mule => &[],
+            // Le lama ne suit personne ; les équidés seulement une fois apprivoisés
+            Species::Llama => &[],
+            Species::Horse | Species::Donkey | Species::Mule => &["golden_apple", "enchanted_golden_apple", "golden_carrot"],
         }
     }
     /// Ce qui le rend amoureux (les montures doivent d'abord être apprivoisées ; la mule
@@ -261,6 +295,10 @@ pub(super) struct Mob {
     ride_offset: Option<f32>,
     /// Ticks restants cabrée
     rearing: u32,
+    /// En l'air (saut d'une monture dirigée)
+    airborne: bool,
+    /// Tenue en laisse
+    pub leash: Option<Leash>,
 }
 
 impl Mob {
@@ -284,6 +322,9 @@ impl Mob {
         if self.rearing > 0 {
             f |= bedrock::FLAG_REARING;
         }
+        if self.leash.is_some() {
+            f |= bedrock::FLAG_LEASHED;
+        }
         if self.saddled {
             f |= bedrock::FLAG_SADDLED;
             // Apprivoisée et sellée : son cavalier la dirige (saut chargé du cheval)
@@ -292,6 +333,14 @@ impl Mob {
             }
         }
         f
+    }
+    /// Vitesse du jeu de cette créature (le cheval a la sienne)
+    fn movement(&self) -> f32 {
+        if self.species == Species::Horse && self.move_speed > 0.0 {
+            self.move_speed
+        } else {
+            self.species.movement()
+        }
     }
     /// Dirigée par son cavalier (le jeu de celui-ci la déplace)
     fn driven_by_rider(&self) -> bool {
@@ -333,6 +382,8 @@ pub(super) struct MobRecord {
     pub strength: u8,
     pub saddled: bool,
     pub temper: u32,
+    /// Attachée à la barrière de ce bloc
+    pub knot: Option<(i32, i32, i32)>,
 }
 
 impl MobRecord {
@@ -357,6 +408,10 @@ impl MobRecord {
             ("strength".into(), Json::Num(self.strength as f64)),
             ("saddled".into(), Json::Bool(self.saddled)),
             ("temper".into(), Json::Num(self.temper as f64)),
+            ("knot".into(), match self.knot {
+                Some((x, y, z)) => Json::Arr(vec![Json::Num(x as f64), Json::Num(y as f64), Json::Num(z as f64)]),
+                None => Json::Null,
+            }),
         ])
     }
 
@@ -377,6 +432,10 @@ impl MobRecord {
             strength: num("strength").unwrap_or(0.0).clamp(0.0, 5.0) as u8,
             saddled: v.get("saddled").and_then(|s| s.as_bool()).unwrap_or(false),
             temper: num("temper").unwrap_or(0.0).clamp(0.0, 100.0) as u32,
+            knot: v.get("knot").and_then(|k| k.as_arr()).and_then(|k| match k {
+                [x, y, z] => Some((x.as_f64()? as i32, y.as_f64()? as i32, z.as_f64()? as i32)),
+                _ => None,
+            }),
             age: num("age").unwrap_or(0.0) as i64,
             color: num("color").unwrap_or(0.0) as u8 & 15,
             variant: num("variant").unwrap_or(0.0) as i32,
@@ -404,6 +463,10 @@ impl Mob {
             strength: self.strength,
             saddled: self.saddled,
             temper: self.temper,
+            knot: match self.leash {
+                Some(Leash::Knot(_, pos)) => Some(pos),
+                _ => None,
+            },
         }
     }
 }
@@ -664,6 +727,8 @@ impl Server {
             driven: 0,
             ride_offset: None,
             rearing: 0,
+            airborne: false,
+            leash: None,
         };
         self.mobs.insert(id, mob);
         self.mobs_dirty = true;
@@ -671,7 +736,7 @@ impl Server {
     }
 
     /// Données d'entité d'une créature (taille, couleur, bébé, tondu…).
-    fn mob_meta(m: &Mob) -> Vec<(u32, bedrock::Meta)> {
+    fn mob_meta(m: &Mob, holder: i64) -> Vec<(u32, bedrock::Meta)> {
         let (w, h) = m.size();
         let mut meta = bedrock::mob_metadata(w, h, m.variant, m.color, m.flags());
         let scale = m.species.scale(m.baby());
@@ -680,6 +745,8 @@ impl Server {
                 38 => *v = bedrock::Meta::Float(scale),
                 // Motif de la robe du cheval
                 43 => *v = bedrock::Meta::Int(m.mark),
+                // Qui tient sa laisse
+                37 => *v = bedrock::Meta::Long(holder),
                 _ => {}
             }
         }
@@ -687,8 +754,17 @@ impl Server {
     }
 
     /// Paquet d'apparition d'une créature.
-    fn mob_packet(m: &Mob, rider: Option<i64>) -> Vec<u8> {
-        bedrock::add_actor(m.id, m.species.id(), m.pos, m.vel, m.yaw, (m.health.max(0.5), m.max_health), m.species.mount().then_some((m.move_speed, m.jump)), rider, &Self::mob_meta(m))
+    fn mob_packet(m: &Mob, rider: Option<i64>, holder: i64) -> Vec<u8> {
+        bedrock::add_actor(m.id, m.species.id(), m.pos, m.vel, m.yaw, (m.health.max(0.5), m.max_health), m.species.mount().then_some((m.move_speed, m.jump)), rider, &Self::mob_meta(m, holder))
+    }
+
+    /// Identifiant de celui qui tient la laisse (-1 : personne).
+    fn holder_id(&self, m: &Mob) -> i64 {
+        match m.leash {
+            Some(Leash::Player(a)) => self.clients.get(&a).map(|c| c.id).unwrap_or(-1),
+            Some(Leash::Knot(k, _)) => k,
+            None => -1,
+        }
     }
 
     /// Envoie aux joueurs qui la voient l'état changé d'une créature (bébé devenu adulte,
@@ -697,7 +773,11 @@ impl Server {
         let Some(m) = self.mobs.get(&id) else { return };
         let scale = m.species.scale(m.baby());
         let (w, h) = m.size();
-        let packet = bedrock::set_actor_data(id, &[(0, bedrock::Meta::Long(m.flags())), (38, bedrock::Meta::Float(scale)), (53, bedrock::Meta::Float(w)), (54, bedrock::Meta::Float(h))]);
+        let holder = self.holder_id(m);
+        let packet = bedrock::set_actor_data(
+            id,
+            &[(0, bedrock::Meta::Long(m.flags())), (bedrock::META_LEAD_HOLDER, bedrock::Meta::Long(holder)), (38, bedrock::Meta::Float(scale)), (53, bedrock::Meta::Float(w)), (54, bedrock::Meta::Float(h))],
+        );
         self.send_to_viewers(id, bedrock::ID_SET_ACTOR_DATA, &packet);
         self.mobs_dirty = true;
     }
@@ -706,9 +786,28 @@ impl Server {
     pub(super) fn show_mobs(&mut self) {
         let mut out: Vec<(SocketAddr, u32, Vec<u8>)> = Vec::new();
         let ids: HashMap<SocketAddr, i64> = self.clients.iter().map(|(a, c)| (*a, c.id)).collect();
+        let holder_of = |m: &Mob| match m.leash {
+            Some(Leash::Player(a)) => ids.get(&a).copied().unwrap_or(-1),
+            Some(Leash::Knot(k, _)) => k,
+            None => -1,
+        };
         for (addr, c) in self.clients.iter_mut() {
             if !c.joined || c.stage != Stage::InGame {
                 continue;
+            }
+            // Nœuds de laisse aux barrières (avant les animaux qui y sont attachés)
+            for (k, pos) in self.knots.iter() {
+                let at = (pos.0 as f32 + 0.5, pos.1 as f32 + 0.25, pos.2 as f32 + 0.5);
+                let far = (at.0 - c.pos.0).powi(2) + (at.2 - c.pos.2).powi(2);
+                let has_chunk = c.delivered.contains(&(pos.0 >> 4, pos.2 >> 4));
+                if far < VIEW * VIEW && has_chunk {
+                    if c.mobs_seen.insert(*k) {
+                        let meta = bedrock::mob_metadata(0.375, 0.5, 0, 0, 0);
+                        out.push((*addr, bedrock::ID_ADD_ACTOR, bedrock::add_actor(*k, "minecraft:leash_knot", at, (0.0, 0.0, 0.0), 0.0, (1.0, 1.0), None, None, &meta)));
+                    }
+                } else if (far > (VIEW + 16.0) * (VIEW + 16.0) || !has_chunk) && c.mobs_seen.remove(k) {
+                    out.push((*addr, bedrock::ID_REMOVE_ACTOR, bedrock::remove_actor(*k)));
+                }
             }
             for m in self.mobs.values() {
                 let far = (m.pos.0 - c.pos.0).powi(2) + (m.pos.2 - c.pos.2).powi(2);
@@ -717,7 +816,7 @@ impl Server {
                 let has_chunk = c.delivered.contains(&chunk);
                 if far < VIEW * VIEW && m.dead.is_none() && has_chunk {
                     if c.mobs_seen.insert(m.id) {
-                        out.push((*addr, bedrock::ID_ADD_ACTOR, Self::mob_packet(m, m.rider.and_then(|r| ids.get(&r).copied()))));
+                        out.push((*addr, bedrock::ID_ADD_ACTOR, Self::mob_packet(m, m.rider.and_then(|r| ids.get(&r).copied()), holder_of(m))));
                     }
                 } else if (far > (VIEW + 16.0) * (VIEW + 16.0) || !has_chunk) && c.mobs_seen.remove(&m.id) {
                     out.push((*addr, bedrock::ID_REMOVE_ACTOR, bedrock::remove_actor(m.id)));
@@ -747,6 +846,20 @@ impl Server {
         let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.mobs_seen.contains(&id)).map(|(a, _)| *a).collect();
         for v in viewers {
             self.send(&v, packet_id, packet);
+        }
+    }
+
+    /// Un son de la créature, joué chez ceux qui la voient (sauf `except`, dont le jeu le
+    /// joue déjà lui-même).
+    fn mob_sound(&mut self, id: i64, sound: &str, except: Option<SocketAddr>) {
+        if self.refused_extras.contains(&bedrock::ID_LEVEL_SOUND_EVENT) {
+            return;
+        }
+        let Some(m) = self.mobs.get(&id) else { return };
+        let packet = bedrock::level_sound(sound, m.pos, m.species.id(), m.baby(), id);
+        let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(a, c)| Some(**a) != except && c.mobs_seen.contains(&id)).map(|(a, _)| *a).collect();
+        for v in viewers {
+            self.send(&v, bedrock::ID_LEVEL_SOUND_EVENT, &packet);
         }
     }
 
@@ -814,9 +927,22 @@ impl Server {
                 self.world.prepare(cx, cz);
                 continue;
             }
+            // En laisse : où est celui qui la tient ? Trop loin (10 blocs), elle casse
+            let leash_to = match m.leash {
+                Some(Leash::Player(a)) => self.clients.get(&a).map(|c| (c.pos.0, c.pos.1 - EYE, c.pos.2)),
+                Some(Leash::Knot(_, p)) => Some((p.0 as f32 + 0.5, p.1 as f32, p.2 as f32 + 0.5)),
+                None => None,
+            };
+            if let Some(h) = leash_to {
+                if (h.0 - m.pos.0).powi(2) + (h.1 - m.pos.1).powi(2) + (h.2 - m.pos.2).powi(2) > LEASH_MAX * LEASH_MAX {
+                    self.mobs.insert(id, m);
+                    self.unleash(id, true);
+                    continue;
+                }
+            }
             let had_love = m.love > 0;
             let grew = self.mob_age(&mut m);
-            self.mob_think(&mut m, &players);
+            self.mob_think(&mut m, &players, leash_to);
             self.mob_physics(&mut m);
             let moved = (m.pos.0 - m.sent.0).abs() + (m.pos.1 - m.sent.1).abs() + (m.pos.2 - m.sent.2).abs() > 0.01 || (m.yaw - m.sent_yaw).abs() > 3.0;
             if moved {
@@ -870,6 +996,7 @@ impl Server {
                     if let Some(egg) = self.item_id("egg") {
                         self.drop_item((pos.0, pos.1 + 0.3, pos.2), (0.0, 0.1, 0.0), egg, 1, 10);
                     }
+                    self.mob_sound(id, bedrock::SOUND_PLOP, None);
                 }
             }
             Species::Sheep if m.on_ground && self.mob_rng.below(if m.baby() { 50 } else { 1000 }) == 0 => {
@@ -913,35 +1040,78 @@ impl Server {
 
     /// Choix de la direction : suivre la nourriture, rejoindre l'âme sœur, se promener,
     /// s'arrêter, fuir.
-    fn mob_think(&mut self, m: &mut Mob, players: &[((f32, f32, f32), String)]) {
+    fn mob_think(&mut self, m: &mut Mob, players: &[((f32, f32, f32), String)], leash_to: Option<(f32, f32, f32)>) {
         if m.knock > 0 {
             m.knock -= 1;
             m.vel.0 *= 0.7;
             m.vel.2 *= 0.7;
             return;
         }
-        let mut speed = if m.panic > 0 { m.species.speed() * 2.0 } else { m.species.speed() };
+        // Vitesses du jeu : vitesse propre × multiplicateur du comportement en cours
+        let (stroll, panic, tempt, follow) = m.species.multipliers();
+        let attr = m.movement();
+        let mut speed = ground_speed(attr * stroll);
         let mut stop_at = 0.4;
-        if m.panic > 0 {
+        let tempting: &[&str] = if m.species.mount() && !m.tamed { &[] } else { m.species.tempt() };
+        let near_player = |p: &(f32, f32, f32), r: f32| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2) < r * r && (p.1 - m.pos.1).abs() < 4.0;
+        // Lapin : fuit le joueur qui ne lui tend pas sa nourriture (à moins de 8 blocs)
+        let scary = if m.species == Species::Rabbit {
+            players.iter().filter(|(p, held)| near_player(p, 8.0) && !tempting.contains(&held.as_str())).map(|(p, _)| *p).min_by(|a, b| {
+                let d = |p: &(f32, f32, f32)| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2);
+                d(a).total_cmp(&d(b))
+            })
+        } else {
+            None
+        };
+        if let Some(h) = leash_to.filter(|h| (h.0 - m.pos.0).powi(2) + (h.2 - m.pos.2).powi(2) > LEASH_SOFT * LEASH_SOFT) {
+            // En laisse, trop loin de celui qui la tient : elle le rejoint (tirée fort au-delà
+            // de 6 blocs)
+            let d = ((h.0 - m.pos.0).powi(2) + (h.2 - m.pos.2).powi(2)).sqrt();
+            m.target = Some((h.0, h.2));
+            stop_at = LEASH_SOFT - 1.0;
+            speed = if d > LEASH_HARD { (ground_speed(attr * panic) + (d - LEASH_HARD) * 0.1).min(0.6) } else { ground_speed(attr * tempt) };
+        } else if m.panic > 0 {
             m.panic -= 1;
+            speed = ground_speed(attr * panic);
             // En fuite : une nouvelle direction de temps en temps
             if m.target.is_none() || self.mob_rng.below(20) == 0 {
                 let a = self.mob_rng.unit() as f32 * std::f32::consts::TAU;
                 m.target = Some((m.pos.0 + a.cos() * 8.0, m.pos.2 + a.sin() * 8.0));
             }
+        } else if let Some(p) = scary {
+            let (dx, dz) = (m.pos.0 - p.0, m.pos.2 - p.2);
+            let d = (dx * dx + dz * dz).sqrt().max(0.1);
+            m.target = Some((m.pos.0 + dx / d * 6.0, m.pos.2 + dz / d * 6.0));
+            // Au pas de course quand on s'approche (règles du jeu : 1,5 puis 1,8)
+            speed = ground_speed(attr * if d < 4.0 { 1.8 } else { 1.5 });
         } else if let Some(partner) = self.partner_of(m) {
             // Amoureux : rejoint l'autre
             m.target = Some(partner);
             stop_at = 0.8;
-        } else if let Some(p) = players.iter().filter(|(_, held)| m.species.tempt().contains(&held.as_str())).map(|(p, _)| *p).find(|p| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2) < 100.0 && (p.1 - m.pos.1).abs() < 4.0) {
+            speed = ground_speed(attr);
+        } else if let Some(p) = players.iter().filter(|(_, held)| tempting.contains(&held.as_str())).map(|(p, _)| *p).find(|p| near_player(p, 10.0)) {
             // Attiré par sa nourriture : suit le joueur, s'arrête à deux pas
             m.target = Some((p.0, p.2));
             stop_at = 2.5;
-            speed *= 1.25;
+            speed = ground_speed(attr * tempt);
+        } else if let Some(parent) = self.parent_of(m) {
+            // Petit : suit un adulte de son espèce
+            m.target = Some(parent);
+            stop_at = 2.5;
+            speed = ground_speed(attr * follow);
         } else if m.target.is_none() && self.mob_rng.below(120) == 0 {
+            // Promenade, en évitant l'eau
             let a = self.mob_rng.unit() as f32 * std::f32::consts::TAU;
             let d = 2.0 + self.mob_rng.unit() as f32 * 8.0;
-            m.target = Some((m.pos.0 + a.cos() * d, m.pos.2 + a.sin() * d));
+            let t = (m.pos.0 + a.cos() * d, m.pos.2 + a.sin() * d);
+            if !self.mob_water(t.0, m.pos.1 - 0.5, t.1) && !self.mob_water(t.0, m.pos.1 + 0.2, t.1) {
+                m.target = Some(t);
+            }
+        } else if m.target.is_none() && self.mob_rng.below(50) == 0 {
+            // Regarde un joueur proche de temps en temps (2 chances sur 100 par tick, 6 blocs)
+            if let Some(p) = players.iter().map(|(p, _)| *p).find(|p| near_player(p, 6.0)) {
+                m.yaw = (-(p.0 - m.pos.0)).atan2(p.2 - m.pos.2).to_degrees().rem_euclid(360.0);
+            }
         }
         match m.target {
             Some((tx, tz)) => {
@@ -967,6 +1137,21 @@ impl Server {
                 m.vel.2 = 0.0;
             }
         }
+    }
+
+    /// Petit : position d'un adulte de son espèce entre 3 et 8 blocs (il le rejoint).
+    fn parent_of(&self, m: &Mob) -> Option<(f32, f32)> {
+        if !m.baby() {
+            return None;
+        }
+        let near = self
+            .mobs
+            .values()
+            .filter(|o| o.species == m.species && !o.baby() && o.dead.is_none())
+            .map(|o| (o.pos.0, o.pos.2, (o.pos.0 - m.pos.0).powi(2) + (o.pos.2 - m.pos.2).powi(2)))
+            .filter(|o| o.2 < 64.0)
+            .min_by(|a, b| a.2.total_cmp(&b.2))?;
+        (near.2 > 9.0).then_some((near.0, near.1))
     }
 
     /// Position d'un autre animal de la même espèce, adulte et amoureux, à moins de 8 blocs.
@@ -1179,6 +1364,28 @@ impl Server {
         if !near {
             return true;
         }
+        // En laisse : main vide ou une laisse en main, on la détache (elle tombe)
+        if m.leash.is_some() && (held.is_empty() || held == "lead") {
+            self.unleash(id, true);
+            return true;
+        }
+        // Une laisse en main : il est attaché au joueur
+        if held == "lead" && m.leash.is_none() && m.rider.is_none() {
+            if let Some(mob) = self.mobs.get_mut(&id) {
+                mob.leash = Some(Leash::Player(*addr));
+                mob.target = None;
+            }
+            self.mob_changed(id);
+            self.mob_sound(id, bedrock::SOUND_LEASH_PLACE, None);
+            if !creative {
+                if let Some(c) = self.clients.get_mut(addr) {
+                    c.inv.consume_held();
+                }
+                self.send_inventory(addr);
+                self.show_held(addr);
+            }
+            return true;
+        }
         let mut changed = false;
         let mut used = false;
         const COLORS: [&str; 16] = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black"];
@@ -1210,6 +1417,7 @@ impl Server {
             if let Some(s) = self.mobs.get_mut(&id) {
                 s.sheared = true;
             }
+            self.mob_sound(id, bedrock::SOUND_SHEAR, None);
             changed = true;
         } else if held == "shears" && m.species == Species::Mooshroom && !m.baby() {
             // Champimeuh tondue : 5 champignons de sa couleur, et elle redevient une vache
@@ -1218,18 +1426,22 @@ impl Server {
                 let vel = ((self.mob_rng.unit() as f32 - 0.5) * 0.2, 0.25, (self.mob_rng.unit() as f32 - 0.5) * 0.2);
                 self.drop_item((m.pos.0, m.pos.1 + 1.0, m.pos.2), vel, item, 5, 10);
             }
+            self.mob_sound(id, bedrock::SOUND_SHEAR, None);
             self.transform_mob(id, Species::Cow);
         } else if held == "bucket" && matches!(m.species, Species::Cow | Species::Mooshroom | Species::Goat) && !m.baby() {
             // Traite : le seau vide devient un seau de lait
+            self.mob_sound(id, bedrock::SOUND_MILK, None);
             swap(self, "milk_bucket");
         } else if held == "bowl" && m.species == Species::Mooshroom && !m.baby() {
             // Champimeuh : un bol devient une soupe de champignons
+            self.mob_sound(id, bedrock::SOUND_MILK, None);
             swap(self, "mushroom_stew");
         } else if held == "saddle" && m.tamed && !m.saddled && m.species.steerable() && !m.baby() {
             // Selle posée : son cavalier pourra la diriger
             if let Some(s) = self.mobs.get_mut(&id) {
                 s.saddled = true;
             }
+            self.mob_sound(id, bedrock::SOUND_SADDLE, None);
             changed = true;
             used = true;
         } else if heal.is_some() && (m.health < m.max_health || temper.is_some()) {
@@ -1255,6 +1467,10 @@ impl Server {
         } else if m.species.mount() && !m.baby() && m.rider.is_none() && !riding && !m.species.breed_items().contains(&held.as_str()) {
             // Main vide (ou un objet sans usage ici) : en selle
             self.mount_mob(addr, id);
+        }
+        // Un repas donné : elle mange
+        if used && held != "saddle" {
+            self.mob_sound(id, bedrock::SOUND_EAT, None);
         }
         if used && !creative {
             if let Some(c) = self.clients.get_mut(addr) {
@@ -1305,6 +1521,115 @@ impl Server {
             }
         }
         Ok(())
+    }
+
+    /// Une barrière (pas un portillon) : on peut y attacher une laisse.
+    pub(super) fn is_fence(&self, state: u32) -> bool {
+        self.data.as_ref().and_then(|d| d.block_name(state)).map(|n| n.ends_with("fence") && !n.contains("gate")).unwrap_or(false)
+    }
+
+    /// Nœud de laisse de la barrière de ce bloc (créé s'il n'y en a pas encore).
+    fn knot_at(&mut self, pos: (i32, i32, i32)) -> i64 {
+        if let Some((k, _)) = self.knots.iter().find(|(_, p)| **p == pos) {
+            return *k;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.knots.insert(id, pos);
+        id
+    }
+
+    /// Retire un nœud de laisse (chez tous ceux qui le voient).
+    fn remove_knot(&mut self, k: i64) {
+        self.knots.remove(&k);
+        let viewers: Vec<SocketAddr> = self.clients.iter_mut().filter_map(|(a, c)| c.mobs_seen.remove(&k).then_some(*a)).collect();
+        for v in viewers {
+            self.send(&v, bedrock::ID_REMOVE_ACTOR, &bedrock::remove_actor(k));
+        }
+    }
+
+    /// Détache une créature ; `drop` : la laisse tombe par terre (rompue, ou détachée à la main).
+    fn unleash(&mut self, id: i64, drop: bool) {
+        let Some(m) = self.mobs.get_mut(&id) else { return };
+        if m.leash.take().is_none() {
+            return;
+        }
+        let pos = m.pos;
+        if drop {
+            if let Some(lead) = self.item_id("lead") {
+                self.drop_item((pos.0, pos.1 + 0.5, pos.2), (0.0, 0.2, 0.0), lead, 1, 10);
+            }
+            self.mob_sound(id, bedrock::SOUND_LEASH_BREAK, None);
+        }
+        self.mob_changed(id);
+    }
+
+    /// Clic sur un nœud de laisse : les animaux attachés sont libérés (les laisses tombent),
+    /// le nœud disparaît. Rend vrai si c'était un nœud.
+    pub(super) fn knot_clicked(&mut self, k: i64) -> bool {
+        if !self.knots.contains_key(&k) {
+            return false;
+        }
+        let tied: Vec<i64> = self.mobs.values().filter(|m| matches!(m.leash, Some(Leash::Knot(id, _)) if id == k)).map(|m| m.id).collect();
+        for id in tied {
+            self.unleash(id, true);
+        }
+        self.remove_knot(k);
+        true
+    }
+
+    /// Clic droit sur une barrière : les animaux que le joueur tient en laisse (à moins de
+    /// 10 blocs) y sont attachés, par un nœud. Rend vrai si au moins un l'a été.
+    pub(super) fn tie_to_fence(&mut self, addr: &SocketAddr, pos: (i32, i32, i32)) -> bool {
+        let held: Vec<i64> = self
+            .mobs
+            .values()
+            .filter(|m| m.leash == Some(Leash::Player(*addr)))
+            .filter(|m| (m.pos.0 - pos.0 as f32 - 0.5).powi(2) + (m.pos.1 - pos.1 as f32).powi(2) + (m.pos.2 - pos.2 as f32 - 0.5).powi(2) < LEASH_MAX * LEASH_MAX)
+            .map(|m| m.id)
+            .collect();
+        if held.is_empty() {
+            return false;
+        }
+        let k = self.knot_at(pos);
+        // Le nœud doit exister chez les joueurs avant que les laisses s'y accrochent
+        self.show_mobs();
+        for id in held {
+            if let Some(m) = self.mobs.get_mut(&id) {
+                m.leash = Some(Leash::Knot(k, pos));
+            }
+            self.mob_changed(id);
+            self.mob_sound(id, bedrock::SOUND_LEASH_PLACE, None);
+        }
+        true
+    }
+
+    /// Laisses à vérifier de temps en temps : joueur parti ou mort, barrière cassée, nœud
+    /// qui ne retient plus personne.
+    fn check_leashes(&mut self) {
+        // (Chunk pas encore prêt : la barrière est supposée toujours là)
+        let fence = |s: &Self, p: (i32, i32, i32)| !s.world.is_ready(p.0 >> 4, p.2 >> 4) || s.is_fence(s.world.get(p.0, p.1, p.2));
+        let broken: Vec<i64> = self
+            .mobs
+            .values()
+            .filter(|m| match m.leash {
+                Some(Leash::Player(a)) => self.clients.get(&a).map(|c| c.dead.is_some() || !c.joined).unwrap_or(true),
+                Some(Leash::Knot(_, p)) => !fence(self, p),
+                None => false,
+            })
+            .map(|m| m.id)
+            .collect();
+        for id in broken {
+            self.unleash(id, true);
+        }
+        let used: HashSet<i64> = self.mobs.values().filter_map(|m| match m.leash {
+            Some(Leash::Knot(k, _)) => Some(k),
+            _ => None,
+        }).collect();
+        let unused: Vec<i64> = self.knots.keys().filter(|k| !used.contains(k)).copied().collect();
+        for k in unused {
+            self.remove_knot(k);
+        }
     }
 
     /// Le joueur monte sur la monture : lien envoyé à tous ceux qui la voient, et le joueur
@@ -1414,6 +1739,7 @@ impl Server {
                 m.rearing = 20;
             }
             self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_TAME_FAIL, 0));
+            self.mob_sound(id, bedrock::SOUND_MAD, None);
             self.mob_changed(id);
             if let Some(r) = rider {
                 self.dismount(&r);
@@ -1450,14 +1776,27 @@ impl Server {
         m.pos = pos;
         m.yaw = yaw.rem_euclid(360.0);
         m.driven = tick;
+        let rider = m.rider;
+        let was_airborne = m.airborne;
+        // Au sol si un bloc la porte (sinon le jeu des autres la montre en plein saut)
+        let (bx, bz) = (pos.0.floor() as i32, pos.2.floor() as i32);
+        // (au moins un demi-bloc de vide dessous : une marche descendue n'est pas un saut)
+        let airborne = self.mob_free(bx, (pos.1 - 0.05).floor() as i32, bz) && self.mob_free(bx, (pos.1 - 0.6).floor() as i32, bz);
+        if let Some(m) = self.mobs.get_mut(&id) {
+            m.airborne = airborne;
+        }
+        if airborne != was_airborne {
+            // Saut et atterrissage : son jeu les joue pour lui, pas pour les autres
+            self.mob_sound(id, if airborne { bedrock::SOUND_JUMP } else { bedrock::SOUND_LAND }, rider);
+        }
+        let Some(m) = self.mobs.get_mut(&id) else { return };
         let moved = (m.pos.0 - m.sent.0).abs() + (m.pos.1 - m.sent.1).abs() + (m.pos.2 - m.sent.2).abs() > 0.01 || (m.yaw - m.sent_yaw).abs() > 3.0;
         if !moved {
             return;
         }
         m.sent = m.pos;
         m.sent_yaw = m.yaw;
-        let rider = m.rider;
-        let packet = bedrock::move_actor_absolute(id, pos, 0.0, m.yaw, m.yaw, true);
+        let packet = bedrock::move_actor_absolute(id, pos, 0.0, m.yaw, m.yaw, !airborne);
         self.mobs_dirty = true;
         // Le cavalier la déplace lui-même : on ne la lui renvoie pas
         let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(a, c)| Some(**a) != rider && c.mobs_seen.contains(&id)).map(|(a, _)| *a).collect();
@@ -1562,6 +1901,7 @@ impl Server {
     /// celles dont plus personne n'est proche (comme le jeu, qui les garde avec leur chunk).
     pub(super) fn stream_mobs(&mut self) {
         self.mob_store.receive();
+        self.check_leashes();
         let centers: Vec<(i32, i32)> = self.clients.values().filter(|c| c.joined && c.stage == Stage::InGame).map(|c| mob_store::chunk_of(c.pos.0, c.pos.2)).collect();
         let load = self.mob_load_radius();
         let keep = load + 2;
@@ -1589,7 +1929,7 @@ impl Server {
             .mobs
             .values()
             // (Une monture en selle suit son cavalier : jamais rangée sous lui)
-            .filter(|m| m.dead.is_none() && m.rider.is_none())
+            .filter(|m| m.dead.is_none() && m.rider.is_none() && !matches!(m.leash, Some(Leash::Player(_))))
             .map(|m| (m.id, mob_store::chunk_of(m.pos.0, m.pos.2)))
             .filter(|(_, c)| !self.mob_chunks.contains(c))
             .collect();
@@ -1605,7 +1945,11 @@ impl Server {
 
     /// Fait revenir une créature enregistrée.
     fn spawn_record(&mut self, r: MobRecord) {
+        let knot = r.knot.map(|pos| (self.knot_at(pos), pos));
         let id = self.add_mob(r.species, r.pos);
+        if let (Some((k, pos)), Some(m)) = (knot, self.mobs.get_mut(&id)) {
+            m.leash = Some(Leash::Knot(k, pos));
+        }
         if let Some(m) = self.mobs.get_mut(&id) {
             m.yaw = r.yaw;
             m.sent_yaw = r.yaw;
@@ -1731,7 +2075,14 @@ mod tests {
         assert_eq!(mate(Species::Cow, Species::Mooshroom), None);
         assert_eq!(mate(Species::Goat, Species::Goat), Some(Species::Goat));
         assert!(Species::Horse.mount() && Species::Llama.mount() && !Species::Goat.mount());
-        assert!(Species::Horse.breed_items().contains(&"golden_carrot") && Species::Horse.tempt().is_empty());
+        assert!(Species::Horse.breed_items().contains(&"golden_carrot") && Species::Horse.tempt().contains(&"golden_apple"));
+        assert!(Species::Llama.tempt().is_empty(), "le lama ne suit pas la nourriture");
+        // Vitesses du jeu : une vache se promène (0,25 × 0,8) à moins de 2 blocs par seconde,
+        // fuit (× 1,25) à peu près au pas d'un joueur
+        let walk = ground_speed(0.25 * 0.8) * 20.0;
+        let flee = ground_speed(0.25 * 1.25) * 20.0;
+        assert!((1.5..2.0).contains(&walk) && (4.0..4.6).contains(&flee), "{} {}", walk, flee);
+        assert!(ground_speed(10.0) <= 0.4);
         assert_eq!(Species::Llama.breed_items(), &["hay_block"]);
         assert!(Species::Mule.breed_items().is_empty());
         assert!(Species::Horse.heal_items().iter().any(|(i, h)| *i == "hay_block" && *h == 20.0));
@@ -1760,6 +2111,7 @@ mod tests {
             strength: 0,
             saddled: true,
             temper: 15,
+            knot: Some((4, 65, -7)),
         };
         assert_eq!(MobRecord::from_json(&r.to_json()), Some(r));
         // Ancien enregistrement (sans les nouveaux champs) : valeurs du jeu par défaut

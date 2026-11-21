@@ -403,6 +403,8 @@ pub struct Server {
     /// Régions d'enregistrement des créatures, et chunks dont les créatures sont en mémoire
     mob_store: mob_store::MobStore,
     mob_chunks: HashSet<(i32, i32)>,
+    /// Nœuds de laisse attachés aux barrières : identifiant → bloc de la barrière
+    knots: HashMap<i64, (i32, i32, i32)>,
     /// Animaux changés depuis le dernier enregistrement
     mobs_dirty: bool,
     /// Objets posés au sol
@@ -714,6 +716,7 @@ impl Server {
             // Dossier provisoire : le vrai est fixé à l'ouverture du monde (load_mobs)
             mob_store: mob_store::MobStore::new(std::path::PathBuf::from("world").join("entities")),
             mob_chunks: HashSet::new(),
+            knots: HashMap::new(),
             mobs_dirty: false,
             ground: HashMap::new(),
             plugin_blocks: None,
@@ -3207,8 +3210,8 @@ impl Server {
         if self.clients.get(addr).map(|c| c.mode.is_spectator()).unwrap_or(true) {
             return;
         }
-        // Une créature ?
-        if self.hit_mob(target as i64, (eye.0, eye.1 - EYE, eye.2), damage) {
+        // Une créature, un nœud de laisse ?
+        if self.knot_clicked(target as i64) || self.hit_mob(target as i64, (eye.0, eye.1 - EYE, eye.2), damage) {
             return;
         }
         let victim = self.clients.iter().find(|(_, c)| c.id as u64 == target && c.id != from && c.joined).map(|(a, c)| (*a, c.pos, !c.mode.takes_damage(), c.id));
@@ -4156,6 +4159,10 @@ impl Server {
     /// l'objet tenu en main n'est pas posé.
     fn on_interact(&mut self, addr: &SocketAddr, pos: (i32, i32, i32)) -> bool {
         let state = self.world.get(pos.0, pos.1, pos.2);
+        // Barrière : on y attache les animaux qu'on tient en laisse
+        if self.is_fence(state) && self.tie_to_fence(addr, pos) {
+            return true;
+        }
         let (name, action, kind) = match self.block_at_state(state) {
             Some(b) if b.interaction() != Interaction::None => (b.short_name().to_string(), b.interaction(), b.tile()),
             _ => return false,
@@ -5612,8 +5619,11 @@ impl Server {
                         if bedrock::is_attack(action) {
                             self.on_attack(&addr, target);
                         } else if action == 0 {
-                            // Clic droit sur une entité : nourrir, tondre, traire un animal
-                            self.interact_mob(&addr, target as i64);
+                            // Clic droit sur une entité : nourrir, tondre, traire un animal,
+                            // détacher les laisses d'un nœud
+                            if !self.knot_clicked(target as i64) {
+                                self.interact_mob(&addr, target as i64);
+                            }
                         }
                     }
                 }

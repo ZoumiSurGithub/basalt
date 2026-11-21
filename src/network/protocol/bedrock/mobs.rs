@@ -156,6 +156,10 @@ pub const FLAG_SHEARED: i64 = 1 << 31;
 /// Montures : sellée, apprivoisée, dirigée au clavier par son cavalier, saut chargé
 pub const FLAG_SADDLED: i64 = 1 << 8;
 pub const FLAG_TAMED: i64 = 1 << 28;
+/// Tenue en laisse
+pub const FLAG_LEASHED: i64 = 1 << 30;
+/// Donnée d'entité : qui tient la laisse (identifiant unique, -1 personne)
+pub const META_LEAD_HOLDER: u32 = 37;
 /// Cabrée (monture qui refuse son cavalier)
 pub const FLAG_REARING: i64 = 1 << 39;
 pub const FLAG_WASD_CONTROLLED: i64 = 1 << 44;
@@ -225,6 +229,18 @@ pub const SOUND_AMBIENT: &str = "ambient";
 pub const SOUND_DEATH: &str = "death";
 pub const SOUND_HURT: &str = "hurt";
 pub const SOUND_EAT: &str = "eat";
+/// Sons que le serveur officiel envoie lui-même (le jeu ne les joue pas seul) : selle posée,
+/// tonte, traite, monture qui refuse son cavalier, saut et atterrissage d'une monture
+pub const SOUND_SADDLE: &str = "saddle";
+pub const SOUND_SHEAR: &str = "shear";
+pub const SOUND_MILK: &str = "milk";
+pub const SOUND_MAD: &str = "mad";
+pub const SOUND_JUMP: &str = "jump";
+pub const SOUND_LAND: &str = "land";
+/// Œuf pondu, laisse attachée ou rompue
+pub const SOUND_PLOP: &str = "plop";
+pub const SOUND_LEASH_PLACE: &str = "leashknot.place";
+pub const SOUND_LEASH_BREAK: &str = "leashknot.break";
 
 /// LevelSoundEvent : un son joué à une position, avec la créature qui l'émet (son cri).
 /// Disposition relevée auprès du serveur officiel 1.26.65 : nom du son, position, données

@@ -2179,6 +2179,40 @@ fn summon_makes_an_animal_appear() {
     steve.game(33, &[3, donkey, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], Some(0xff));
     let off = link(&mut steve).expect("lien retiré à la descente");
     assert_eq!(off[2], 0, "type « retiré » : {:?}", off);
+    // Laisse : une vache attachée au joueur (données « tenue par » mises à jour), puis
+    // détachée main vide (la laisse tombe par terre)
+    std::thread::sleep(Duration::from_millis(1200));
+    command(&mut steve, "/give @s lead");
+    std::thread::sleep(Duration::from_millis(1200));
+    command(&mut steve, "/summon cow ~1 ~ ~-3");
+    let mut cow = None;
+    let started = std::time::Instant::now();
+    while cow.is_none() && started.elapsed() < Duration::from_secs(10) {
+        if let Some((13, body)) = steve.poll_game(Duration::from_millis(300)) {
+            if body.windows(13).any(|w| w == b"minecraft:cow") {
+                cow = Some(body[1]);
+            }
+        }
+    }
+    let cow = cow.expect("vache montrée");
+    // (La laisse est dans le premier emplacement, celui qu'il tient)
+    let mut click = vec![0x00, 0x03, 0x00, cow, 0x00];
+    click.extend_from_slice(&[0x00, 0, 0, 0, 0, 0, 0, 0, 0]);
+    steve.game(30, &click, Some(0xff));
+    let wait = |c: &mut Client, id: u32, first: u8| {
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(5) {
+            if let Some((got, body)) = c.poll_game(Duration::from_millis(300)) {
+                if got == id && body.first() == Some(&first) {
+                    return true;
+                }
+            }
+        }
+        false
+    };
+    assert!(wait(&mut steve, 39, cow), "la vache est tenue en laisse (données mises à jour)");
+    steve.game(30, &click, Some(0xff));
+    assert!(wait(&mut steve, 39, cow), "détachée");
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = handle.join();
     let _ = std::fs::remove_dir_all(&dir);
