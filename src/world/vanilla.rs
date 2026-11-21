@@ -150,7 +150,7 @@ impl B {
     }
 
     /// Biomes océaniques et badlands (règles de surface particulières).
-    fn ocean(self) -> bool {
+    pub(super) fn ocean(self) -> bool {
         matches!(self, B::Ocean | B::DeepOcean | B::WarmOcean | B::LukewarmOcean | B::DeepLukewarmOcean | B::ColdOcean | B::DeepColdOcean | B::FrozenOcean | B::DeepFrozenOcean)
     }
 
@@ -576,7 +576,7 @@ pub struct Vanilla {
     badlands_bands: Normal,
     patches: Normal,
     /// Villages, temples et mines déjà calculés
-    structures: super::structures::PlanCache,
+    pub(super) structures: super::structures::PlanCache,
 }
 
 /// Taille des cellules de la grille de densité (comme dans le jeu).

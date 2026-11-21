@@ -97,6 +97,20 @@ cité antique est creusée dans une caverne aux parois irrégulières, couverte 
 sculk avec capteurs, catalyseurs et hurleurs ; autour des maisons de village, le terrain
 est raccordé en talus plutôt que coupé net.
 
+Les mêmes plans donnent aussi :
+
+- des **épaves** au fond des océans ou échouées sur les plages, avec leurs trois coffres
+  (provisions, trésor, carte) ;
+- des **ruines océaniques** de pierre (mers froides) ou de grès (mers chaudes), usées,
+  souvent une grande entourée de petites, avec coffre et sable ou gravier suspect ;
+- des **igloos** dans les plaines et taïgas enneigées, une fois sur deux avec la trappe,
+  la longue échelle et le laboratoire caché avec son coffre ;
+- des **portails en ruine** partout sur la terre ferme, sur une plaque de netherrack et de
+  magma, avec obsidienne pleureuse et coffre ;
+- des **fossiles** enfouis sous les déserts et les marais.
+
+Ces cinq-là n'existent qu'avec les plans officiels.
+
 Ces plans appartiennent à Mojang : ils ne sont pas publiés avec Basalt. L'installation
 (`get.sh`, `./update.sh`, ou `Installer.cmd` / `Mettre-a-jour.cmd` sous Windows) les
 récupère toute seule, une fois : elle télécharge le serveur officiel depuis minecraft.net
@@ -144,7 +158,7 @@ Les coffres se remplissent au premier clic (ou lâchent leur butin si on les cas
 ouvrir), toujours avec le même contenu pour une graine donnée.
 
 `/locate structure <village|temple|desert_pyramid|jungle_temple|mineshaft|pillager_outpost|
-ancient_city|trail_ruins|trial_chambers>` et
+ancient_city|trail_ruins|trial_chambers|shipwreck|ocean_ruin|igloo|ruined_portal>` et
 `/locate biome <nom>` donnent les coordonnées de la plus proche (réservées aux opérateurs).
 La recherche suit les mêmes règles que la génération, sur un fil à part.
 

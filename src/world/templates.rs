@@ -19,7 +19,7 @@ use super::generator::Rng;
 use crate::nbt::Tag;
 
 /// Familles de plans utilisées (sous-dossiers de `structures`).
-const FAMILIES: [&str; 4] = ["village/", "pillageroutpost/", "ancient_city/", "trail_ruins/"];
+const FAMILIES: [&str; 10] = ["village/", "pillageroutpost/", "ancient_city/", "trail_ruins/", "shipwreck/", "ruin/", "igloo/", "ruined_portal/", "fossils/", "mansion/"];
 
 /// Directions des blocs jigsaw.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -114,6 +114,8 @@ pub struct Template {
     chests: Vec<((i32, i32, i32), String)>,
     /// Lits et leur couleur (la couleur d'un lit est une donnée à part dans Bedrock)
     beds: Vec<((i32, i32, i32), u8)>,
+    /// Repères laissés par les auteurs (« chest », « supplyChest »…) : emplacements de coffres
+    markers: Vec<((i32, i32, i32), String)>,
     pub jigsaws: Vec<Jigsaw>,
 }
 
@@ -143,6 +145,24 @@ impl Template {
             let s = self.states[r as usize].get(i as usize).copied().flatten()?;
             Some((self.rotate((x as i32, y as i32, z as i32), r), s))
         })
+    }
+    /// Blocs du plan non tourné, avec leur état pour la rotation `r` (pour tourner plusieurs
+    /// plans ensemble autour d'un même point).
+    pub fn blocks_unturned(&self, r: u8) -> impl Iterator<Item = ((i32, i32, i32), u32)> + '_ {
+        let r = (r & 3) as usize;
+        self.blocks.iter().filter_map(move |&(x, y, z, i)| Some(((x as i32, y as i32, z as i32), self.states[r].get(i as usize).copied().flatten()?)))
+    }
+    /// Repères du plan tourné : (position relative, texte).
+    pub fn markers(&self, r: u8) -> impl Iterator<Item = ((i32, i32, i32), &str)> + '_ {
+        self.markers.iter().map(move |(p, m)| (self.rotate(*p, r), m.as_str()))
+    }
+    /// Repères du plan non tourné.
+    pub fn markers_unturned(&self) -> impl Iterator<Item = ((i32, i32, i32), &str)> + '_ {
+        self.markers.iter().map(|(p, m)| (*p, m.as_str()))
+    }
+    /// Taille du plan (non tourné).
+    pub fn size(&self) -> (i32, i32, i32) {
+        self.size
     }
     /// Lits du plan tourné : (position relative, couleur).
     pub fn beds(&self, r: u8) -> impl Iterator<Item = ((i32, i32, i32), u8)> + '_ {
@@ -339,12 +359,14 @@ fn read_template(path: &str, tag: &Tag, resolve: &dyn Fn(&str) -> Option<u32>, u
         for (name, props) in &palette {
             let s = java_to_bedrock(name, &rotate_props(props, r as u8), resolve);
             if s.is_none() && name != "minecraft:jigsaw" {
+                #[cfg(test)]
+                eprintln!("inconnu {} {:?} r{} dans {}", name, props, r, path);
                 unknown.insert(name.clone());
             }
             list.push(s);
         }
     }
-    let mut t = Template { path: path.to_string(), size: (size[0], size[1], size[2]), states, blocks: Vec::new(), chests: Vec::new(), beds: Vec::new(), jigsaws: Vec::new() };
+    let mut t = Template { path: path.to_string(), size: (size[0], size[1], size[2]), states, blocks: Vec::new(), chests: Vec::new(), beds: Vec::new(), markers: Vec::new(), jigsaws: Vec::new() };
     for b in tag.get("blocks")?.as_list()? {
         let pos: Vec<i32> = b.get("pos").and_then(|p| p.as_list()).map(|l| l.iter().filter_map(|t| t.as_int()).collect()).unwrap_or_default();
         let state = b.get("state").and_then(|s| s.as_int()).unwrap_or(0) as usize;
@@ -359,6 +381,11 @@ fn read_template(path: &str, tag: &Tag, resolve: &dyn Fn(&str) -> Option<u32>, u
                 t.jigsaws.push(j);
             }
             continue;
+        }
+        if name == "minecraft:structure_block" {
+            if let Some(m) = nbt.and_then(|n| n.get("metadata")).and_then(|m| m.as_str()) {
+                t.markers.push((at, m.to_string()));
+            }
         }
         if let Some(color) = name.strip_prefix("minecraft:").and_then(|n| n.strip_suffix("_bed")).and_then(dye_index) {
             t.beds.push((at, color));
@@ -484,8 +511,64 @@ fn left_of(d: Dir) -> Dir {
     d.turn(3)
 }
 
+/// Nom actuel d'un bloc noté à l'ancienne (« planks » + « variant=birch » -> « birch_planks »),
+/// avec les propriétés qui restent. None : nom déjà actuel.
+fn legacy_name(short: &str, props: &[(String, String)]) -> Option<(String, Vec<(String, String)>)> {
+    let get = |k: &str| props.iter().find(|(a, _)| a == k).map(|(_, v)| v.as_str());
+    let keep = |drop: &[&str]| -> Vec<(String, String)> { props.iter().filter(|(k, _)| !drop.contains(&k.as_str())).cloned().collect() };
+    let color = || match get("color").unwrap_or("white") {
+        "silver" => "light_gray".to_string(),
+        c => c.to_string(),
+    };
+    let slab_kind = |v: &str| -> String {
+        match v {
+            "smoothstone" | "stone" => "smooth_stone".into(),
+            "stone_brick" => "stone_brick".into(),
+            "wood_old" => "oak".into(),
+            other => other.into(),
+        }
+    };
+    Some(match short {
+        "carpet" => (format!("{}_carpet", color()), Vec::new()),
+        "wool" => (format!("{}_wool", color()), Vec::new()),
+        "planks" => (format!("{}_planks", get("variant").unwrap_or("oak")), Vec::new()),
+        "log" | "log2" => (format!("{}_log", get("variant").unwrap_or("oak")), keep(&["variant"])),
+        "leaves" | "leaves2" => (format!("{}_leaves", get("variant").unwrap_or("oak")), Vec::new()),
+        "sapling" => (format!("{}_sapling", get("type").unwrap_or("oak")), keep(&["type"])),
+        "fence" => ("oak_fence".into(), keep(&[])),
+        // Blocs infestés : posés comme le bloc qu'ils imitent (pas encore de poissons d'argent)
+        "monster_egg" => {
+            let n = match get("variant").unwrap_or("stone") {
+                "stone_brick" => "stone_bricks",
+                "mossy_brick" => "mossy_stone_bricks",
+                "cracked_brick" => "cracked_stone_bricks",
+                "chiseled_brick" => "chiseled_stone_bricks",
+                "cobblestone" => "cobblestone",
+                _ => "stone",
+            };
+            (n.into(), Vec::new())
+        }
+        "stonebrick" => {
+            let n = match get("variant").unwrap_or("stonebrick") {
+                "mossy_stonebrick" => "mossy_stone_bricks",
+                "cracked_stonebrick" => "cracked_stone_bricks",
+                "chiseled_stonebrick" => "chiseled_stone_bricks",
+                _ => "stone_bricks",
+            };
+            (n.into(), Vec::new())
+        }
+        "stone_slab" | "wooden_slab" => (format!("{}_slab", slab_kind(get("variant").unwrap_or("oak"))), vec![("type".into(), get("half").unwrap_or("bottom").into())]),
+        "double_stone_slab" | "double_wooden_slab" => (format!("{}_slab", slab_kind(get("variant").unwrap_or("oak"))), vec![("type".into(), "double".into())]),
+        _ => return None,
+    })
+}
+
 /// État Bedrock d'un bloc Java (nom et propriétés). None : bloc sans équivalent.
 pub fn java_to_bedrock(name: &str, props: &[(String, String)], resolve: &dyn Fn(&str) -> Option<u32>) -> Option<u32> {
+    // Anciens noms (plans du manoir, d'avant la 1.13) : d'abord vers les noms actuels
+    if let Some((modern, rest)) = legacy_name(name.trim().trim_start_matches("minecraft:"), props) {
+        return java_to_bedrock(&modern, &rest, resolve);
+    }
     let short = name.trim().trim_start_matches("minecraft:");
     let p = |k: &str| props.iter().find(|(a, _)| a == k).map(|(_, v)| v.as_str());
     let flag = |k: &str| (p(k) == Some("true")) as u8;
@@ -499,6 +582,7 @@ pub fn java_to_bedrock(name: &str, props: &[(String, String)], resolve: &dyn Fn(
         "grass" => "short_grass".into(),
         "dirt_path" | "grass_path" => "grass_path".into(),
         "bricks" => "brick_block".into(),
+        "magma_block" => "magma".into(),
         "terracotta" => "hardened_clay".into(),
         "melon" => "melon_block".into(),
         "note_block" => "noteblock".into(),
@@ -1022,6 +1106,8 @@ mod tests {
         assert_eq!(conv("minecraft:spruce_slab", &[("type", "double")]).as_deref(), Some("minecraft:spruce_double_slab"));
         assert_eq!(conv("minecraft:wall_torch", &[("facing", "west")]).as_deref(), Some("minecraft:torch"));
         assert_eq!(conv("minecraft:grass", &[]).as_deref(), Some("minecraft:short_grass"));
+        assert_eq!(conv("minecraft:monster_egg", &[("variant", "cobblestone")]).as_deref(), Some("minecraft:cobblestone"));
+        assert_eq!(conv("minecraft:planks", &[("variant", "birch")]).as_deref(), Some("minecraft:birch_planks"));
         assert_eq!(conv("minecraft:light_gray_glazed_terracotta", &[("facing", "west")]).as_deref(), Some("minecraft:silver_glazed_terracotta"));
         // Les propriétés passent bien (sinon on retomberait sur l'état par défaut)
         let st = java_to_bedrock("minecraft:oak_stairs", &[("facing".into(), "west".into()), ("half".into(), "top".into())], &resolve).unwrap();

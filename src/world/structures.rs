@@ -34,6 +34,12 @@ pub enum Loot {
     AncientCity,
     TrialCorridor,
     TrialSupply,
+    ShipwreckSupply,
+    ShipwreckTreasure,
+    ShipwreckMap,
+    OceanRuin,
+    Igloo,
+    RuinedPortal,
 }
 
 /// Une structure calculée : ses blocs et ses coffres, rangés par chunk.
@@ -85,10 +91,16 @@ enum Kind {
     TrailRuins,
     TrialChambers,
     AncientCity,
+    Shipwreck,
+    OceanRuin,
+    Igloo,
+    RuinedPortal,
+    /// Squelette fossile enfoui (désert, marais) : un chunk sur 64, comme les mines
+    Fossil,
 }
 
 /// Structures placées sur une grille : (sorte, espacement, séparation, sel, portée en chunks).
-const GRID: [(Kind, i32, i32, u64, i32); 7] = [
+const GRID: [(Kind, i32, i32, u64, i32); 11] = [
     (Kind::Village, 34, 8, 10_387_312, 6),
     (Kind::DesertPyramid, 32, 8, 14_357_617, 2),
     (Kind::JungleTemple, 32, 8, 14_357_619, 2),
@@ -96,12 +108,19 @@ const GRID: [(Kind, i32, i32, u64, i32); 7] = [
     (Kind::TrailRuins, 34, 8, 83_469_867, 6),
     (Kind::TrialChambers, 34, 12, 94_251_327, 4),
     (Kind::AncientCity, 24, 8, 20_083_232, 8),
+    (Kind::Shipwreck, 24, 4, 165_745_295, 2),
+    (Kind::OceanRuin, 20, 8, 14_357_621, 3),
+    (Kind::Igloo, 32, 8, 14_357_618, 1),
+    (Kind::RuinedPortal, 40, 15, 34_222_645, 2),
 ];
 
 /// Plans déjà calculés (y compris « rien ici »), partagés par les fils de génération.
 #[derive(Default)]
 pub struct PlanCache {
     plans: Mutex<HashMap<(Kind, i32, i32), Arc<Plan>>>,
+    /// Vrai dès qu'un chunk a été généré avec les plans officiels (sans eux, les épaves,
+    /// ruines océaniques, igloos et portails en ruine n'existent pas : `/locate` le sait)
+    official: std::sync::atomic::AtomicBool,
 }
 
 const CACHE_PLANS: usize = 512;
@@ -117,6 +136,9 @@ fn grid_start(seed: u64, rx: i32, rz: i32, spacing: i32, separation: i32, salt: 
 /// Les structures dont un morceau tombe dans ce chunk.
 pub fn near(v: &Vanilla, p: &Palette, cache: &PlanCache, cx: i32, cz: i32) -> Vec<Arc<Plan>> {
     let seed = v.seed();
+    if p.templates.is_some() {
+        cache.official.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let mut starts: Vec<(Kind, i32, i32)> = Vec::new();
     for (kind, spacing, separation, salt, reach) in GRID {
         let (rx0, rz0) = (cx.div_euclid(spacing), cz.div_euclid(spacing));
@@ -133,6 +155,10 @@ pub fn near(v: &Vanilla, p: &Palette, cache: &PlanCache, cx: i32, cz: i32) -> Ve
         for dz in -5..=5 {
             if mix(seed, (cx + dx) as i64, (cz + dz) as i64, 77_001) % 1000 < 4 {
                 starts.push((Kind::Mineshaft, cx + dx, cz + dz));
+            }
+            // Fossiles : petits, un chunk de portée suffit
+            if dx.abs() <= 1 && dz.abs() <= 1 && p.templates.is_some() && mix(seed, (cx + dx) as i64, (cz + dz) as i64, 77_002) % 64 == 0 {
+                starts.push((Kind::Fossil, cx + dx, cz + dz));
             }
         }
     }
@@ -209,6 +235,8 @@ fn build(v: &Vanilla, p: &Palette, (kind, sx, sz): (Kind, i32, i32)) -> Plan {
                 ancient_city(&mut b, &mut rng, x, z);
             }
         }
+        // Sans les plans du jeu, pas de version faite à la main
+        Kind::Shipwreck | Kind::OceanRuin | Kind::Igloo | Kind::RuinedPortal | Kind::Fossil => {}
     }
     b.finish()
 }
@@ -257,7 +285,7 @@ fn official(b: &mut Builder, t: &Templates, rng: &mut Rng, kind: Kind, sx: i32, 
             };
             let layout = t.assemble(start, rot, (x, z), y, &rules, rng, &mut |x, z| ground(b, x, z));
             let under = if style.theme == Theme::Desert { "sandstone" } else { "dirt" };
-            place_layout(b, rng, &layout, Placing { under: Some(under), air: true, planks: Some(style.planks), clear_trees: true, archaeology: false, carve: false });
+            place_layout(b, rng, &layout, Placing { under: Some(under), air: true, planks: Some(style.planks), clear_trees: true, archaeology: false, carve: false, integrity: 1.0, markers: no_markers, slopes: true });
             true
         }
         Kind::PillagerOutpost => {
@@ -279,7 +307,7 @@ fn official(b: &mut Builder, t: &Templates, rng: &mut Rng, kind: Kind, sx: i32, 
                     layout.pieces.extend(piece.pieces);
                 }
             }
-            place_layout(b, rng, &layout, Placing { under: Some("dirt"), air: true, planks: None, clear_trees: true, archaeology: false, carve: false });
+            place_layout(b, rng, &layout, Placing { under: Some("dirt"), air: true, planks: None, clear_trees: true, archaeology: false, carve: false, integrity: 1.0, markers: no_markers, slopes: true });
             true
         }
         Kind::AncientCity => {
@@ -292,7 +320,7 @@ fn official(b: &mut Builder, t: &Templates, rng: &mut Rng, kind: Kind, sx: i32, 
             let anchor = start.anchor_y("minecraft:city_anchor").unwrap_or(24);
             let rules = Rules { depth: 7, reach: 116, follows_ground: &|_| false, fallback: &|_| None, empty_chance: &|_| 0.0 };
             let layout = t.assemble(start, rot, (x, z), -27 - anchor, &rules, rng, &mut |x, z| ground(b, x, z));
-            place_layout(b, rng, &layout, Placing { under: None, air: true, planks: None, clear_trees: false, archaeology: false, carve: true });
+            place_layout(b, rng, &layout, Placing { under: None, air: true, planks: None, clear_trees: false, archaeology: false, carve: true, integrity: 1.0, markers: no_markers, slopes: true });
             true
         }
         Kind::TrailRuins => {
@@ -305,10 +333,198 @@ fn official(b: &mut Builder, t: &Templates, rng: &mut Rng, kind: Kind, sx: i32, 
             let y = ground(b, x, z) - 15;
             let rules = Rules { depth: 7, reach: 80, follows_ground: &|_| false, fallback: &|_| None, empty_chance: &|_| 0.0 };
             let layout = t.assemble(start, rot, (x, z), y, &rules, rng, &mut |x, z| ground(b, x, z));
-            place_layout(b, rng, &layout, Placing { under: None, air: false, planks: None, clear_trees: false, archaeology: true, carve: false });
+            place_layout(b, rng, &layout, Placing { under: None, air: false, planks: None, clear_trees: false, archaeology: true, carve: false, integrity: 1.0, markers: no_markers, slopes: true });
+            true
+        }
+        Kind::Shipwreck => {
+            let Some((x, _, z)) = placed(b.v, kind, sx, sz) else { return true };
+            let beached = matches!(b.biome(x, z), B::Beach | B::SnowyBeach);
+            // Échouée : jamais à l'envers
+            let list: Vec<_> = t.pool("shipwreck").into_iter().filter(|p| !beached || !p.path.contains("upsidedown")).collect();
+            let Some(ship) = pick_plan(&list, rng) else { return false };
+            let rot = rng.below(4) as u8;
+            let (sx_, _, sz_) = ship.size();
+            let (w, d) = if rot & 1 == 1 { (sz_, sx_) } else { (sx_, sz_) };
+            // Hauteur du fond sous la coque : moyenne au large, plus basse échouée (à demi
+            // enfouie), comme le jeu
+            let mut floors = Vec::new();
+            for dx in [-w / 2, 0, w / 2 - 1] {
+                for dz in [-d / 2, 0, d / 2 - 1] {
+                    floors.push(b.top(x + dx, z + dz));
+                }
+            }
+            let y = if beached {
+                floors.iter().min().copied().unwrap_or(SEA_LEVEL) + 1 - ship.size().1 / 2 - rng.below(3) as i32
+            } else {
+                floors.iter().sum::<i32>() / floors.len() as i32 + 1
+            };
+            let layout = single(t, ship, rot, (x, z), y, rng, b);
+            place_layout(b, rng, &layout, Placing { under: None, air: false, planks: None, clear_trees: false, archaeology: false, carve: false, integrity: 1.0, markers: shipwreck_markers, slopes: true });
+            true
+        }
+        Kind::OceanRuin => {
+            let Some((x, _, z)) = placed(b.v, kind, sx, sz) else { return true };
+            let warm = matches!(b.biome(x, z), B::WarmOcean | B::LukewarmOcean | B::DeepLukewarmOcean);
+            let all = t.pool("ruin");
+            let name = |p: &str| p.rsplit('/').next().unwrap_or("").to_string();
+            let of = |big: bool| -> Vec<_> {
+                all.iter()
+                    .filter(|p| {
+                        let n = name(&p.path);
+                        n.starts_with("big_") == big && n.contains("warm") == warm
+                    })
+                    .cloned()
+                    .collect()
+            };
+            let big = rng.below(10) < 3;
+            let Some(main) = pick_plan(&of(big), rng) else { return false };
+            let mut layout = single(t, main, rng.below(4) as u8, (x, z), ruin_floor(b, x, z), rng, b);
+            let integrity = if big { 0.9 } else { 0.8 };
+            // Autour d'une grande ruine, souvent quelques petites (un hameau englouti)
+            if big && rng.below(10) < 9 {
+                let small = of(false);
+                for _ in 0..(4 + rng.below(5)) {
+                    let Some(r) = pick_plan(&small, rng) else { break };
+                    let angle = rng.unit() * std::f64::consts::TAU;
+                    let dist = 14.0 + rng.unit() * 14.0;
+                    let (rx, rz) = (x + (angle.cos() * dist) as i32, z + (angle.sin() * dist) as i32);
+                    let piece = single(t, r, rng.below(4) as u8, (rx, rz), ruin_floor(b, rx, rz), rng, b);
+                    if piece.pieces.iter().all(|p| layout.pieces.iter().all(|q| !overlap(&p.bbox, &q.bbox))) {
+                        layout.pieces.extend(piece.pieces);
+                    }
+                }
+            }
+            place_layout(b, rng, &layout, Placing { under: None, air: false, planks: None, clear_trees: false, archaeology: true, carve: false, integrity, markers: ruin_markers, slopes: true });
+            true
+        }
+        Kind::Igloo => {
+            let Some((x, y, z)) = placed(b.v, kind, sx, sz) else { return true };
+            igloo(b, t, rng, x, y - 1, z)
+        }
+        Kind::RuinedPortal => {
+            let Some((x, y, z)) = placed(b.v, kind, sx, sz) else { return true };
+            let all = t.pool("ruined_portal");
+            let giant = rng.below(20) == 0;
+            let list: Vec<_> = all.iter().filter(|p| p.path.contains("giant") == giant).cloned().collect();
+            let Some(portal) = pick_plan(&list, rng) else { return false };
+            // Souvent un peu enfoui
+            let y = y - rng.below(3) as i32;
+            let layout = single(t, portal, rng.below(4) as u8, (x, z), y, rng, b);
+            ruined_portal_ground(b, rng, &layout);
+            place_layout(b, rng, &layout, Placing { under: None, air: false, planks: None, clear_trees: true, archaeology: false, carve: false, integrity: 1.0, markers: no_markers, slopes: true });
+            weather_portal(b, rng, &layout);
+            true
+        }
+        Kind::Fossil => {
+            let Some((x, y, z)) = placed(b.v, kind, sx, sz) else { return true };
+            let Some(f) = pick_plan(&t.pool("fossils"), rng) else { return false };
+            let layout = single(t, f, rng.below(4) as u8, (x, z), y - rng.below(6) as i32, rng, b);
+            place_layout(b, rng, &layout, Placing { under: None, air: false, planks: None, clear_trees: false, archaeology: false, carve: false, integrity: 0.9, markers: no_markers, slopes: true });
             true
         }
         _ => false,
+    }
+}
+
+/// Une pièce seule (sans jigsaw), centrée sur (x, z), le bas à `y`.
+fn single(t: &Templates, piece: std::sync::Arc<super::templates::Template>, rot: u8, (x, z): (i32, i32), y: i32, rng: &mut Rng, b: &mut Builder) -> Layout {
+    let rules = Rules { depth: 0, reach: 64, follows_ground: &|_| false, fallback: &|_| None, empty_chance: &|_| 1.0 };
+    t.assemble(piece, rot, (x, z), y, &rules, rng, &mut |x, z| ground(b, x, z))
+}
+
+/// Fond de l'océan sous une ruine : le plus bas autour du centre (la ruine s'y enfonce).
+fn ruin_floor(b: &mut Builder, x: i32, z: i32) -> i32 {
+    [(0, 0), (-4, -4), (4, -4), (-4, 4), (4, 4)].iter().map(|(dx, dz)| b.top(x + dx, z + dz)).min().unwrap_or(SEA_LEVEL - 10)
+}
+
+/// Repères des épaves : le coffre est sous le repère.
+fn shipwreck_markers(m: &str) -> Option<(i32, Loot, bool)> {
+    match m {
+        "supplyChest" => Some((-1, Loot::ShipwreckSupply, false)),
+        "treasureChest" => Some((-1, Loot::ShipwreckTreasure, false)),
+        "mapChest" => Some((-1, Loot::ShipwreckMap, false)),
+        _ => None,
+    }
+}
+
+/// Repères des ruines océaniques : un coffre à poser à leur place.
+fn ruin_markers(m: &str) -> Option<(i32, Loot, bool)> {
+    (m == "chest").then_some((0, Loot::OceanRuin, true))
+}
+
+/// Repère du laboratoire de l'igloo : le coffre est sous le repère.
+fn igloo_markers(m: &str) -> Option<(i32, Loot, bool)> {
+    (m == "chest").then_some((-1, Loot::Igloo, false))
+}
+
+/// Igloo : la hutte de neige, et une fois sur deux une trappe, une échelle de 4 à 11
+/// tronçons et le laboratoire caché dessous (décalages du jeu).
+fn igloo(b: &mut Builder, t: &Templates, rng: &mut Rng, x: i32, y: i32, z: i32) -> bool {
+    let cellar = rng.below(2) == 0;
+    let top = if cellar { "igloo/igloo_top_trapdoor" } else { "igloo/igloo_top_no_trapdoor" };
+    let (Some(top), Some(ladder), Some(lab)) = (t.get(top), t.get("igloo/igloo_middle"), t.get("igloo/igloo_bottom")) else { return false };
+    let rot = rng.below(4) as u8;
+    // (plan, coin dans le repère de la hutte non tournée)
+    let mut parts = vec![(top.clone(), (0, 0, 0))];
+    if cellar {
+        let depth = 4 + rng.below(8) as i32;
+        for j in 0..depth - 1 {
+            parts.push((ladder.clone(), (2, -3 - 3 * j, 4)));
+        }
+        parts.push((lab, (0, -3 - 3 * depth, -2)));
+    }
+    // Le tout tourne d'un bloc autour du coin de la hutte, placée au centre de l'emplacement
+    let turn = |(px, pz): (i32, i32)| match rot & 3 {
+        0 => (px, pz),
+        1 => (-pz, px),
+        2 => (-px, -pz),
+        _ => (pz, -px),
+    };
+    let (ox, oz) = (x - 3, z - 4);
+    let mut layout = Layout::default();
+    for (tpl, (dx, dy, dz)) in parts {
+        let (sx, sy, sz) = tpl.size();
+        let corners = [(0, 0), (sx - 1, 0), (0, sz - 1), (sx - 1, sz - 1)].map(turn);
+        let (mx, mz) = (corners.iter().map(|c| c.0).min().unwrap_or(0), corners.iter().map(|c| c.1).min().unwrap_or(0));
+        let (rx, rz) = turn((dx, dz));
+        let at = (ox + rx + mx, y + dy, oz + rz + mz);
+        let (w, d) = if rot & 1 == 1 { (sz, sx) } else { (sx, sz) };
+        let bbox = super::templates::Box3 { min: at, max: (at.0 + w - 1, at.1 + sy - 1, at.2 + d - 1) };
+        layout.pieces.push(super::templates::Piece { template: tpl, rot, at, follows_ground: false, bbox });
+    }
+    place_layout(b, rng, &layout, Placing { under: Some("dirt"), air: true, planks: None, clear_trees: true, archaeology: false, carve: false, integrity: 1.0, markers: igloo_markers, slopes: false });
+    true
+}
+
+/// Sol d'un portail en ruine : une plaque de netherrack et de magma autour, qui s'effiloche
+/// vers l'extérieur.
+fn ruined_portal_ground(b: &mut Builder, rng: &mut Rng, layout: &Layout) {
+    let Some(p) = layout.pieces.first() else { return };
+    let (netherrack, magma) = (b.id("netherrack"), b.id("magma"));
+    let (lo, hi) = (p.bbox.min, p.bbox.max);
+    let (cx, cz) = ((lo.0 + hi.0) as f64 / 2.0, (lo.2 + hi.2) as f64 / 2.0);
+    let radius = ((hi.0 - lo.0).max(hi.2 - lo.2) as f64 / 2.0 + 3.0).max(5.0);
+    for x in lo.0 - 4..=hi.0 + 4 {
+        for z in lo.2 - 4..=hi.2 + 4 {
+            let d = ((x as f64 - cx).powi(2) + (z as f64 - cz).powi(2)).sqrt() / radius;
+            if d > 1.0 || rng.unit() < d * d {
+                continue;
+            }
+            let g = b.top(x, z);
+            b.put((x, g, z), if rng.below(12) == 0 { magma } else { netherrack });
+        }
+    }
+}
+
+/// Portail en ruine : une partie de l'obsidienne devient de l'obsidienne pleureuse.
+fn weather_portal(b: &mut Builder, rng: &mut Rng, layout: &Layout) {
+    let (obsidian, crying) = (b.id("obsidian"), b.id("crying_obsidian"));
+    for p in &layout.pieces {
+        for (rel, state) in p.template.blocks(p.rot) {
+            if state == obsidian && rng.below(7) == 0 {
+                b.put((p.at.0 + rel.0, p.at.1 + rel.1, p.at.2 + rel.2), crying);
+            }
+        }
     }
 }
 
@@ -335,6 +551,16 @@ struct Placing {
     archaeology: bool,
     /// Cité antique : le volume de chaque pièce est d'abord vidé (la grande caverne)
     carve: bool,
+    /// Part des blocs posés (les ruines sont incomplètes) ; les coffres restent toujours
+    integrity: f64,
+    /// Repères des plans : (décalage vertical du coffre, butin, coffre à poser) ou rien
+    markers: fn(&str) -> Option<(i32, Loot, bool)>,
+    /// Raccorder le terrain en talus autour des pièces (avec `under`)
+    slopes: bool,
+}
+
+fn no_markers(_: &str) -> Option<(i32, Loot, bool)> {
+    None
 }
 
 /// Pose les pièces d'un assemblage dans le chantier.
@@ -343,6 +569,8 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
     let path = b.id("grass_path");
     let gravel = b.p.gravel;
     let suspicious = b.id("suspicious_gravel");
+    let suspicious_sand = b.id("suspicious_sand");
+    let sand = b.p.sand;
     let planks = how.planks.map(|n| b.id(n));
     // Cité antique : la caverne. Le volume de chaque pièce est vidé, et ses bords rongés
     // irrégulièrement sur quelques blocs, pour des parois de grotte plutôt que des murs droits
@@ -378,6 +606,19 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
     for piece in &layout.pieces {
         let (ax, ay, az) = piece.at;
         let mut columns: HashMap<(i32, i32), i32> = HashMap::new();
+        // Coffres et repères : jamais retirés par l'usure
+        let mut keep: std::collections::HashSet<(i32, i32, i32)> = piece.template.chests(piece.rot).map(|(p, _)| p).collect();
+        for ((rx, ry, rz), m) in piece.template.markers(piece.rot) {
+            if let Some((dy, loot, put_chest)) = (how.markers)(m) {
+                let pos = (ax + rx, ay + ry + dy, az + rz);
+                keep.insert((rx, ry + dy, rz));
+                if put_chest {
+                    b.chest(pos, D::N, loot);
+                } else {
+                    b.chests.push((pos, loot));
+                }
+            }
+        }
         for ((rx, ry, rz), state) in piece.template.blocks(piece.rot) {
             let (x, z) = (ax + rx, az + rz);
             if state == air && !how.air {
@@ -394,7 +635,16 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
             } else {
                 ay + ry
             };
-            let s = if how.archaeology && state == gravel && rng.below(6) == 0 { suspicious } else { state };
+            if how.integrity < 1.0 && state != air && !keep.contains(&(rx, ry, rz)) && rng.unit() > how.integrity {
+                continue;
+            }
+            let s = if how.archaeology && state == gravel && rng.below(6) == 0 {
+                suspicious
+            } else if how.archaeology && state == sand && rng.below(6) == 0 {
+                suspicious_sand
+            } else {
+                state
+            };
             b.put((x, y, z), s);
             if ry == 0 && state != air {
                 if let Some(under) = how.under {
@@ -413,7 +663,7 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
         }
         // Pièce rigide sur une pente : le terrain est raccordé en talus (une pente de
         // 2 blocs de haut par bloc d'écart) plutôt que coupé à la verticale
-        if let (Some(under), false) = (how.under, piece.follows_ground) {
+        if let (Some(under), false, true) = (how.under, piece.follows_ground, how.slopes) {
             earthworks(b, piece, under);
         }
         for ((rx, ry, rz), color) in piece.template.beds(piece.rot) {
@@ -566,6 +816,8 @@ fn loot_of(table: &str) -> Loot {
         Loot::PillagerOutpost
     } else if table.contains("ancient_city") {
         Loot::AncientCity
+    } else if table.contains("ruined_portal") {
+        Loot::RuinedPortal
     } else {
         Loot::Village
     }
@@ -815,6 +1067,8 @@ const PLAIN: [&str; 41] = [
 /// palette (`nom[propriété=valeur,…]`).
 pub fn block_specs() -> Vec<String> {
     let mut out: Vec<String> = PLAIN.iter().map(|s| s.to_string()).collect();
+    // Portails en ruine (plans officiels)
+    out.extend(["obsidian", "crying_obsidian", "netherrack", "magma"].iter().map(|s| s.to_string()));
     for m in STAIRS {
         for d in [D::N, D::E, D::S, D::W] {
             for up in 0..2 {
@@ -2670,6 +2924,10 @@ pub enum Target {
     TrailRuins,
     TrialChambers,
     AncientCity,
+    Shipwreck,
+    OceanRuin,
+    Igloo,
+    RuinedPortal,
 }
 
 impl Target {
@@ -2685,6 +2943,10 @@ impl Target {
             "trail_ruins" => Target::TrailRuins,
             "trial_chambers" | "trial_chamber" => Target::TrialChambers,
             "ancient_city" => Target::AncientCity,
+            "shipwreck" => Target::Shipwreck,
+            "ocean_ruin" | "ocean_ruins" => Target::OceanRuin,
+            "igloo" => Target::Igloo,
+            "ruined_portal" => Target::RuinedPortal,
             _ => return None,
         })
     }
@@ -2692,7 +2954,7 @@ impl Target {
     /// « se trouve » ou « se trouvent », selon le nom.
     pub fn verb(self) -> &'static str {
         match self {
-            Target::TrailRuins | Target::TrialChambers => "se trouvent",
+            Target::TrailRuins | Target::TrialChambers | Target::OceanRuin => "se trouvent",
             _ => "se trouve",
         }
     }
@@ -2709,6 +2971,10 @@ impl Target {
             Target::TrailRuins => "Les ruines de piste les plus proches",
             Target::TrialChambers => "Les chambres des épreuves les plus proches",
             Target::AncientCity => "La cité antique la plus proche",
+            Target::Shipwreck => "L'épave la plus proche",
+            Target::OceanRuin => "Les ruines océaniques les plus proches",
+            Target::Igloo => "L'igloo le plus proche",
+            Target::RuinedPortal => "Le portail en ruine le plus proche",
         }
     }
 }
@@ -2795,6 +3061,42 @@ fn placed(v: &Vanilla, kind: Kind, sx: i32, sz: i32) -> Option<(i32, i32, i32)> 
             (v.surface(x, z).0 > y + 30).then_some((x, y, z))
         }
         Kind::AncientCity => (v.deep_dark_at(x, z) && v.surface(x, z).0 > -10).then_some((x, -50, z)),
+        // Épave : au fond de l'océan, ou échouée sur une plage
+        Kind::Shipwreck => {
+            if !biome.ocean() && !matches!(biome, B::Beach | B::SnowyBeach) {
+                return None;
+            }
+            let top = v.surface(x, z).0;
+            (top < SEA_LEVEL + 3).then_some((x, top + 1, z))
+        }
+        Kind::OceanRuin => {
+            if !biome.ocean() {
+                return None;
+            }
+            let top = v.surface(x, z).0;
+            (top < SEA_LEVEL - 3).then_some((x, top + 1, z))
+        }
+        Kind::Igloo => {
+            if !matches!(biome, B::SnowyPlains | B::SnowyTaiga | B::SnowySlopes) {
+                return None;
+            }
+            let top = v.surface(x, z).0;
+            (top > SEA_LEVEL).then_some((x, top + 1, z))
+        }
+        Kind::RuinedPortal => {
+            if biome.ocean() || matches!(biome, B::River | B::FrozenRiver) {
+                return None;
+            }
+            let top = v.surface(x, z).0;
+            (top > SEA_LEVEL).then_some((x, top + 1, z))
+        }
+        Kind::Fossil => {
+            if !matches!(biome, B::Desert | B::Swamp | B::MangroveSwamp) {
+                return None;
+            }
+            let top = v.surface(x, z).0;
+            (top > SEA_LEVEL).then_some((x, top - 15, z))
+        }
     }
 }
 
@@ -2811,7 +3113,15 @@ pub fn locate(v: &Vanilla, what: Target, x: i32, z: i32) -> Option<(i32, i32, i3
         Target::TrailRuins => &[Kind::TrailRuins],
         Target::TrialChambers => &[Kind::TrialChambers],
         Target::AncientCity => &[Kind::AncientCity],
+        Target::Shipwreck => &[Kind::Shipwreck],
+        Target::OceanRuin => &[Kind::OceanRuin],
+        Target::Igloo => &[Kind::Igloo],
+        Target::RuinedPortal => &[Kind::RuinedPortal],
     };
+    // Structures qui n'existent qu'avec les plans officiels
+    if matches!(what, Target::Shipwreck | Target::OceanRuin | Target::Igloo | Target::RuinedPortal) && !v.structures.official.load(std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
     let dist = |p: &(i32, i32, i32)| ((p.0 - x) as i64).pow(2) + ((p.2 - z) as i64).pow(2);
     let mut best: Option<(i32, i32, i32)> = None;
     for kind in kinds {
@@ -3011,6 +3321,90 @@ fn table(kind: Loot) -> (&'static [(&'static str, u8, u8, u32)], (u32, u32)) {
             ],
             (1, 3),
         ),
+        Loot::ShipwreckSupply => (
+            &[
+                ("paper", 1, 12, 8),
+                ("potato", 2, 6, 7),
+                ("poisonous_potato", 2, 6, 7),
+                ("carrot", 4, 8, 7),
+                ("wheat", 8, 21, 7),
+                ("coal", 2, 8, 6),
+                ("rotten_flesh", 5, 24, 5),
+                ("pumpkin", 1, 3, 2),
+                ("bamboo", 1, 3, 2),
+                ("gunpowder", 1, 5, 3),
+                ("tnt", 1, 2, 1),
+                ("moss_block", 1, 4, 2),
+            ],
+            (3, 10),
+        ),
+        Loot::ShipwreckTreasure => (
+            &[
+                ("iron_ingot", 1, 5, 90),
+                ("gold_ingot", 1, 5, 10),
+                ("emerald", 1, 5, 40),
+                ("diamond", 1, 1, 5),
+                ("experience_bottle", 1, 1, 5),
+                ("iron_nugget", 1, 10, 50),
+                ("gold_nugget", 1, 10, 10),
+                ("lapis_lazuli", 1, 10, 20),
+            ],
+            (3, 6),
+        ),
+        Loot::ShipwreckMap => (
+            &[("paper", 1, 10, 20), ("feather", 1, 5, 10), ("book", 1, 5, 5), ("clock", 1, 1, 1), ("compass", 1, 1, 1)],
+            (3, 6),
+        ),
+        Loot::OceanRuin => (
+            &[
+                ("coal", 1, 4, 10),
+                ("stone_axe", 1, 1, 2),
+                ("rotten_flesh", 1, 1, 5),
+                ("emerald", 1, 1, 1),
+                ("wheat", 2, 3, 10),
+                ("gold_nugget", 1, 3, 5),
+                ("golden_apple", 1, 1, 1),
+                ("fishing_rod", 1, 1, 2),
+            ],
+            (2, 8),
+        ),
+        Loot::Igloo => (
+            &[
+                ("apple", 1, 3, 15),
+                ("coal", 1, 4, 15),
+                ("gold_nugget", 1, 3, 10),
+                ("stone_axe", 1, 1, 2),
+                ("rotten_flesh", 1, 1, 10),
+                ("emerald", 1, 1, 1),
+                ("wheat", 2, 3, 10),
+                ("golden_apple", 1, 1, 1),
+            ],
+            (2, 8),
+        ),
+        Loot::RuinedPortal => (
+            &[
+                ("obsidian", 1, 2, 40),
+                ("flint", 1, 4, 40),
+                ("iron_nugget", 9, 18, 40),
+                ("flint_and_steel", 1, 1, 40),
+                ("fire_charge", 1, 1, 40),
+                ("golden_apple", 1, 1, 15),
+                ("gold_nugget", 4, 24, 15),
+                ("golden_sword", 1, 1, 15),
+                ("golden_axe", 1, 1, 15),
+                ("golden_pickaxe", 1, 1, 15),
+                ("golden_helmet", 1, 1, 15),
+                ("golden_boots", 1, 1, 15),
+                ("glistering_melon_slice", 4, 12, 5),
+                ("golden_carrot", 4, 12, 5),
+                ("gold_ingot", 2, 8, 5),
+                ("clock", 1, 1, 5),
+                ("bell", 1, 1, 1),
+                ("enchanted_golden_apple", 1, 1, 1),
+                ("gold_block", 1, 2, 1),
+            ],
+            (4, 8),
+        ),
         Loot::TrialSupply => (
             &[
                 ("arrow", 4, 14, 2),
@@ -3190,7 +3584,13 @@ mod tests {
             (Target::PillagerOutpost, Kind::PillagerOutpost, "dark_oak_fence", 1),
             (Target::TrailRuins, Kind::TrailRuins, "suspicious_gravel", 0),
             (Target::AncientCity, Kind::AncientCity, "sculk_shrieker", 2),
+            (Target::Shipwreck, Kind::Shipwreck, "chest", 1),
+            (Target::OceanRuin, Kind::OceanRuin, "chest", 1),
+            (Target::Igloo, Kind::Igloo, "snow", 0),
+            (Target::RuinedPortal, Kind::RuinedPortal, "netherrack", 0),
         ] {
+            // Le monde sait qu'il a les plans (sinon `locate` ignore ces structures)
+            near(&v, &p, &v.structures, 0, 0);
             let (x, _, z) = locate(&v, what, 0, 0).unwrap_or_else(|| panic!("{:?} introuvable", what));
             let plan = build(&v, &p, (kind, (x - 8) >> 4, (z - 8) >> 4));
             let names: Vec<&str> = plan.blocks.values().flatten().filter_map(|b| data.block_name(b.3)).collect();
@@ -3201,6 +3601,13 @@ mod tests {
             assert!(count >= chests, "{:?} : {} coffres", what, count);
             // Plus de jigsaw ni de bloc de structure dans le monde
             assert!(!has("jigsaw") && !has("structure_block"));
+        }
+        // Un fossile, dans le premier chunk de désert ou de marais qui en a un
+        let fossil = (0..4000).map(|i| (i % 64 - 32, i / 64 - 32)).find_map(|(cx, cz)| {
+            (mix(v.seed(), cx as i64, cz as i64, 77_002) % 64 == 0 && placed(&v, Kind::Fossil, cx, cz).is_some()).then(|| build(&v, &p, (Kind::Fossil, cx, cz)))
+        });
+        if let Some(plan) = fossil {
+            assert!(plan.blocks.values().flatten().any(|b| data.block_name(b.3) == Some("minecraft:bone_block")), "fossile sans os");
         }
         // Le monde généré contient bien le village, sans erreur
         let (x, y, z) = locate(&v, Target::Village, 0, 0).unwrap();
@@ -3221,7 +3628,7 @@ mod tests {
     fn loot_items_exist() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
         let Ok(data) = crate::data::GameData::load(&dir) else { return };
-        for kind in [Loot::Village, Loot::DesertPyramid, Loot::JungleTemple, Loot::Mineshaft, Loot::PillagerOutpost, Loot::AncientCity, Loot::TrialCorridor, Loot::TrialSupply] {
+        for kind in [Loot::Village, Loot::DesertPyramid, Loot::JungleTemple, Loot::Mineshaft, Loot::PillagerOutpost, Loot::AncientCity, Loot::TrialCorridor, Loot::TrialSupply, Loot::ShipwreckSupply, Loot::ShipwreckTreasure, Loot::ShipwreckMap, Loot::OceanRuin, Loot::Igloo, Loot::RuinedPortal] {
             for (name, ..) in table(kind).0 {
                 assert!(data.item(&format!("minecraft:{}", name)).is_some() || data.item(name).is_some(), "objet inconnu : {}", name);
             }
@@ -3254,7 +3661,12 @@ mod tests {
             (Target::TrailRuins, Kind::TrailRuins, "trail"),
             (Target::TrialChambers, Kind::TrialChambers, "trial"),
             (Target::AncientCity, Kind::AncientCity, "city"),
+            (Target::Shipwreck, Kind::Shipwreck, "shipwreck"),
+            (Target::OceanRuin, Kind::OceanRuin, "oceanruin"),
+            (Target::Igloo, Kind::Igloo, "igloo"),
+            (Target::RuinedPortal, Kind::RuinedPortal, "portal"),
         ] {
+            near(&v, &p, &v.structures, 0, 0);
             let (x, _, z) = locate(&v, what, 0, 0).unwrap();
             let started = std::time::Instant::now();
             let plan = build(&v, &p, (kind, (x - 8) >> 4, (z - 8) >> 4));
