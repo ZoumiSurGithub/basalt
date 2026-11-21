@@ -1876,3 +1876,42 @@ fn bots_plugin() {
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Coût des PNJ sur un vrai terrain : 50 bots qui partent loin, terrain généré à la volée.
+/// `cargo test --test e2e bots_cost -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn bots_cost() {
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins").join("Bots");
+    if !source.join("plugin.yml").is_file() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-botscost-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Bots")).unwrap();
+    for f in ["plugin.yml", "main.lua"] {
+        std::fs::copy(source.join(f), dir.join("Bots").join(f)).unwrap();
+    }
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    std::fs::write(dir.join("terrain-normal"), "").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(800));
+    let mut steve = Client::join(addr, "Steve");
+    basalt::timings::enable();
+    let text = "/bots 50 10 400";
+    let mut body = vec![text.len() as u8];
+    body.extend_from_slice(text.as_bytes());
+    body.extend_from_slice(&[0, 0, 0]);
+    steve.game(77, &body, Some(0xff));
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_secs(20) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    for line in basalt::timings::report(&[]).unwrap_or_default().lines().filter(|l| l.contains("PNJ") || l.contains("Tick complet")) {
+        eprintln!("{}", line);
+    }
+    drop(steve);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -150,6 +150,8 @@ struct LoginJob {
     body: Vec<u8>,
     keys: Option<Arc<KeySet>>,
     xbox_auth: bool,
+    /// Joueur simulé admis sans compte Xbox (local-bots=true, depuis cette machine)
+    local_bot: bool,
     now: u64,
     /// Clé prouvée par le joueur à l'ouverture de sa liaison NetherNet
     bound_cpk: Option<String>,
@@ -169,6 +171,9 @@ fn process_login(job: &LoginJob) -> LoginOutcome {
         Err(e) => return refused("Connexion invalide.", Some(format!("connexion refusée ({})", e))),
     };
     if !job.xbox_auth {
+        return LoginOutcome::Accepted(Box::new(login), false);
+    }
+    if job.local_bot && login.name.len() > 3 && login.name.get(..3).map(|p| p.eq_ignore_ascii_case("bot")).unwrap_or(false) {
         return LoginOutcome::Accepted(Box::new(login), false);
     }
     let keys = match &job.keys {
@@ -1292,7 +1297,7 @@ impl Server {
     /// Fait avancer les PNJ qui marchent : ils montent les marches d'un bloc, tombent dans
     /// les trous et s'arrêtent devant un mur.
     fn move_npcs(&mut self) {
-        let keys: Vec<String> = self.npcs.iter().filter(|(_, n)| n.velocity != (0.0, 0.0) || n.fall != 0.0 || n.pos.1 > -64.0).map(|(k, _)| k.clone()).collect();
+        let keys: Vec<String> = self.npcs.keys().cloned().collect();
         for key in keys {
             let n = match self.npcs.get(&key) {
                 Some(n) => n.clone(),
@@ -1300,6 +1305,18 @@ impl Server {
             };
             let (mut x, mut y, mut z) = n.pos;
             let mut fall = n.fall;
+            // Jamais de génération de terrain dans le tick : le chunk où il se trouve et celui
+            // où il va sont demandés aux fils de génération, et le PNJ attend qu'ils soient prêts
+            let ahead = (x + n.velocity.0 * 60.0, z + n.velocity.1 * 60.0);
+            let here = ((x.floor() as i32) >> 4, (z.floor() as i32) >> 4);
+            let next = (((x + n.velocity.0).floor() as i32) >> 4, ((z + n.velocity.1).floor() as i32) >> 4);
+            let far = ((ahead.0.floor() as i32) >> 4, (ahead.1.floor() as i32) >> 4);
+            for (cx, cz) in [here, next, far] {
+                self.world.prepare(cx, cz);
+            }
+            if !self.world.is_ready(here.0, here.1) || !self.world.is_ready(next.0, next.1) {
+                continue;
+            }
             let free = |s: &Self, x: f32, y: f32, z: f32| {
                 let (bx, by, bz) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
                 s.npc_passable(s.world.get(bx, by, bz)) && s.npc_passable(s.world.get(bx, by + 1, bz))
@@ -1420,7 +1437,10 @@ impl Server {
                 name: if refresh { n.name.clone() } else { String::new() },
                 sneaking: false,
                 sprinting: false,
-                skin: if refresh { Some(npc_skin()) } else { None },
+                // Pas d'entrée dans la liste des joueurs : le jeu refuse un skin fabriqué
+                // (et couperait alors la liste de tout le monde) ; il les montre avec
+                // l'apparence par défaut
+                skin: None,
                 mode: 0,
                 npc: true,
                 held: (0, 0, 0),
@@ -5115,6 +5135,7 @@ impl Server {
                         body,
                         keys: self.auth_keys.clone(),
                         xbox_auth: self.cfg.xbox_auth,
+                        local_bot: self.cfg.local_bots && addr.ip().is_loopback() && !self.nether.as_ref().map(|n| n.has(&addr)).unwrap_or(false),
                         now,
                         bound_cpk: self.nether.as_ref().and_then(|n| n.bound_cpk(&addr)),
                     };
@@ -6541,47 +6562,6 @@ struct Npc {
     fall: f32,
     yaw: f32,
     moved_tick: u64,
-}
-
-/// Apparence des PNJ : un personnage simple (tête, chemise, pantalon), fabriqué une fois.
-fn npc_skin() -> Arc<crate::player::Skin> {
-    static SKIN: std::sync::OnceLock<Arc<crate::player::Skin>> = std::sync::OnceLock::new();
-    SKIN.get_or_init(|| {
-        let mut data = vec![0u8; 64 * 64 * 4];
-        for y in 0..64usize {
-            for x in 0..64usize {
-                let colour: [u8; 4] = if y < 16 {
-                    [0xc8, 0x96, 0x6e, 0xff] // tête
-                } else if (y < 32 && x < 16) || (y >= 48 && x >= 16 && x < 32) {
-                    [0x2b, 0x3a, 0x67, 0xff] // jambes
-                } else {
-                    [0x3f, 0x9c, 0x8c, 0xff] // corps et bras
-                };
-                data[(y * 64 + x) * 4..(y * 64 + x) * 4 + 4].copy_from_slice(&colour);
-            }
-        }
-        Arc::new(crate::player::Skin {
-            id: "basalt-npc".into(),
-            patch: br#"{"geometry":{"default":"geometry.humanoid.custom"}}"#.to_vec(),
-            width: 64,
-            height: 64,
-            data,
-            cape_width: 0,
-            cape_height: 0,
-            cape: Vec::new(),
-            cape_id: String::new(),
-            geometry: Vec::new(),
-            engine_version: Vec::new(),
-            animation_data: Vec::new(),
-            wide_arms: true,
-            colour: 0xffc8_966e,
-            premium: false,
-            persona: false,
-            cape_on_classic: false,
-            profile_hash: String::new(),
-        })
-    })
-    .clone()
 }
 
 fn washed_away(name: &str) -> bool {

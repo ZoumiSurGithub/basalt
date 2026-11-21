@@ -23,6 +23,8 @@ pub struct Config {
     pub probes: bool,
     pub max_per_ip: usize,
     pub xbox_auth: bool,
+    /// Joueurs simulés acceptés sans compte Xbox, depuis la machine du serveur seulement
+    pub local_bots: bool,
     /// Liste blanche : seuls les joueurs de `white-list.txt` (et les opérateurs) peuvent entrer
     pub white_list: bool,
     /// Inventaire gardé à la mort (règle « keepInventory » du jeu). Non : il tombe au sol.
@@ -81,6 +83,7 @@ impl Default for Config {
             probes: false,
             max_per_ip: 5,
             xbox_auth: true,
+            local_bots: false,
             white_list: false,
             keep_inventory: false,
             network_compression: true,
@@ -156,6 +159,9 @@ view-distance=6
 # true : seuls les joueurs connectés à leur compte Xbox sont acceptés, et leur
 # pseudo est vérifié. false : le pseudo annoncé est accepté sans contrôle.
 xbox-auth=true
+# true : des joueurs simulés (outil basalt-bots) peuvent entrer sans compte Xbox, mais
+# seulement depuis cette machine (127.0.0.1) et avec un pseudo qui commence par « Bot ».
+local-bots=false
 # true : seuls les joueurs inscrits dans white-list.txt (et les opérateurs) peuvent entrer.
 # Pratique pendant la mise au point d'un serveur. Console : whitelist on|off|add|remove|list
 white-list=false
@@ -277,6 +283,7 @@ impl Config {
         c.show_players = map.get("show-players").map(|v| v != "false").unwrap_or(true);
         c.http_signaling = map.get("nethernet-signaling").map(|v| v != "false").unwrap_or(true);
         c.xbox_auth = map.get("xbox-auth").map(|v| v != "false").unwrap_or(true);
+        c.local_bots = map.get("local-bots").map(|v| v == "true" || v == "on").unwrap_or(false);
         c.white_list = map.get("white-list").map(|v| v == "true" || v == "on").unwrap_or(false);
         c.keep_inventory = map.get("keep-inventory").map(|v| v == "true" || v == "on").unwrap_or(false);
         c.network_compression = map.get("network-compression").map(|v| v != "false" && v != "off").unwrap_or(true);

@@ -22,3 +22,4 @@ data/*/packets/available_commands.bin
 
 # Plugins privés (non publiés)
 /plugins/Bots/
+/examples/bots.rs

@@ -326,6 +326,10 @@ les deux approches.
 Avec `xbox-auth=true` (valeur par défaut), seuls les joueurs connectés à leur compte
 Microsoft entrent, et leur pseudo est celui que Mojang certifie.
 
+Exception pour les tests : avec `local-bots=true`, des joueurs simulés peuvent entrer sans
+compte, mais seulement depuis la machine du serveur (adresse 127.x.x.x) et avec un pseudo
+qui commence par « Bot ». Laissez `local-bots=false` en temps normal.
+
 Ce que le serveur vérifie à chaque login :
 
 1. le jeton du joueur est signé (RS256) par une clé du service d'autorisation de
