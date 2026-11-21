@@ -1153,6 +1153,159 @@ fn mineshaft(b: &mut Builder, rng: &mut Rng, x: i32, z: i32) {
     }
 }
 
+// --- Recherche (/locate) ----------------------------------------------------------------
+
+/// Ce que `/locate structure` sait trouver.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Target {
+    Village,
+    DesertPyramid,
+    JungleTemple,
+    /// Pyramide du désert ou temple de la jungle, comme `temple` dans le jeu
+    Temple,
+    Mineshaft,
+}
+
+impl Target {
+    /// Nom donné à la commande (ceux du jeu, et quelques variantes).
+    pub fn parse(name: &str) -> Option<Target> {
+        Some(match name.trim().trim_start_matches("minecraft:").to_ascii_lowercase().as_str() {
+            "village" => Target::Village,
+            "desert_pyramid" | "desert_temple" | "pyramid" => Target::DesertPyramid,
+            "jungle_temple" | "jungle_pyramid" => Target::JungleTemple,
+            "temple" => Target::Temple,
+            "mineshaft" => Target::Mineshaft,
+            _ => return None,
+        })
+    }
+
+    /// Début de la réponse de `/locate`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Target::Village => "Le village le plus proche",
+            Target::DesertPyramid => "La pyramide du désert la plus proche",
+            Target::JungleTemple => "Le temple de la jungle le plus proche",
+            Target::Temple => "Le temple le plus proche",
+            Target::Mineshaft => "La mine abandonnée la plus proche",
+        }
+    }
+}
+
+/// Structures du jeu que la commande connaît mais que Basalt ne génère pas encore.
+pub const NOT_GENERATED: [&str; 14] = [
+    "ancient_city", "bastion_remnant", "buried_treasure", "end_city", "fortress", "mansion", "monument", "ocean_ruins", "pillager_outpost",
+    "ruined_portal", "shipwreck", "stronghold", "trail_ruins", "trial_chambers",
+];
+
+/// Cases d'une couronne carrée de rayon `r` autour de l'origine.
+fn ring(r: i32) -> impl Iterator<Item = (i32, i32)> {
+    (-r..=r).flat_map(move |dx| (-r..=r).map(move |dz| (dx, dz))).filter(move |(dx, dz)| dx.abs().max(dz.abs()) == r)
+}
+
+/// La structure de cette sorte est-elle bien générée à cet emplacement de départ ?
+/// Renvoie sa position (bloc) — mêmes règles que `build`.
+fn placed(v: &Vanilla, kind: Kind, sx: i32, sz: i32) -> Option<(i32, i32, i32)> {
+    let (x, z) = (sx * 16 + 8, sz * 16 + 8);
+    match kind {
+        Kind::Village => {
+            let (top, biome) = v.surface(x, z);
+            (Style::for_biome(biome).is_some() && top > SEA_LEVEL && top <= SEA_LEVEL + 60).then_some((x, top + 1, z))
+        }
+        Kind::DesertPyramid => {
+            let (top, biome) = v.surface(x, z);
+            (biome == B::Desert && top > SEA_LEVEL).then_some((x, top + 1, z))
+        }
+        Kind::JungleTemple => {
+            let (top, biome) = v.surface(x, z);
+            (matches!(biome, B::Jungle | B::BambooJungle) && top > SEA_LEVEL).then_some((x, top + 1, z))
+        }
+        Kind::Mineshaft => {
+            let top = v.surface(x, z).0;
+            let highest = (top - 20).min(30);
+            if highest < -40 {
+                return None;
+            }
+            // Même tirage que `mineshaft` : la hauteur de la salle de départ
+            let mut rng = Rng::new(mix(v.seed(), sx as i64, sz as i64, 31_337 + kind as u64));
+            Some((x, -40 + rng.below((highest + 40) as u32 + 1) as i32, z))
+        }
+    }
+}
+
+/// Structure de cette sorte la plus proche de (`x`, `z`), dans un rayon d'environ 10 000
+/// blocs. Renvoie sa position (bloc).
+pub fn locate(v: &Vanilla, what: Target, x: i32, z: i32) -> Option<(i32, i32, i32)> {
+    let kinds: &[Kind] = match what {
+        Target::Village => &[Kind::Village],
+        Target::DesertPyramid => &[Kind::DesertPyramid],
+        Target::JungleTemple => &[Kind::JungleTemple],
+        Target::Temple => &[Kind::DesertPyramid, Kind::JungleTemple],
+        Target::Mineshaft => &[Kind::Mineshaft],
+    };
+    let dist = |p: &(i32, i32, i32)| ((p.0 - x) as i64).pow(2) + ((p.2 - z) as i64).pow(2);
+    let mut best: Option<(i32, i32, i32)> = None;
+    for kind in kinds {
+        // (espacement de la grille en chunks, séparation, sel ; 1 pour les mines : chaque chunk)
+        let (spacing, separation, salt) = match kind {
+            Kind::Village => (34, 8, 10_387_312u64),
+            Kind::DesertPyramid => (32, 8, 14_357_617),
+            Kind::JungleTemple => (32, 8, 14_357_619),
+            Kind::Mineshaft => (1, 0, 0),
+        };
+        let rings = (10_000 / (spacing * 16)).clamp(20, 640);
+        let (rx0, rz0) = ((x >> 4).div_euclid(spacing), (z >> 4).div_euclid(spacing));
+        let mut found_at = None;
+        for r in 0..=rings {
+            // Une couronne de plus après la première trouvaille : elle peut cacher plus près
+            if matches!(found_at, Some(f) if r > f + 1) {
+                break;
+            }
+            for (dx, dz) in ring(r) {
+                let (rx, rz) = (rx0 + dx, rz0 + dz);
+                let (sx, sz) = if *kind == Kind::Mineshaft {
+                    if mix(v.seed(), rx as i64, rz as i64, 77_001) % 1000 >= 4 {
+                        continue;
+                    }
+                    (rx, rz)
+                } else {
+                    grid_start(v.seed(), rx, rz, spacing, separation, salt)
+                };
+                if let Some(p) = placed(v, *kind, sx, sz) {
+                    found_at.get_or_insert(r);
+                    if best.map(|b| dist(&p) < dist(&b)).unwrap_or(true) {
+                        best = Some(p);
+                    }
+                }
+            }
+        }
+    }
+    best
+}
+
+/// Colonne la plus proche de (`x`, `z`) où ce biome est en surface, dans un rayon d'environ
+/// 6 400 blocs (un point tous les 32 blocs, comme le jeu).
+pub fn locate_biome(v: &Vanilla, biome: B, x: i32, z: i32) -> Option<(i32, i32, i32)> {
+    const STEP: i32 = 32;
+    let mut best: Option<(i64, i32, i32)> = None;
+    let mut found_at = None;
+    for r in 0..=200 {
+        if matches!(found_at, Some(f) if r > f + 1) {
+            break;
+        }
+        for (dx, dz) in ring(r) {
+            let (px, pz) = (x + dx * STEP, z + dz * STEP);
+            if v.surface_biome_at(px, pz) == biome {
+                found_at.get_or_insert(r);
+                let d = ((px - x) as i64).pow(2) + ((pz - z) as i64).pow(2);
+                if best.map(|b| d < b.0).unwrap_or(true) {
+                    best = Some((d, px, pz));
+                }
+            }
+        }
+    }
+    best.map(|(_, px, pz)| (px, v.surface(px, pz).0 + 1, pz))
+}
+
 // --- Butin ------------------------------------------------------------------------------
 
 /// Objets possibles : (nom, minimum, maximum, poids).
@@ -1318,6 +1471,28 @@ mod tests {
         let air = world.air;
         world.set(pos.0, pos.1, pos.2, air);
         assert_eq!(world.structure_chest(pos), None);
+    }
+
+    /// `/locate` retrouve les structures connues de la graine 12345 (celles que génère
+    /// `build`), et un biome.
+    #[test]
+    fn locate_finds_generated_structures() {
+        let v = Vanilla::new(12345);
+        let p = Palette::new(&|_| None);
+        for what in [Target::Village, Target::DesertPyramid, Target::JungleTemple, Target::Mineshaft] {
+            let (x, _, z) = locate(&v, what, 0, 0).unwrap_or_else(|| panic!("{:?} introuvable", what));
+            let kind = match what {
+                Target::Village => Kind::Village,
+                Target::DesertPyramid => Kind::DesertPyramid,
+                Target::JungleTemple => Kind::JungleTemple,
+                _ => Kind::Mineshaft,
+            };
+            assert!(!build(&v, &p, (kind, (x - 8) >> 4, (z - 8) >> 4)).is_empty(), "{:?} indiquée en {} {} mais absente", what, x, z);
+        }
+        let (x, _, z) = locate_biome(&v, B::Desert, 0, 0).expect("pas de désert");
+        assert_eq!(v.surface_biome_at(x, z), B::Desert);
+        assert_eq!(Target::parse("minecraft:village"), Some(Target::Village));
+        assert_eq!(Target::parse("temple"), Some(Target::Temple));
     }
 
     /// Cherche et dessine (vue de dessus) une structure de chaque sorte.

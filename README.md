@@ -23,7 +23,7 @@ jeu (Bedrock 1.26.63 à 1.26.66 sous Windows, deux comptes Xbox en même temps).
 | Combat et survie | coups entre joueurs avec recul, dégâts de chute, mort, écran de réapparition, inventaire lâché à la mort (`keep-inventory` en option) |
 | Modes de jeu | survie, créatif, aventure, spectateur |
 | Objets au sol | lâcher (inventaire, Q, Ctrl+Q), physique, fusion des tas, ramassage, disparition au bout de 5 minutes |
-| Commandes | chat et commandes en jeu, `/tp` et téléportation par les plugins |
+| Commandes | chat et commandes en jeu, `/tp` et téléportation par les plugins, `/locate structure` et `/locate biome` |
 | Anti-triche | contrôle des déplacements (le tricheur est replacé), fabrication vérifiée, inventaire tenu par le serveur |
 | Plugins Lua | événements à la PocketMine, commandes, accès au monde, EasyEdit fourni (entièrement en plugin) |
 

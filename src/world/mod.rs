@@ -148,6 +148,11 @@ pub struct WorldView {
 }
 
 impl WorldView {
+    /// Le générateur vanilla, pour les recherches (`/locate`) faites sur un autre fil.
+    pub fn vanilla(&self) -> Option<&vanilla::Vanilla> {
+        self.terrain.generator.vanilla()
+    }
+
     /// Bloc présent à une position (identifiant réseau du bloc et de son état).
     pub fn get(&self, x: i32, y: i32, z: i32) -> u32 {
         if !World::in_bounds(y) {

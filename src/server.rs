@@ -428,6 +428,11 @@ pub struct Server {
     liquids: Option<crate::world::liquid::Liquids>,
     /// Prochain numéro de pile pour les objets créés par les blocs (fours)
     tile_net_id: i32,
+    /// Résultats des recherches `/locate`, faites sur un fil à part : (destinataire, message)
+    locate_tx: std::sync::mpsc::Sender<(Option<SocketAddr>, String)>,
+    locate_rx: std::sync::mpsc::Receiver<(Option<SocketAddr>, String)>,
+    /// Recherches `/locate` en cours
+    locate_busy: Arc<std::sync::atomic::AtomicUsize>,
     /// Envoie les numéros de pile avec les objets ; coupé si le jeu refuse ce format
     item_net_ids: bool,
     /// Expérience en cours (voir `experiment_name`) et verrou une fois qu'une expérience tient
@@ -644,6 +649,7 @@ impl Server {
         rak.debug = cfg.debug;
         rak.max_new_sessions = (cfg.max_players / 8).max(40);
         let plugins = PluginHost::new(Path::new(&cfg.plugins_dir), cfg.plugin_sandbox, &cfg.plugin_trusted, cfg.plugin_memory_mb);
+        let (locate_tx, locate_rx) = std::sync::mpsc::channel();
         let mut s = Server {
             motd: cfg.server_name.clone(),
             cfg,
@@ -682,6 +688,9 @@ impl Server {
             blocks: None,
             liquids: None,
             tile_net_id: 1_000_000_000,
+            locate_tx,
+            locate_rx,
+            locate_busy: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             item_net_ids: true,
             experiment: 0,
             // Réglage retenu après essais avec le jeu 1.26.65 : l'expérience 0. Les listes
@@ -1980,6 +1989,69 @@ impl Server {
                     let name = self.name_at(&v);
                     self.teleport(&v, (destination.0, destination.1 + 1.62, destination.2));
                     self.reply(sender, &format!("{} téléporté en {:.2}, {:.2}, {:.2}", name, destination.0, destination.1, destination.2));
+                }
+            }
+            "locate" => {
+                use crate::world::structures::{self as st, Target};
+                use std::sync::atomic::Ordering;
+                let (mode, name) = (arg(0).to_ascii_lowercase(), arg(1).to_string());
+                if name.is_empty() || (mode != "structure" && mode != "biome") {
+                    return usage(self);
+                }
+                if self.world.generator().vanilla().is_none() {
+                    return self.reply(sender, "§cCe monde n'a ni structures ni biomes du jeu (terrain plat ou ancien terrain de Basalt)");
+                }
+                enum Wanted {
+                    Structure(Target),
+                    Biome(crate::world::vanilla::B),
+                }
+                let wanted = if mode == "structure" {
+                    match Target::parse(&name) {
+                        Some(t) => Wanted::Structure(t),
+                        None if st::NOT_GENERATED.contains(&name.trim_start_matches("minecraft:")) => {
+                            return self.reply(sender, &format!("§cBasalt ne génère pas encore cette structure : {}", name));
+                        }
+                        None => return self.reply(sender, &format!("§cStructure inconnue : {}", name)),
+                    }
+                } else {
+                    let short = name.trim_start_matches("minecraft:").to_ascii_lowercase();
+                    match crate::world::vanilla::B::ALL.iter().find(|b| b.name() == short) {
+                        Some(b) => Wanted::Biome(*b),
+                        None => return self.reply(sender, &format!("§cBiome inconnu : {}", name)),
+                    }
+                };
+                // La recherche peut parcourir des milliers de positions : sur un fil à part,
+                // le résultat arrive quelques instants plus tard
+                if self.locate_busy.load(Ordering::Relaxed) >= 4 {
+                    return self.reply(sender, "§cTrop de recherches en cours, réessayez dans un instant");
+                }
+                self.locate_busy.fetch_add(1, Ordering::Relaxed);
+                let (view, tx, busy) = (self.world.view(), self.locate_tx.clone(), self.locate_busy.clone());
+                let (x, z) = (here.0.floor() as i32, here.2.floor() as i32);
+                let spawned = std::thread::Builder::new().name("locate".into()).spawn(move || {
+                    let message = match (view.vanilla(), wanted) {
+                        (Some(v), Wanted::Structure(t)) => match st::locate(v, t, x, z) {
+                            Some((px, py, pz)) => {
+                                let d = (((px - x) as f64).powi(2) + ((pz - z) as f64).powi(2)).sqrt().round();
+                                format!("{} se trouve en {}, {}, {} (à {} blocs)", t.label(), px, py, pz, d)
+                            }
+                            None => "§cAucune structure de ce type dans un rayon de 10 000 blocs".to_string(),
+                        },
+                        (Some(v), Wanted::Biome(b)) => match st::locate_biome(v, b, x, z) {
+                            Some((px, py, pz)) => {
+                                let d = (((px - x) as f64).powi(2) + ((pz - z) as f64).powi(2)).sqrt().round();
+                                format!("Le biome {} le plus proche se trouve en {}, {}, {} (à {} blocs)", b.name(), px, py, pz, d)
+                            }
+                            None => format!("§cAucun biome {} dans un rayon de 6 400 blocs", b.name()),
+                        },
+                        (None, _) => "§cRecherche impossible sur ce monde".to_string(),
+                    };
+                    let _ = tx.send((sender, message));
+                    busy.fetch_sub(1, Ordering::Relaxed);
+                });
+                if spawned.is_err() {
+                    self.locate_busy.fetch_sub(1, Ordering::Relaxed);
+                    self.reply(sender, "§cRecherche impossible pour le moment");
                 }
             }
             "kill" => {
@@ -6105,6 +6177,12 @@ impl Server {
                 {
                     let _t = timings::scope("Tick — eau et lave");
                     self.flow_liquids();
+                }
+                // Résultats des recherches /locate
+                while let Ok((to, message)) = self.locate_rx.try_recv() {
+                    if to.map(|a| self.clients.contains_key(&a)).unwrap_or(true) {
+                        self.reply(to, &message);
+                    }
                 }
                 if self.tick % 4 == 0 {
                     let _t = timings::scope("Tick — écrans ouverts (coffres, fours)");

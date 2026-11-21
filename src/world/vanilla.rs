@@ -153,6 +153,126 @@ impl B {
     }
 }
 
+impl B {
+    /// Tous les biomes, pour les recherches par nom (`/locate biome`).
+    pub const ALL: [B; 54] = [
+        B::Ocean,
+        B::Plains,
+        B::Desert,
+        B::WindsweptHills,
+        B::Forest,
+        B::Taiga,
+        B::Swamp,
+        B::River,
+        B::FrozenRiver,
+        B::SnowyPlains,
+        B::MushroomFields,
+        B::Beach,
+        B::Jungle,
+        B::SparseJungle,
+        B::DeepOcean,
+        B::StonyShore,
+        B::SnowyBeach,
+        B::BirchForest,
+        B::DarkForest,
+        B::SnowyTaiga,
+        B::OldGrowthPineTaiga,
+        B::WindsweptForest,
+        B::Savanna,
+        B::SavannaPlateau,
+        B::Badlands,
+        B::WoodedBadlands,
+        B::WarmOcean,
+        B::LukewarmOcean,
+        B::DeepLukewarmOcean,
+        B::ColdOcean,
+        B::DeepColdOcean,
+        B::FrozenOcean,
+        B::DeepFrozenOcean,
+        B::BambooJungle,
+        B::SunflowerPlains,
+        B::WindsweptGravellyHills,
+        B::FlowerForest,
+        B::IceSpikes,
+        B::OldGrowthBirchForest,
+        B::OldGrowthSpruceTaiga,
+        B::WindsweptSavanna,
+        B::ErodedBadlands,
+        B::JaggedPeaks,
+        B::FrozenPeaks,
+        B::SnowySlopes,
+        B::Grove,
+        B::Meadow,
+        B::LushCaves,
+        B::DripstoneCaves,
+        B::StonyPeaks,
+        B::DeepDark,
+        B::MangroveSwamp,
+        B::CherryGrove,
+        B::PaleGarden,
+    ];
+
+    /// Nom du biome dans le jeu (« plains », « cherry_grove »…).
+    pub fn name(self) -> &'static str {
+        match self {
+            B::Ocean => "ocean",
+            B::Plains => "plains",
+            B::Desert => "desert",
+            B::WindsweptHills => "windswept_hills",
+            B::Forest => "forest",
+            B::Taiga => "taiga",
+            B::Swamp => "swamp",
+            B::River => "river",
+            B::FrozenRiver => "frozen_river",
+            B::SnowyPlains => "snowy_plains",
+            B::MushroomFields => "mushroom_fields",
+            B::Beach => "beach",
+            B::Jungle => "jungle",
+            B::SparseJungle => "sparse_jungle",
+            B::DeepOcean => "deep_ocean",
+            B::StonyShore => "stony_shore",
+            B::SnowyBeach => "snowy_beach",
+            B::BirchForest => "birch_forest",
+            B::DarkForest => "dark_forest",
+            B::SnowyTaiga => "snowy_taiga",
+            B::OldGrowthPineTaiga => "old_growth_pine_taiga",
+            B::WindsweptForest => "windswept_forest",
+            B::Savanna => "savanna",
+            B::SavannaPlateau => "savanna_plateau",
+            B::Badlands => "badlands",
+            B::WoodedBadlands => "wooded_badlands",
+            B::WarmOcean => "warm_ocean",
+            B::LukewarmOcean => "lukewarm_ocean",
+            B::DeepLukewarmOcean => "deep_lukewarm_ocean",
+            B::ColdOcean => "cold_ocean",
+            B::DeepColdOcean => "deep_cold_ocean",
+            B::FrozenOcean => "frozen_ocean",
+            B::DeepFrozenOcean => "deep_frozen_ocean",
+            B::BambooJungle => "bamboo_jungle",
+            B::SunflowerPlains => "sunflower_plains",
+            B::WindsweptGravellyHills => "windswept_gravelly_hills",
+            B::FlowerForest => "flower_forest",
+            B::IceSpikes => "ice_spikes",
+            B::OldGrowthBirchForest => "old_growth_birch_forest",
+            B::OldGrowthSpruceTaiga => "old_growth_spruce_taiga",
+            B::WindsweptSavanna => "windswept_savanna",
+            B::ErodedBadlands => "eroded_badlands",
+            B::JaggedPeaks => "jagged_peaks",
+            B::FrozenPeaks => "frozen_peaks",
+            B::SnowySlopes => "snowy_slopes",
+            B::Grove => "grove",
+            B::Meadow => "meadow",
+            B::LushCaves => "lush_caves",
+            B::DripstoneCaves => "dripstone_caves",
+            B::StonyPeaks => "stony_peaks",
+            B::DeepDark => "deep_dark",
+            B::MangroveSwamp => "mangrove_swamp",
+            B::CherryGrove => "cherry_grove",
+            B::PaleGarden => "pale_garden",
+        }
+    }
+}
+
 /// Les valeurs de climat d'une position.
 #[derive(Clone, Copy, Debug)]
 struct Climate {
@@ -493,6 +613,11 @@ impl Vanilla {
 
     pub fn seed(&self) -> u64 {
         self.seed
+    }
+
+    /// Biome de surface d'une colonne, sans calculer sa hauteur (rapide).
+    pub fn surface_biome_at(&self, x: i32, z: i32) -> B {
+        surface_biome(&self.climate(x, z))
     }
 
     fn climate(&self, x: i32, z: i32) -> Climate {

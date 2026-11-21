@@ -1658,3 +1658,41 @@ fn chunks_are_sent_again_when_a_player_comes_back() {
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `/locate` : la réponse (calculée sur un fil à part) arrive dans le chat du joueur.
+#[test]
+fn locate_answers_in_the_chat() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-locate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("terrain-normal"), "").unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    let mut steve = Client::join(addr, "Steve");
+    let expect = |c: &mut Client, wanted: &str| {
+        for _ in 0..40 {
+            let body = c.wait_for(9);
+            if String::from_utf8_lossy(&body).contains(wanted) {
+                return;
+            }
+        }
+        panic!("réponse attendue : {}", wanted);
+    };
+    command(&mut steve, "/locate structure village");
+    expect(&mut steve, "Le village le plus proche se trouve en");
+    command(&mut steve, "/locate biome desert");
+    expect(&mut steve, "Le biome desert le plus proche");
+    command(&mut steve, "/locate structure stronghold");
+    expect(&mut steve, "ne génère pas encore");
+    drop(steve);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

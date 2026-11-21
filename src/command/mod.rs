@@ -23,7 +23,7 @@ pub struct VanillaCommands;
 
 impl VanillaCommands {
     pub fn all() -> &'static [CommandDef] {
-        static ALL: [CommandDef; 25] = [
+        static ALL: [CommandDef; 26] = [
             def("help", "commands.help.description", "/help", false),
             def("list", "commands.list.description", "/list", false),
             def("me", "commands.me.description", "/me <message:text>", false),
@@ -40,6 +40,12 @@ impl VanillaCommands {
             def("tp", "commands.tp.description", "/tp <destination:pos> | /tp <destination:player> | /tp <victim:player> <destination:pos>", true),
             def("teleport", "commands.tp.description", "/teleport <destination:pos> | /teleport <destination:player> | /teleport <victim:player> <destination:pos>", true),
             def("kill", "commands.kill.description", "/kill [target:player]", true),
+            def(
+                "locate",
+                "commands.locate.description",
+                "/locate <mode:structure> <structure:village|mineshaft|temple|desert_pyramid|jungle_temple|ancient_city|bastion_remnant|buried_treasure|end_city|fortress|mansion|monument|ocean_ruins|pillager_outpost|ruined_portal|shipwreck|stronghold|trail_ruins|trial_chambers> | /locate <mode:biome> <biome:text>",
+                true,
+            ),
             def("kick", "commands.kick.description", "/kick <name:player> [reason:text]", true),
             def("op", "commands.op.description", "/op <player:player>", true),
             def("deop", "commands.deop.description", "/deop <player:player>", true),

@@ -446,6 +446,11 @@ enum Tree {
 }
 
 impl Generator {
+    /// Le générateur vanilla, pour un monde de ce type.
+    pub fn vanilla(&self) -> Option<&super::vanilla::Vanilla> {
+        self.vanilla.as_ref()
+    }
+
     pub fn new(kind: Kind, seed: u64, blocks: Palette) -> Generator {
         let p = |salt: u64| Perlin::new(mix(seed, 0, 0, salt));
         Generator {
