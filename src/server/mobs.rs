@@ -1314,8 +1314,8 @@ impl Server {
     }
 
     /// Siège d'une monture (pour montrer son cavalier aux autres joueurs).
-    pub(super) fn mob_seat(&self, id: i64) -> Option<(f32, f32, f32)> {
-        self.mobs.get(&id).map(|m| m.species.seat())
+    pub(super) fn mob_seat(&self, id: i64) -> Option<((f32, f32, f32), (f32, f32, f32))> {
+        self.mobs.get(&id).map(|m| (m.species.seat(), m.pos))
     }
 
     /// Le cavalier descend (de lui-même, jeté par une monture sauvage, mort ou parti).
@@ -1395,6 +1395,9 @@ impl Server {
     /// est reprise et montrée aux autres joueurs.
     pub(super) fn on_rider_move(&mut self, addr: &SocketAddr, body: &[u8]) {
         let Some((runtime, pos, _pitch, yaw)) = bedrock::read_move_actor(body) else { return };
+        if self.cfg.debug && self.tick % 20 == 0 {
+            info!("[selle] le jeu déplace sa monture {} en {:.2} {:.2} {:.2}", runtime, pos.0, pos.1, pos.2);
+        }
         let Some((riding, player)) = self.clients.get(addr).map(|c| (c.riding, c.pos)) else { return };
         if riding != Some(runtime as i64) {
             return;
@@ -1442,9 +1445,16 @@ impl Server {
         if !m.driven_by_rider() || tick.saturating_sub(m.driven) < 10 {
             return;
         }
-        let seat = m.species.seat();
         let driven = m.driven;
-        self.steer_mount(id, (pos.0, pos.1 - seat.1, pos.2), yaw, None);
+        // Sous le cavalier, posée sur le sol : la hauteur que donne son jeu en selle n'est pas
+        // fiable (elle mettait la monture sous terre)
+        let (x, z) = (pos.0.floor() as i32, pos.2.floor() as i32);
+        let top = pos.1.floor() as i32 + 1;
+        let ground = (top - 6..=top).rev().find(|&y| !self.mob_free(x, y - 1, z) && self.mob_free(x, y, z)).unwrap_or(m.pos.1.floor() as i32);
+        if self.cfg.debug && tick % 20 == 0 {
+            info!("[selle] cavalier en {:.2} {:.2} {:.2}, monture posée en y={} (dernier déplacement du jeu : tick {})", pos.0, pos.1, pos.2, ground, m.driven);
+        }
+        self.steer_mount(id, (pos.0, ground as f32, pos.2), yaw, None);
         // (Position déduite : n'empêche pas une vraie position du jeu d'arriver ensuite)
         if let Some(m) = self.mobs.get_mut(&id) {
             m.driven = driven;

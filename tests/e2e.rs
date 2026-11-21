@@ -2193,6 +2193,7 @@ fn leaving_while_riding_keeps_player_data() {
     let (addr, stop, handle) = start(&dir);
     std::thread::sleep(Duration::from_millis(500));
     let mut steve = Client::join(addr, "Steve");
+    let mut alex = Client::join(addr, "Alex");
     let command = |c: &mut Client, text: &str| {
         let mut body = vec![text.len() as u8];
         body.extend_from_slice(text.as_bytes());
@@ -2221,7 +2222,20 @@ fn leaving_while_riding_keeps_player_data() {
         linked = matches!(steve.poll_game(Duration::from_millis(300)), Some((41, _)));
     }
     assert!(linked, "en selle");
-    // Son jeu annonce une position sous la monture (comme en selle), puis il part
+    // Son jeu annonce une position sous la monture (comme en selle) : Alex le voit pourtant
+    // assis sur l'âne (posé en y = -60, siège à 2,175 au-dessus)
+    steve.walk_to(-1.5, -1.5);
+    let started = std::time::Instant::now();
+    let mut seated = false;
+    while !seated && started.elapsed() < Duration::from_secs(5) {
+        steve.walk_to(-1.5, -1.5);
+        if let Some((18, body)) = alex.poll_game(Duration::from_millis(100)) {
+            let y = f32::from_le_bytes([body[6], body[7], body[8], body[9]]);
+            seated = (y - (-60.0 + 2.175)).abs() < 0.05;
+        }
+    }
+    assert!(seated, "Alex voit Steve sur le siège de l'âne");
+    // Puis il part
     steve.walk_to(3.5, 3.5);
     std::thread::sleep(Duration::from_millis(300));
     steve.send(&[0x15]);

@@ -1453,8 +1453,8 @@ impl Server {
             skin: Option<Arc<crate::player::Skin>>,
             mode: i32,
             npc: bool,
-            /// En selle : la monture et la position du siège (sa position suit la monture)
-            riding: Option<(i64, (f32, f32, f32))>,
+            /// En selle : la monture, la position du siège et celle de la monture
+            riding: Option<(i64, (f32, f32, f32), (f32, f32, f32))>,
         }
         let refresh = self.tick % VISIBILITY_EVERY == 0;
         let mut players: Vec<Seen> = Vec::new();
@@ -1479,7 +1479,7 @@ impl Server {
                     skin: if refresh { c.skin.clone() } else { None },
                     mode: c.mode.bedrock_id(),
                     npc: false,
-                    riding: c.riding.and_then(|m| self.mob_seat(m).map(|seat| (m, seat))),
+                    riding: c.riding.and_then(|m| self.mob_seat(m).map(|(seat, at)| (m, seat, at))),
                     held: {
                         let h = c.inv.held();
                         (h.id, h.count.min(1), if h.is_empty() { 0 } else { self.block_for(h.id).unwrap_or(0) })
@@ -1586,7 +1586,7 @@ impl Server {
                                     }
                                     packets.push((
                                         bedrock::ID_ADD_PLAYER,
-                                        bedrock::add_player(&id16, &o.name, o.id, (o.pos.0, o.pos.1 - 1.62, o.pos.2), o.pitch, o.yaw, o.head_yaw, o.mode, Self::remote_flags(o.sneaking, o.sprinting), (0, 0, 0)),
+                                        bedrock::add_player(&id16, &o.name, o.id, o.riding.map(|(_, seat, at)| (at.0, at.1 + seat.1 - 1.62, at.2)).unwrap_or((o.pos.0, o.pos.1 - 1.62, o.pos.2)), o.pitch, o.yaw, o.head_yaw, o.mode, Self::remote_flags(o.sneaking, o.sprinting), (0, 0, 0)),
                                     ));
                                     // L'objet qu'il tient suit dans un paquet à part : s'il était
                                     // refusé par le jeu, l'apparition du joueur ne le serait pas
@@ -1594,7 +1594,7 @@ impl Server {
                                         packets.push((bedrock::ID_MOB_EQUIPMENT, bedrock::mob_equipment(o.id, o.held, 0)));
                                     }
                                     // Déjà en selle : assis sur sa monture
-                                    if let Some((mount, seat)) = o.riding {
+                                    if let Some((mount, seat, _)) = o.riding {
                                         packets.push((bedrock::ID_SET_ACTOR_LINK, bedrock::set_actor_link(mount, o.id, bedrock::LINK_RIDER, true)));
                                         let flags = Self::remote_flags(o.sneaking, o.sprinting) | bedrock::FLAG_RIDING;
                                         packets.push((
@@ -1619,20 +1619,24 @@ impl Server {
                 for id in c.visible.iter() {
                     if let Some(&i) = by_id.get(id) {
                         let o = &players[i];
-                        // En selle, il suit sa monture chez les autres : sa propre position
-                        // (celle que donne son jeu) le placerait sous elle
-                        if o.moved_tick > c.synced_tick && o.riding.is_none() {
+                        // En selle, la position que donne son jeu le placerait sous sa monture :
+                        // il est montré sur le siège de celle-ci
+                        let pos = match o.riding {
+                            Some((_, seat, at)) => (at.0, at.1 + seat.1, at.2),
+                            None => o.pos,
+                        };
+                        if o.moved_tick > c.synced_tick {
                             if move_player_known(c.protocol) {
                                 packets.push((
                                     bedrock::ID_MOVE_PLAYER,
-                                    bedrock::move_player(o.id, o.pos, o.pitch, o.yaw, o.head_yaw, false),
+                                    bedrock::move_player(o.id, pos, o.pitch, o.yaw, o.head_yaw, false),
                                 ));
                             } else if !still {
                                 // Jeux récents : le paquet de déplacement des joueurs a changé de
                                 // format ; celui des entités, plus simple, déplace aussi les joueurs
                                 packets.push((
                                     bedrock::ID_MOVE_ACTOR_ABSOLUTE,
-                                    bedrock::move_actor_absolute(o.id, o.pos, o.pitch, o.yaw, o.head_yaw, true),
+                                    bedrock::move_actor_absolute(o.id, pos, o.pitch, o.yaw, o.head_yaw, true),
                                 ));
                             }
                         }
