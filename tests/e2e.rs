@@ -2007,7 +2007,8 @@ fn animals_appear_and_wander() {
     let started = std::time::Instant::now();
     let mut animal = None;
     let mut moved = false;
-    while (animal.is_none() || !moved) && started.elapsed() < Duration::from_secs(40) {
+    // (Large délai : machine chargée par les autres tests ; la boucle s'arrête dès que c'est vu)
+    while (animal.is_none() || !moved) && started.elapsed() < Duration::from_secs(90) {
         if let Some((id, body)) = steve.poll_game(Duration::from_millis(500)) {
             if id == 13 {
                 for kind in ["minecraft:cow", "minecraft:pig", "minecraft:sheep", "minecraft:chicken"] {

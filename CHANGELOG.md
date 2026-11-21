@@ -26,6 +26,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   à leur mort.
   Les autres joueurs voient le cavalier assis sur sa monture (sa position leur est donnée
   d'après celle de la monture, pas d'après son jeu qui le place dessous).
+  Les sauts d'une monture se voient chez les autres joueurs ; une monture qui refuse
+  d'être apprivoisée se cabre.
 - Commande `/summon <animal> [position] [minecraft:entity_born]`.
 - Guide d'installation pas à pas pour Windows et Linux : `docs/INSTALLER.md`.
 - `/timings report` indique l'état de la machine pendant les mesures (processeur, temps

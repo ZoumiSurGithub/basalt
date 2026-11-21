@@ -156,6 +156,8 @@ pub const FLAG_SHEARED: i64 = 1 << 31;
 /// Montures : sellée, apprivoisée, dirigée au clavier par son cavalier, saut chargé
 pub const FLAG_SADDLED: i64 = 1 << 8;
 pub const FLAG_TAMED: i64 = 1 << 28;
+/// Cabrée (monture qui refuse son cavalier)
+pub const FLAG_REARING: i64 = 1 << 39;
 pub const FLAG_WASD_CONTROLLED: i64 = 1 << 44;
 pub const FLAG_CAN_POWER_JUMP: i64 = 1 << 45;
 /// Cavalier (le joueur assis sur une monture)

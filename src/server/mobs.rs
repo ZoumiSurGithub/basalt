@@ -256,6 +256,11 @@ pub(super) struct Mob {
     tame_in: u32,
     /// Tick du dernier déplacement imposé par le cavalier
     driven: u64,
+    /// Écart entre la hauteur que donne le jeu du cavalier et celle de la monture (mesuré
+    /// au sol, il laisse voir ses sauts)
+    ride_offset: Option<f32>,
+    /// Ticks restants cabrée
+    rearing: u32,
 }
 
 impl Mob {
@@ -275,6 +280,9 @@ impl Mob {
         }
         if self.tamed {
             f |= bedrock::FLAG_TAMED;
+        }
+        if self.rearing > 0 {
+            f |= bedrock::FLAG_REARING;
         }
         if self.saddled {
             f |= bedrock::FLAG_SADDLED;
@@ -654,6 +662,8 @@ impl Server {
             rider: None,
             tame_in: 0,
             driven: 0,
+            ride_offset: None,
+            rearing: 0,
         };
         self.mobs.insert(id, mob);
         self.mobs_dirty = true;
@@ -769,6 +779,16 @@ impl Server {
             let near = players.iter().any(|(p, _)| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2) < active * active);
             if !near {
                 continue;
+            }
+            // Fin de la ruade : elle se remet sur ses quatre pattes
+            if m.rearing > 0 {
+                m.rearing -= 1;
+                if let Some(live) = self.mobs.get_mut(&id) {
+                    live.rearing = m.rearing;
+                }
+                if m.rearing == 0 {
+                    self.mob_changed(id);
+                }
             }
             if m.rider.is_some() {
                 // En selle : la monture suit son cavalier (ou attend le dressage)
@@ -1296,6 +1316,7 @@ impl Server {
             return;
         }
         m.rider = Some(*addr);
+        m.ride_offset = None;
         m.target = None;
         m.vel = (0.0, 0.0, 0.0);
         let (seat, wild) = (m.species.seat(), !m.tamed);
@@ -1389,8 +1410,11 @@ impl Server {
         } else {
             if let Some(m) = self.mobs.get_mut(&id) {
                 m.temper = (m.temper + 5).min(max);
+                // Elle se cabre une seconde
+                m.rearing = 20;
             }
             self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_TAME_FAIL, 0));
+            self.mob_changed(id);
             if let Some(r) = rider {
                 self.dismount(&r);
             }
@@ -1455,12 +1479,28 @@ impl Server {
         // Sous le cavalier, posée sur le sol : la hauteur que donne son jeu en selle n'est pas
         // fiable (elle mettait la monture sous terre)
         let (x, z) = (pos.0.floor() as i32, pos.2.floor() as i32);
-        let top = pos.1.floor() as i32 + 1;
-        let ground = (top - 6..=top).rev().find(|&y| !self.mob_free(x, y - 1, z) && self.mob_free(x, y, z)).unwrap_or(m.pos.1.floor() as i32);
+        let offset = m.ride_offset;
+        // Hauteur d'après l'écart mesuré au sol : un saut se voit. Inconnu, ou la monture se
+        // retrouverait dans un bloc (marche, pente) : elle est reposée sur le sol et l'écart
+        // remesuré.
+        let y = match offset.map(|o| pos.1 - o) {
+            Some(y) if self.mob_free(x, y.floor() as i32, z) => y,
+            _ => {
+                let top = match offset {
+                    Some(o) => (pos.1 - o).floor() as i32 + 2,
+                    None => pos.1.floor() as i32 + 1,
+                };
+                let ground = (top - 6..=top).rev().find(|&y| !self.mob_free(x, y - 1, z) && self.mob_free(x, y, z)).unwrap_or(m.pos.1.floor() as i32) as f32;
+                if let Some(m) = self.mobs.get_mut(&id) {
+                    m.ride_offset = Some(pos.1 - ground);
+                }
+                ground
+            }
+        };
         if self.cfg.debug && tick % 20 == 0 {
-            info!("[selle] cavalier en {:.2} {:.2} {:.2}, monture posée en y={} (dernier déplacement du jeu : tick {})", pos.0, pos.1, pos.2, ground, m.driven);
+            info!("[selle] cavalier en {:.2} {:.2} {:.2}, monture en y={:.2}", pos.0, pos.1, pos.2, y);
         }
-        self.steer_mount(id, (pos.0, ground as f32, pos.2), yaw, None);
+        self.steer_mount(id, (pos.0, y, pos.2), yaw, None);
         // (Position déduite : n'empêche pas une vraie position du jeu d'arriver ensuite)
         if let Some(m) = self.mobs.get_mut(&id) {
             m.driven = driven;
