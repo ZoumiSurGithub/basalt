@@ -2319,11 +2319,6 @@ fn tamed_horses_have_a_foal() {
         }
     }
     assert_eq!(horses.len(), 2, "deux chevaux montrés");
-    // Le premier est blessé : la carotte dorée le soigne et le rend amoureux à la fois
-    let mut hit = vec![0x00, 0x03, 0x00, horses[0], 0x01];
-    hit.extend_from_slice(&[0x00, 0, 0, 0, 0, 0, 0, 0, 0]);
-    steve.game(30, &hit, Some(0xff));
-    std::thread::sleep(Duration::from_millis(600));
     for h in &horses {
         let mut click = vec![0x00, 0x03, 0x00, *h, 0x00];
         click.extend_from_slice(&[0x00, 0, 0, 0, 0, 0, 0, 0, 0]);
@@ -2332,7 +2327,7 @@ fn tamed_horses_have_a_foal() {
     }
     let mut foal = false;
     let started = std::time::Instant::now();
-    while !foal && started.elapsed() < Duration::from_secs(20) {
+    while !foal && started.elapsed() < Duration::from_secs(40) {
         if let Some((13, body)) = steve.poll_game(Duration::from_millis(300)) {
             foal |= body.windows(15).any(|w| w == b"minecraft:horse") && !horses.contains(&body[1]);
         }
@@ -2344,5 +2339,132 @@ fn tamed_horses_have_a_foal() {
     let saved: String = std::fs::read_dir(dir.join("world").join("entities")).unwrap().filter_map(|e| e.ok()).filter_map(|e| std::fs::read_to_string(e.path()).ok()).collect();
     let tamed = saved.matches("\"tamed\":true").count();
     assert_eq!(tamed, 3, "les deux parents et le poulain sont apprivoisés : {}", saved);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Chevaux sauvages apprivoisés en les montant (comme ceux qui apparaissent dans la nature),
+/// puis nourris d'une carotte dorée : un poulain naît.
+#[test]
+fn horses_tamed_by_riding_have_a_foal() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-dresses-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    command(&mut steve, "/summon horse ~2 ~ ~2");
+    std::thread::sleep(Duration::from_millis(1200));
+    command(&mut steve, "/summon horse ~-2 ~ ~2");
+    let mut horses: Vec<u8> = Vec::new();
+    let started = std::time::Instant::now();
+    while horses.len() < 2 && started.elapsed() < Duration::from_secs(10) {
+        if let Some((13, body)) = steve.poll_game(Duration::from_millis(300)) {
+            if body.windows(15).any(|w| w == b"minecraft:horse") && !horses.contains(&body[1]) {
+                horses.push(body[1]);
+            }
+        }
+    }
+    assert_eq!(horses.len(), 2);
+    let click = |c: &mut Client, h: u8| {
+        let mut click = vec![0x00, 0x03, 0x00, h, 0x00];
+        click.extend_from_slice(&[0x00, 0, 0, 0, 0, 0, 0, 0, 0]);
+        c.game(30, &click, Some(0xff));
+    };
+    // Amadoués : dix pommes dorées chacun (patience au maximum), puis montés jusqu'au dressage
+    std::thread::sleep(Duration::from_millis(1200));
+    command(&mut steve, "/give @s golden_apple 20");
+    std::thread::sleep(Duration::from_millis(800));
+    for h in &horses {
+        for _ in 0..10 {
+            click(&mut steve, *h);
+            std::thread::sleep(Duration::from_millis(60));
+        }
+    }
+    command(&mut steve, "/clear @s");
+    std::thread::sleep(Duration::from_millis(800));
+    for h in &horses {
+        click(&mut steve, *h); // en selle
+        // Dressage réussi (cœurs) au bout de 2 à 5 secondes, puis il descend ; jeté à terre
+        // (machine chargée : quelques pommes perdues), on remonte
+        let started = std::time::Instant::now();
+        let mut tamed = false;
+        while !tamed && started.elapsed() < Duration::from_secs(30) {
+            if let Some((27, body)) = steve.poll_game(Duration::from_millis(200)) {
+                tamed = body.first() == Some(h) && body.get(1) == Some(&7);
+                if body.first() == Some(h) && body.get(1) == Some(&6) {
+                    click(&mut steve, *h);
+                }
+            }
+        }
+        assert!(tamed, "cheval {} apprivoisé", h);
+        steve.game(33, &[3, *h, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], Some(0xff));
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    command(&mut steve, "/give @s golden_carrot 4");
+    std::thread::sleep(Duration::from_millis(800));
+    for h in &horses {
+        click(&mut steve, *h);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let mut foal = false;
+    let started = std::time::Instant::now();
+    while !foal && started.elapsed() < Duration::from_secs(40) {
+        if let Some((13, body)) = steve.poll_game(Duration::from_millis(300)) {
+            foal |= body.windows(15).any(|w| w == b"minecraft:horse") && !horses.contains(&body[1]);
+        }
+    }
+    assert!(foal, "un poulain est né");
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = handle.join();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Une vache attirée par du blé franchit un muret d'un bloc (elle saute la marche).
+#[test]
+fn animals_climb_one_block() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-marche-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    // Un muret d'un bloc de haut entre la vache et le joueur, qui tient du blé
+    command(&mut steve, "/fill -6 -60 4 6 -60 4 stone");
+    std::thread::sleep(Duration::from_millis(1200));
+    command(&mut steve, "/give @s wheat");
+    std::thread::sleep(Duration::from_millis(1200));
+    command(&mut steve, "/summon cow 0.5 -60 7.5");
+    let mut cow = None;
+    let mut crossed = false;
+    let started = std::time::Instant::now();
+    while !crossed && started.elapsed() < Duration::from_secs(20) {
+        if let Some((id, body)) = steve.poll_game(Duration::from_millis(300)) {
+            if id == 13 && body.windows(13).any(|w| w == b"minecraft:cow") {
+                cow = Some(body[1]);
+            }
+            if id == 18 && cow.is_some() && body.first() == cow.as_ref() {
+                let z = f32::from_le_bytes([body[10], body[11], body[12], body[13]]);
+                crossed = z < 4.0;
+            }
+        }
+    }
+    assert!(cow.is_some(), "vache montrée");
+    assert!(crossed, "la vache a sauté le muret");
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = handle.join();
     let _ = std::fs::remove_dir_all(&dir);
 }

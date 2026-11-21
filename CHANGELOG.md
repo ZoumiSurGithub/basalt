@@ -62,6 +62,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Corrigé
 
+- Les animaux qui se promenaient renonçaient en plein saut devant une marche d'un bloc
+  (ils sautaient sur place) ; le lapin, qui avance par bonds, ne la franchissait jamais.
 - Boîte de collision des petits et des lapins trop petite (réduite deux fois : par
   Basalt puis par le jeu, qui applique lui-même la taille d'affichage).
 - Un poulain (ânon, mule, petit lama) naît apprivoisé, comme dans le jeu ; un poulain

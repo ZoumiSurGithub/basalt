@@ -1253,6 +1253,8 @@ impl Server {
         let (w, h) = m.size();
         let half = w / 2.0;
         let in_water = self.mob_water(m.pos.0, m.pos.1 + 0.2, m.pos.2);
+        // Au sol en début de tick (le bond du lapin ne compte pas : il peut aussi gravir une marche)
+        let grounded = m.on_ground;
         // Vertical
         if in_water {
             m.vel.1 = (m.vel.1 + 0.02).min(0.08);
@@ -1300,10 +1302,12 @@ impl Server {
                 } else {
                     m.pos.2 = nz;
                 }
-            } else if m.on_ground && body_free(self, ex, m.pos.1.floor() + 1.01, ez) {
+            } else if grounded && body_free(self, ex, m.pos.1.floor() + 1.01, ez) {
                 // Marche d'un bloc : saute
-                m.vel.1 = 0.42;
+                m.vel.1 = m.vel.1.max(0.42);
                 m.on_ground = false;
+            } else if !grounded && m.vel.1 > -0.3 && body_free(self, ex, m.pos.1.floor() + 1.01, ez) {
+                // En plein saut vers la marche : il continue de monter, sans changer d'idée
             } else if in_water {
                 m.vel.1 = 0.1; // sort de l'eau en grimpant au bord
             } else {
