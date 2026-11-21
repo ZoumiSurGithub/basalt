@@ -2182,3 +2182,56 @@ fn summon_makes_an_animal_appear() {
     let _ = handle.join();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Parti en selle : ses données (objets, position) sont gardées, debout à la place de sa monture.
+#[test]
+fn leaving_while_riding_keeps_player_data() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-selle-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    command(&mut steve, "/give @s diamond 5");
+    std::thread::sleep(Duration::from_millis(1200));
+    command(&mut steve, "/summon donkey ~-2 ~ ~-2");
+    let mut donkey = None;
+    let started = std::time::Instant::now();
+    while donkey.is_none() && started.elapsed() < Duration::from_secs(10) {
+        if let Some((13, body)) = steve.poll_game(Duration::from_millis(300)) {
+            if body.windows(16).any(|w| w == b"minecraft:donkey") {
+                donkey = Some(body[1]);
+            }
+        }
+    }
+    let donkey = donkey.expect("âne montré");
+    let mut click = vec![0x00, 0x03, 0x00, donkey, 0x00];
+    click.extend_from_slice(&[0x00, 0, 0, 0, 0, 0, 0, 0, 0]);
+    steve.game(30, &click, Some(0xff));
+    let started = std::time::Instant::now();
+    let mut linked = false;
+    while !linked && started.elapsed() < Duration::from_secs(5) {
+        linked = matches!(steve.poll_game(Duration::from_millis(300)), Some((41, _)));
+    }
+    assert!(linked, "en selle");
+    // Son jeu annonce une position sous la monture (comme en selle), puis il part
+    steve.walk_to(3.5, 3.5);
+    std::thread::sleep(Duration::from_millis(300));
+    steve.send(&[0x15]);
+    std::thread::sleep(Duration::from_millis(1500));
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = handle.join();
+    let saved = basalt::player::PlayerData::load(&dir, "Steve").expect("fichier lisible").expect("Steve enregistré");
+    // Debout à la place de l'âne (invoqué en -1,5 ; -60 ; -1,5), pas là où son jeu le disait
+    let p = saved.human.pos;
+    assert!((p.0 + 1.5).abs() < 0.6 && (p.2 + 1.5).abs() < 0.6 && (p.1 - (-60.0 + 1.62)).abs() < 0.6, "position enregistrée : {:?}", p);
+    assert!(saved.items.iter().any(|i| i.2.contains("diamond")), "ses objets sont gardés : {:?}", saved.items);
+    let _ = std::fs::remove_dir_all(&dir);
+}

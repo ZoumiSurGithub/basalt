@@ -1078,6 +1078,11 @@ impl Server {
             d.has_pos = true;
         } else if c.joined {
             d.pos = c.pos;
+            // En selle, la position donnée par son jeu est sous la monture (dans le sol) : il
+            // est enregistré debout à la place de sa monture
+            if let Some(m) = c.riding.and_then(|id| self.mobs.get(&id)) {
+                d.pos = (m.pos.0, m.pos.1 + player_eye_height(), m.pos.2);
+            }
             d.rotation = (c.yaw.rem_euclid(360.0), c.pitch.clamp(-90.0, 90.0));
             d.has_pos = true;
         }

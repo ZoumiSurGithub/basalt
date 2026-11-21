@@ -45,6 +45,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Corrigé
 
+- Un joueur parti en selle était enregistré à la position que donne son jeu, sous sa
+  monture (dans le sol) : il est maintenant enregistré debout à la place de sa monture.
 - Animaux et objets au sol invisibles après un redémarrage : ils étaient montrés au jeu
   avant le terrain où ils se trouvent, et le jeu les oubliait. Ils attendent maintenant
   que leur chunk soit arrivé. Le nombre d'animaux enregistrés s'affiche à l'arrêt.
