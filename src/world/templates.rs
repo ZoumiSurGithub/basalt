@@ -345,7 +345,7 @@ fn read_template(path: &str, tag: &Tag, resolve: &dyn Fn(&str) -> Option<u32>, u
     if size.len() != 3 {
         return None;
     }
-    let palette: Vec<(String, Vec<(String, String)>)> = tag
+    let mut palette: Vec<(String, Vec<(String, String)>)> = tag
         .get("palette")?
         .as_list()?
         .iter()
@@ -354,19 +354,7 @@ fn read_template(path: &str, tag: &Tag, resolve: &dyn Fn(&str) -> Option<u32>, u
             (name, props_of(e.get("Properties")))
         })
         .collect();
-    let mut states: [Vec<Option<u32>>; 4] = Default::default();
-    for (r, list) in states.iter_mut().enumerate() {
-        for (name, props) in &palette {
-            let s = java_to_bedrock(name, &rotate_props(props, r as u8), resolve);
-            if s.is_none() && name != "minecraft:jigsaw" {
-                #[cfg(test)]
-                eprintln!("inconnu {} {:?} r{} dans {}", name, props, r, path);
-                unknown.insert(name.clone());
-            }
-            list.push(s);
-        }
-    }
-    let mut t = Template { path: path.to_string(), size: (size[0], size[1], size[2]), states, blocks: Vec::new(), chests: Vec::new(), beds: Vec::new(), markers: Vec::new(), jigsaws: Vec::new() };
+    let mut t = Template { path: path.to_string(), size: (size[0], size[1], size[2]), states: Default::default(), blocks: Vec::new(), chests: Vec::new(), beds: Vec::new(), markers: Vec::new(), jigsaws: Vec::new() };
     for b in tag.get("blocks")?.as_list()? {
         let pos: Vec<i32> = b.get("pos").and_then(|p| p.as_list()).map(|l| l.iter().filter_map(|t| t.as_int()).collect()).unwrap_or_default();
         let state = b.get("state").and_then(|s| s.as_int()).unwrap_or(0) as usize;
@@ -397,7 +385,138 @@ fn read_template(path: &str, tag: &Tag, resolve: &dyn Fn(&str) -> Option<u32>, u
         }
         t.blocks.push((at.0 as i16, at.1 as i16, at.2 as i16, state as u16));
     }
+    // Formes qui dépendent des voisins (coins d'escaliers, barrières, vitres, murets) :
+    // recalculées comme le jeu le fait en posant un plan (les plus anciens les notent mal)
+    fix_shapes(&mut palette, &mut t.blocks);
+    for (r, list) in t.states.iter_mut().enumerate() {
+        for (name, props) in &palette {
+            let s = java_to_bedrock(name, &rotate_props(props, r as u8), resolve);
+            if s.is_none() && name != "minecraft:jigsaw" {
+                #[cfg(test)]
+                eprintln!("inconnu {} {:?} r{} dans {}", name, props, r, path);
+                unknown.insert(name.clone());
+            }
+            list.push(s);
+        }
+    }
     Some(t)
+}
+
+/// Nom actuel d'un bloc (les anciens noms traduits), sans « minecraft: ».
+fn modern_name(name: &str, props: &[(String, String)]) -> String {
+    let short = name.trim().trim_start_matches("minecraft:");
+    match legacy_name(short, props) {
+        Some((n, _)) => n,
+        None => short.to_string(),
+    }
+}
+
+/// Bloc plein (au sens des raccords : une barrière ou une vitre s'y accroche), d'après son nom.
+fn java_full(short: &str) -> bool {
+    const PARTIAL: [&str; 62] = [
+        "air", "slab", "stairs", "fence", "_wall", "pane", "iron_bars", "door", "torch", "lantern", "carpet", "flower", "grass", "fern", "leaves", "sign",
+        "banner", "button", "lever", "pressure_plate", "ladder", "vine", "chest", "_bed", "candle", "rail", "skull", "head", "pot", "chain", "campfire",
+        "bell", "snow", "water", "lava", "cake", "web", "cobweb", "sapling", "mushroom", "wheat", "carrots", "potatoes", "beetroots", "stem", "cane", "cactus",
+        "kelp", "seagrass", "coral", "pickle", "scaffolding", "anvil", "grindstone", "lectern", "brewing", "cauldron", "hopper", "structure", "jigsaw",
+        "sculk_vein", "path",
+    ];
+    !PARTIAL.iter().any(|p| short.contains(p)) || short == "snow_block" || short.ends_with("_wood") && !short.contains("door")
+}
+
+/// Recalcule, dans le plan non tourné, les coins des escaliers et les raccords des
+/// barrières, vitres, barreaux et murets, d'après leurs voisins dans le plan (règles du jeu).
+fn fix_shapes(palette: &mut Vec<(String, Vec<(String, String)>)>, blocks: &mut [(i16, i16, i16, u16)]) {
+    let at: HashMap<(i32, i32, i32), usize> = blocks.iter().map(|&(x, y, z, i)| ((x as i32, y as i32, z as i32), i as usize)).collect();
+    let names: Vec<String> = palette.iter().map(|(n, p)| modern_name(n, p)).collect();
+    let prop = |i: usize, k: &str| palette[i].1.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone());
+    let stairs = |i: usize| -> Option<(Dir, String)> {
+        if !names[i].ends_with("_stairs") {
+            return None;
+        }
+        Some((Dir::parse(&prop(i, "facing")?)?, prop(i, "half").unwrap_or_else(|| "bottom".into())))
+    };
+    let mut changes: Vec<(usize, Vec<(String, String)>)> = Vec::new();
+    for (k, &(x, y, z, i)) in blocks.iter().enumerate() {
+        let i = i as usize;
+        let (x, y, z) = (x as i32, y as i32, z as i32);
+        let near = |d: Dir| {
+            let (dx, dy, dz) = d.step();
+            at.get(&(x + dx, y + dy, z + dz)).copied()
+        };
+        let name = &names[i];
+        let mut props = palette[i].1.clone();
+        let set = |props: &mut Vec<(String, String)>, key: &str, v: String| match props.iter_mut().find(|(a, _)| a == key) {
+            Some(e) => e.1 = v,
+            None => props.push((key.to_string(), v)),
+        };
+        if let Some((facing, half)) = stairs(i) {
+            // StairBlock.getStairsShape du jeu
+            let counter = facing.turn(3);
+            let can_take = |face: Dir| match near(face).and_then(stairs) {
+                Some((f, h)) => f != facing || h != half,
+                None => true,
+            };
+            let axis = |d: Dir| matches!(d, Dir::North | Dir::South);
+            let mut shape = "straight";
+            if let Some((f, h)) = near(facing).and_then(stairs) {
+                if h == half && axis(f) != axis(facing) && can_take(f.opposite()) {
+                    shape = if f == counter { "outer_left" } else { "outer_right" };
+                }
+            }
+            if shape == "straight" {
+                if let Some((f, h)) = near(facing.opposite()).and_then(stairs) {
+                    if h == half && axis(f) != axis(facing) && can_take(f) {
+                        shape = if f == counter { "inner_left" } else { "inner_right" };
+                    }
+                }
+            }
+            set(&mut props, "shape", shape.into());
+        } else if name.ends_with("_fence") || name.ends_with("_pane") || name == "iron_bars" || (name.ends_with("_wall") && !name.contains("torch") && !name.contains("sign") && !name.contains("banner")) {
+            let wall = name.ends_with("_wall");
+            let fence = name.ends_with("_fence");
+            let mut sides = Vec::new();
+            for d in [Dir::North, Dir::East, Dir::South, Dir::West] {
+                let joins = near(d).map(|n| {
+                    let o = &names[n];
+                    java_full(o)
+                        || (fence && (o.ends_with("_fence") && (o == "nether_brick_fence") == (name == "nether_brick_fence") || o.ends_with("fence_gate")))
+                        || (!fence && !wall && (o.ends_with("_pane") || o == "iron_bars" || o.ends_with("_wall")))
+                        || (wall && (o.ends_with("_wall") || o.ends_with("fence_gate") || o.ends_with("_pane") || o == "iron_bars"))
+                });
+                sides.push((d, joins.unwrap_or(false)));
+            }
+            for (d, j) in &sides {
+                let v = if wall {
+                    if *j { "low" } else { "none" }.to_string()
+                } else {
+                    j.to_string()
+                };
+                set(&mut props, d.word(), v);
+            }
+            if wall {
+                let on = |d: Dir| sides.iter().any(|(s, j)| *s == d && *j);
+                let straight = (on(Dir::North) && on(Dir::South) && !on(Dir::East) && !on(Dir::West)) || (on(Dir::East) && on(Dir::West) && !on(Dir::North) && !on(Dir::South));
+                let above = near(Dir::Up).map(|n| names[n].ends_with("_wall")).unwrap_or(false);
+                set(&mut props, "up", (!straight || above).to_string());
+            }
+        } else {
+            continue;
+        }
+        if props != palette[i].1 {
+            changes.push((k, props));
+        }
+    }
+    // Nouvelles entrées de palette (une par combinaison)
+    let mut index: HashMap<(String, Vec<(String, String)>), u16> = HashMap::new();
+    for (k, props) in changes {
+        let old = blocks[k].3 as usize;
+        let key = (palette[old].0.clone(), props);
+        let id = *index.entry(key.clone()).or_insert_with(|| {
+            palette.push(key);
+            (palette.len() - 1) as u16
+        });
+        blocks[k].3 = id;
+    }
 }
 
 /// Numéro d'une couleur de teinture (ordre du jeu : blanc 0 … noir 15).
