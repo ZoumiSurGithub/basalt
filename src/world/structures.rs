@@ -50,12 +50,20 @@ pub struct Plan {
     clear: HashMap<(i32, i32), Vec<(u8, u8, i16)>>,
     chests: HashMap<(i32, i32), Vec<(u8, i16, u8, Loot)>>,
     beds: HashMap<(i32, i32), Vec<(u8, i16, u8, u8)>>,
+    /// Zones (x min, z min, x max, z max) où aucun arbre ne pousse : un arbre dont le pied y
+    /// tombe n'est pas dessiné du tout, plutôt que coupé
+    no_trees: Vec<(i32, i32, i32, i32)>,
 }
 
 impl Plan {
     /// Blocs de la structure qui tombent dans ce chunk : (x, y, z locaux, état).
     pub fn blocks_in(&self, cx: i32, cz: i32) -> &[(u8, i16, u8, u32)] {
         self.blocks.get(&(cx, cz)).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// Vrai si un arbre dont le pied est en (x, z) gênerait la structure.
+    pub fn blocks_tree(&self, x: i32, z: i32) -> bool {
+        self.no_trees.iter().any(|&(x0, z0, x1, z1)| x >= x0 && x <= x1 && z >= z0 && z <= z1)
     }
 
     /// Lits de la structure dans ce chunk, avec leur couleur.
@@ -680,6 +688,9 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
             for ((x, z), from) in columns {
                 b.clear.push((x, z, from));
             }
+            // Pas d'arbre dont le pied est sur la pièce ou tout près (sa couronne la toucherait)
+            const M: i32 = 3;
+            b.no_trees.push((piece.bbox.min.0 - M, piece.bbox.min.2 - M, piece.bbox.max.0 + M, piece.bbox.max.2 + M));
         }
     }
     for &((x, y, z), state, follows) in &layout.finals {
@@ -922,6 +933,8 @@ struct Builder<'a> {
     clear: Vec<(i32, i32, i32)>,
     /// Lits colorés
     beds: Vec<((i32, i32, i32), u8)>,
+    /// Zones sans arbres
+    no_trees: Vec<(i32, i32, i32, i32)>,
     tops: HashMap<(i32, i32), i32>,
     /// Barrières posées : reliées à leurs voisines à la fin
     fences: HashMap<(i32, i32, i32), &'static str>,
@@ -930,7 +943,7 @@ struct Builder<'a> {
 impl<'a> Builder<'a> {
     /// Nouveau chantier vide.
     fn new(v: &'a Vanilla, p: &'a Palette) -> Builder<'a> {
-        Builder { v, p, blocks: HashMap::new(), chests: Vec::new(), clear: Vec::new(), beds: Vec::new(), tops: HashMap::new(), fences: HashMap::new() }
+        Builder { v, p, blocks: HashMap::new(), chests: Vec::new(), clear: Vec::new(), beds: Vec::new(), no_trees: Vec::new(), tops: HashMap::new(), fences: HashMap::new() }
     }
 
     /// État d'un bloc d'après son nom ; erreur en test si le nom est absent de block_specs().
@@ -1014,6 +1027,7 @@ impl<'a> Builder<'a> {
         for ((x, y, z), s) in self.blocks {
             plan.blocks.entry((x >> 4, z >> 4)).or_default().push(((x & 15) as u8, y as i16, (z & 15) as u8, s));
         }
+        plan.no_trees = self.no_trees;
         for ((x, y, z), color) in self.beds {
             plan.beds.entry((x >> 4, z >> 4)).or_default().push(((x & 15) as u8, y as i16, (z & 15) as u8, color));
         }
@@ -3612,7 +3626,7 @@ mod tests {
         // Le monde généré contient bien le village, sans erreur
         let (x, y, z) = locate(&v, Target::Village, 0, 0).unwrap();
         let world = super::super::World::with_generator(super::super::generator::Generator::new(super::super::generator::Kind::Vanilla, 12345, p.clone()));
-        assert_ne!(world.get(x, y, z), p.air);
+        assert_ne!(world.get(x, y - 1, z), p.air);
         // Les lits gardent leur couleur : envoyée avec le chunk
         let plan = build(&v, &p, (Kind::Village, (x - 8) >> 4, (z - 8) >> 4));
         let (&(cx, cz), beds) = plan.beds.iter().find(|(_, b)| !b.is_empty()).expect("des lits");
@@ -3653,6 +3667,46 @@ mod tests {
         let path = std::env::var("BASALT_STRUCTURES").unwrap_or_else(|_| "/tmp/vs/structures".into());
         let t = Templates::load(std::path::Path::new(&path), &|n| data.state_from_spec(n)).ok().map(std::sync::Arc::new);
         p.with_templates(t)
+    }
+
+    /// Vue de dessus du monde généré autour d'un village de taïga (arbres compris), dans
+    /// /tmp/world-village.txt (x z y nom). `OFFICIAL=1 cargo test world_around_village -- --ignored`
+    #[test]
+    #[ignore]
+    fn world_around_village() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
+        let data = crate::data::GameData::load(&dir).unwrap();
+        let p = test_palette(&data);
+        let v = Vanilla::new(12345);
+        let mut found = None;
+        'search: for r in 0..40i32 {
+            for (dx, dz) in ring(r) {
+                let (sx, sz) = grid_start(v.seed(), dx, dz, 34, 8, 10_387_312);
+                if matches!(v.surface_biome_at(sx * 16 + 8, sz * 16 + 8), B::Taiga | B::SnowyTaiga) && placed(&v, Kind::Village, sx, sz).is_some() {
+                    found = Some((sx * 16 + 8, sz * 16 + 8));
+                    break 'search;
+                }
+            }
+        }
+        let (x, z) = found.unwrap();
+        eprintln!("village de taïga en {} {}", x, z);
+        let mut out = String::new();
+        for cx in (x >> 4) - 5..=(x >> 4) + 5 {
+            for cz in (z >> 4) - 5..=(z >> 4) + 5 {
+                let col = v.generate(&p, cx, cz);
+                for lx in 0..16 {
+                    for lz in 0..16 {
+                        let mut y = MAX_Y;
+                        while y > MIN_Y && col.get(lx, y, lz) == p.air {
+                            y -= 1;
+                        }
+                        let n = data.block_name(col.get(lx, y, lz)).unwrap_or("?").trim_start_matches("minecraft:");
+                        out.push_str(&format!("{} {} {} {}\n", cx * 16 + lx as i32, y, cz * 16 + lz as i32, n));
+                    }
+                }
+            }
+        }
+        std::fs::write("/tmp/world-village.txt", out).unwrap();
     }
 
     /// Écrit les blocs d'une structure récente dans /tmp/plan-<sorte>.txt (x y z nom), pour

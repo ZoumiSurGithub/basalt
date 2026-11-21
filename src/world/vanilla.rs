@@ -1069,7 +1069,13 @@ impl Vanilla {
         for ncx in (cx - 1)..=(cx + 1) {
             for ncz in (cz - 1)..=(cz + 1) {
                 let own = if (ncx, ncz) == (cx, cz) { Some((&tops, &biomes)) } else { None };
+                // Les structures proches du chunk de l'arbre : un arbre qui les gênerait n'est
+                // pas dessiné (dans tous les chunks à la fois, puisque tous font ce calcul)
+                let plans = super::structures::near(self, p, &self.structures, ncx, ncz);
                 for plant in self.plants(ncx, ncz, own) {
+                    if plans.iter().any(|plan| plan.blocks_tree(plant.x, plant.z)) {
+                        continue;
+                    }
                     plant.paint(&mut blocks, at, bx, bz, p);
                 }
             }
@@ -1223,8 +1229,10 @@ impl Vanilla {
             }
         }
         let mut wet = Vec::new();
+        let mut touched: Vec<(u8, i16, u8)> = Vec::new();
         for plan in plans {
             for (x, y, z, s) in plan.blocks_in(cx, cz) {
+                touched.push((*x, *y, *z));
                 let i = at(*x as usize, *z as usize, *y as i32);
                 // Bloc posé à la place de l'eau : il la garde (pas de bulle d'air autour)
                 if blocks[i] == p.water && *s != p.air && *s != p.water {
@@ -1236,6 +1244,40 @@ impl Vanilla {
             }
             chests.extend_from_slice(plan.chests_in(cx, cz));
             beds.extend_from_slice(plan.beds_in(cx, cz));
+        }
+
+        // Plantes restées en l'air au-dessus d'un bloc de structure (moitié haute d'une
+        // grande herbe dont le bas a été remplacé par un chemin, fleur sur du vide…) : retirées
+        if !touched.is_empty() {
+            const LOOSE: [&str; 24] = [
+                "short_grass", "tall_grass", "fern", "large_fern", "dandelion", "poppy", "blue_orchid", "allium", "azure_bluet", "red_tulip", "orange_tulip",
+                "white_tulip", "pink_tulip", "oxeye_daisy", "cornflower", "lily_of_the_valley", "sunflower", "lilac", "rose_bush", "peony", "reeds", "cactus",
+                "pink_petals", "snow_layer",
+            ];
+            let loose: std::collections::HashSet<u32> = p
+                .named
+                .iter()
+                .filter(|(n, _)| {
+                    let base = n.split('[').next().unwrap_or(n);
+                    LOOSE.contains(&base) || base.ends_with("_mushroom") || base.ends_with("bush") || base.ends_with("leaf_litter") || base.ends_with("wildflowers")
+                })
+                .map(|(_, s)| *s)
+                .chain([p.short_grass, p.dandelion, p.poppy, p.cactus, p.snow_layer])
+                .filter(|s| *s != p.air)
+                .collect();
+            for (x, y, z) in touched {
+                let (x, z) = (x as usize, z as usize);
+                let mut yy = y as i32 + 1;
+                while yy <= MAX_Y && yy <= y as i32 + 4 {
+                    let i = at(x, z, yy);
+                    let below = blocks[at(x, z, yy - 1)];
+                    if !loose.contains(&blocks[i]) || (below != p.air && below != p.water) {
+                        break;
+                    }
+                    blocks[i] = p.air;
+                    yy += 1;
+                }
+            }
         }
 
         // 8. Biomes en 3D (cases de 4 blocs), y compris les biomes souterrains
