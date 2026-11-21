@@ -105,8 +105,7 @@ garde le dossier `behavior_packs/vanilla/structures` (rangé dans `structures` �
 Basalt) et jette le reste. `BASALT_NO_STRUCTURES=1` pour s'en passer. On peut aussi les
 copier soi-même : dossier `structures`, ou archive `structures.zip`, à côté de
 `server.properties`. Le journal du démarrage indique combien de plans ont été chargés.
-Seuls les nouveaux chunks en profitent. Les lits y sont rouges (leur couleur n'est pas
-encore transmise), et les bannières, les animaux et les villageois des plans ne sont pas
+Seuls les nouveaux chunks en profitent. Les lits gardent leur couleur ; les bannières, les animaux et les villageois des plans ne sont pas
 posés.
 
 Sans ces fichiers, chaque structure est reconstruite à la main, au plus près du jeu :

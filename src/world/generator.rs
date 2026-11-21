@@ -377,6 +377,8 @@ pub struct Column {
     pub biome_ids: Option<Vec<u8>>,
     /// Coffres des structures générées (x local, y, z local, butin) : remplis au premier clic
     pub chests: Vec<(u8, i16, u8, super::structures::Loot)>,
+    /// Lits des structures et leur couleur (x local, y, z local, couleur 0 blanc … 15 noir)
+    pub beds: Vec<(u8, i16, u8, u8)>,
 }
 
 impl Column {
@@ -414,7 +416,7 @@ impl Column {
             sections.push(if palette.len() == 1 { Section::Uniform(palette[0]) } else { Section::Mixed { palette, index } });
         }
         let _ = air;
-        Column { sections, biome, biome_ids: None, chests: Vec::new() }
+        Column { sections, biome, biome_ids: None, chests: Vec::new(), beds: Vec::new() }
     }
 }
 

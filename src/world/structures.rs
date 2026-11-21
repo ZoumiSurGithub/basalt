@@ -43,12 +43,18 @@ pub struct Plan {
     /// Colonnes (x, z locaux, hauteur) au-dessus desquelles les arbres sont abattus
     clear: HashMap<(i32, i32), Vec<(u8, u8, i16)>>,
     chests: HashMap<(i32, i32), Vec<(u8, i16, u8, Loot)>>,
+    beds: HashMap<(i32, i32), Vec<(u8, i16, u8, u8)>>,
 }
 
 impl Plan {
     /// Blocs de la structure qui tombent dans ce chunk : (x, y, z locaux, état).
     pub fn blocks_in(&self, cx: i32, cz: i32) -> &[(u8, i16, u8, u32)] {
         self.blocks.get(&(cx, cz)).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// Lits de la structure dans ce chunk, avec leur couleur.
+    pub fn beds_in(&self, cx: i32, cz: i32) -> &[(u8, i16, u8, u8)] {
+        self.beds.get(&(cx, cz)).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     /// Colonnes de ce chunk où les arbres sont abattus au-dessus d'une hauteur.
@@ -410,6 +416,11 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
         if let (Some(under), false) = (how.under, piece.follows_ground) {
             earthworks(b, piece, under);
         }
+        for ((rx, ry, rz), color) in piece.template.beds(piece.rot) {
+            if !piece.follows_ground {
+                b.beds.push(((ax + rx, ay + ry, az + rz), color));
+            }
+        }
         for ((rx, ry, rz), loot) in piece.template.chests(piece.rot) {
             if !piece.follows_ground {
                 b.chests.push(((ax + rx, ay + ry, az + rz), loot_of(loot)));
@@ -657,6 +668,8 @@ struct Builder<'a> {
     chests: Vec<((i32, i32, i32), Loot)>,
     /// Colonnes où les arbres du terrain sont abattus, à partir d'une hauteur
     clear: Vec<(i32, i32, i32)>,
+    /// Lits colorés
+    beds: Vec<((i32, i32, i32), u8)>,
     tops: HashMap<(i32, i32), i32>,
     /// Barrières posées : reliées à leurs voisines à la fin
     fences: HashMap<(i32, i32, i32), &'static str>,
@@ -665,7 +678,7 @@ struct Builder<'a> {
 impl<'a> Builder<'a> {
     /// Nouveau chantier vide.
     fn new(v: &'a Vanilla, p: &'a Palette) -> Builder<'a> {
-        Builder { v, p, blocks: HashMap::new(), chests: Vec::new(), clear: Vec::new(), tops: HashMap::new(), fences: HashMap::new() }
+        Builder { v, p, blocks: HashMap::new(), chests: Vec::new(), clear: Vec::new(), beds: Vec::new(), tops: HashMap::new(), fences: HashMap::new() }
     }
 
     /// État d'un bloc d'après son nom ; erreur en test si le nom est absent de block_specs().
@@ -748,6 +761,9 @@ impl<'a> Builder<'a> {
         let mut plan = Plan::default();
         for ((x, y, z), s) in self.blocks {
             plan.blocks.entry((x >> 4, z >> 4)).or_default().push(((x & 15) as u8, y as i16, (z & 15) as u8, s));
+        }
+        for ((x, y, z), color) in self.beds {
+            plan.beds.entry((x >> 4, z >> 4)).or_default().push(((x & 15) as u8, y as i16, (z & 15) as u8, color));
         }
         for (x, z, y) in self.clear {
             plan.clear.entry((x >> 4, z >> 4)).or_default().push(((x & 15) as u8, (z & 15) as u8, y as i16));
@@ -3190,6 +3206,14 @@ mod tests {
         let (x, y, z) = locate(&v, Target::Village, 0, 0).unwrap();
         let world = super::super::World::with_generator(super::super::generator::Generator::new(super::super::generator::Kind::Vanilla, 12345, p.clone()));
         assert_ne!(world.get(x, y, z), p.air);
+        // Les lits gardent leur couleur : envoyée avec le chunk
+        let plan = build(&v, &p, (Kind::Village, (x - 8) >> 4, (z - 8) >> 4));
+        let (&(cx, cz), beds) = plan.beds.iter().find(|(_, b)| !b.is_empty()).expect("des lits");
+        assert!(plan.beds.values().flatten().any(|b| b.3 != 14), "pas que des lits rouges");
+        let (bx, by, bz, _) = beds[0];
+        world.get(cx * 16 + bx as i32, by as i32, cz * 16 + bz as i32);
+        let (_, payload) = world.chunk_payload(cx, cz);
+        assert!(payload.windows(3).any(|w| w == b"Bed"), "couleur des lits absente du chunk");
     }
 
     /// Tout le butin des structures existe dans le jeu.

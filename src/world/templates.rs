@@ -112,6 +112,8 @@ pub struct Template {
     blocks: Vec<(i16, i16, i16, u16)>,
     /// Coffres et leur table de butin (nom du jeu)
     chests: Vec<((i32, i32, i32), String)>,
+    /// Lits et leur couleur (la couleur d'un lit est une donnée à part dans Bedrock)
+    beds: Vec<((i32, i32, i32), u8)>,
     pub jigsaws: Vec<Jigsaw>,
 }
 
@@ -141,6 +143,10 @@ impl Template {
             let s = self.states[r as usize].get(i as usize).copied().flatten()?;
             Some((self.rotate((x as i32, y as i32, z as i32), r), s))
         })
+    }
+    /// Lits du plan tourné : (position relative, couleur).
+    pub fn beds(&self, r: u8) -> impl Iterator<Item = ((i32, i32, i32), u8)> + '_ {
+        self.beds.iter().map(move |(p, c)| (self.rotate(*p, r), *c))
     }
     /// Coffres du plan tourné : (position relative, table de butin).
     pub fn chests(&self, r: u8) -> impl Iterator<Item = ((i32, i32, i32), &str)> + '_ {
@@ -338,7 +344,7 @@ fn read_template(path: &str, tag: &Tag, resolve: &dyn Fn(&str) -> Option<u32>, u
             list.push(s);
         }
     }
-    let mut t = Template { path: path.to_string(), size: (size[0], size[1], size[2]), states, blocks: Vec::new(), chests: Vec::new(), jigsaws: Vec::new() };
+    let mut t = Template { path: path.to_string(), size: (size[0], size[1], size[2]), states, blocks: Vec::new(), chests: Vec::new(), beds: Vec::new(), jigsaws: Vec::new() };
     for b in tag.get("blocks")?.as_list()? {
         let pos: Vec<i32> = b.get("pos").and_then(|p| p.as_list()).map(|l| l.iter().filter_map(|t| t.as_int()).collect()).unwrap_or_default();
         let state = b.get("state").and_then(|s| s.as_int()).unwrap_or(0) as usize;
@@ -354,6 +360,9 @@ fn read_template(path: &str, tag: &Tag, resolve: &dyn Fn(&str) -> Option<u32>, u
             }
             continue;
         }
+        if let Some(color) = name.strip_prefix("minecraft:").and_then(|n| n.strip_suffix("_bed")).and_then(dye_index) {
+            t.beds.push((at, color));
+        }
         if name.ends_with("chest") {
             if let Some(loot) = nbt.and_then(|n| n.get("LootTable")).and_then(|l| l.as_str()) {
                 t.chests.push((at, loot.to_string()));
@@ -362,6 +371,12 @@ fn read_template(path: &str, tag: &Tag, resolve: &dyn Fn(&str) -> Option<u32>, u
         t.blocks.push((at.0 as i16, at.1 as i16, at.2 as i16, state as u16));
     }
     Some(t)
+}
+
+/// Numéro d'une couleur de teinture (ordre du jeu : blanc 0 … noir 15).
+pub fn dye_index(color: &str) -> Option<u8> {
+    const DYES: [&str; 16] = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black"];
+    DYES.iter().position(|d| *d == color).map(|i| i as u8)
 }
 
 /// Propriétés d'une entrée de palette : (clé, valeur) en texte.

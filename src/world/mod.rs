@@ -593,6 +593,22 @@ fn encode_chunk(terrain: &Terrain, all_edits: &HashMap<(i32, i32), Arc<ChunkEdit
             }
         }
         w.u8(0); // blocs de bordure
+        // Données des blocs (à la suite, au format NBT réseau) : la couleur des lits des
+        // structures, tant que le joueur n'a pas changé le bloc
+        for &(x, y, z, color) in &column.beds {
+            if edits.map(|e| e.contains_key(&(x, y, z))).unwrap_or(false) {
+                continue;
+            }
+            let tag = crate::nbt::Tag::compound(vec![
+                ("id", crate::nbt::Tag::string("Bed")),
+                ("x", crate::nbt::Tag::Int(cx * 16 + x as i32)),
+                ("y", crate::nbt::Tag::Int(y as i32)),
+                ("z", crate::nbt::Tag::Int(cz * 16 + z as i32)),
+                ("color", crate::nbt::Tag::Byte(color as i8)),
+                ("isMovable", crate::nbt::Tag::Byte(1)),
+            ]);
+            w.0.extend_from_slice(&crate::nbt::write_network(&tag));
+        }
         (sections as u32, w.0)
     }
 }

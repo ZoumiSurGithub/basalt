@@ -1206,6 +1206,7 @@ impl Vanilla {
 
         // 7. Structures : villages, temples, mines (la part qui tombe dans ce chunk)
         let mut chests = Vec::new();
+        let mut beds = Vec::new();
         let plans = super::structures::near(self, p, &self.structures, cx, cz);
         // Arbres du terrain qui poussent dans une structure : abattus avant de la poser
         if plans.iter().any(|plan| !plan.clear_in(cx, cz).is_empty()) {
@@ -1226,6 +1227,7 @@ impl Vanilla {
                 blocks[at(*x as usize, *z as usize, *y as i32)] = *s;
             }
             chests.extend_from_slice(plan.chests_in(cx, cz));
+            beds.extend_from_slice(plan.beds_in(cx, cz));
         }
 
         // 8. Biomes en 3D (cases de 4 blocs), y compris les biomes souterrains
@@ -1245,6 +1247,7 @@ impl Vanilla {
         let mut column = Column::from_blocks(&blocks, p.air, super::generator::Biome::Plains);
         column.biome_ids = Some(ids);
         column.chests = chests;
+        column.beds = beds;
         let _ = Section::Uniform(0);
         column
     }
