@@ -94,7 +94,7 @@ grille).
 côté de Basalt (dossier `structures`, ou archive `structures.zip`, au même endroit que
 `server.properties`), les **villages**, **avant-postes de pillards**, **cités antiques** et
 **ruines de piste** sont assemblés avec les vrais plans du jeu, pièce par pièce, comme
-dans le jeu (`src/world/templates.rs`) : mêmes maisons, mêmes rues, même centre de cité.
+dans le jeu (`src/world/templates.rs`) : mêmes maisons, mêmes rues, même centre de cité. La cité antique est creusée dans une caverne aux parois irrégulières, couverte de plaques de sculk avec capteurs, catalyseurs et hurleurs (qui pourront appeler le Warden) ; autour des maisons de village, le terrain est raccordé en talus plutôt que coupé net.
 Ces fichiers appartiennent à Mojang : ils ne sont pas fournis avec Basalt. On les trouve
 dans le serveur officiel (Bedrock Dedicated Server, Windows ou Linux), dans
 `behavior_packs/vanilla/structures`. Pour une archive : clic droit sur ce dossier,

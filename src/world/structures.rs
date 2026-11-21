@@ -338,13 +338,32 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
     let gravel = b.p.gravel;
     let suspicious = b.id("suspicious_gravel");
     let planks = how.planks.map(|n| b.id(n));
+    // Cité antique : la caverne. Le volume de chaque pièce est vidé, et ses bords rongés
+    // irrégulièrement sur quelques blocs, pour des parois de grotte plutôt que des murs droits
+    let mut floors: Vec<(i32, i32, i32)> = Vec::new();
     if how.carve {
+        let seed = b.v.seed();
         for piece in &layout.pieces {
             let (lo, hi) = (piece.bbox.min, piece.bbox.max);
-            for x in lo.0..=hi.0 {
-                for z in lo.2..=hi.2 {
-                    for y in lo.1..=hi.1 {
-                        b.put((x, y, z), air);
+            const M: i32 = 5;
+            for x in lo.0 - M..=hi.0 + M {
+                for z in lo.2 - M..=hi.2 + M {
+                    let dx = (lo.0 - x).max(x - hi.0).max(0);
+                    let dz = (lo.2 - z).max(z - hi.2).max(0);
+                    let dh = ((dx * dx + dz * dz) as f64).sqrt();
+                    let mut lowest = None;
+                    for y in lo.1..=hi.1 + M {
+                        let dv = (y - hi.1).max(0) as f64;
+                        let d = (dh * dh + dv * dv).sqrt();
+                        // Profondeur rongée : de 1 à 5 blocs selon un bruit lisse
+                        if d == 0.0 || d < 1.0 + 4.0 * soft_noise(seed, x, y, z) {
+                            b.put((x, y, z), air);
+                            lowest.get_or_insert(y);
+                        }
+                    }
+                    // Sol naturel de la caverne, autour des pièces
+                    if dh > 0.0 && lowest == Some(lo.1) {
+                        floors.push((x, lo.1 - 1, z));
                     }
                 }
             }
@@ -386,17 +405,10 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
             }
             columns.entry((x, z)).or_insert(ay);
         }
-        // Pièce rigide adossée à une pente : le terrain au-dessus d'elle est dégagé
-        if how.under.is_some() && !piece.follows_ground {
-            let roof = piece.bbox.max.1;
-            for x in piece.bbox.min.0..=piece.bbox.max.0 {
-                for z in piece.bbox.min.2..=piece.bbox.max.2 {
-                    let g = b.top(x, z);
-                    for y in roof + 1..=g.min(roof + 12) {
-                        b.air((x, y, z));
-                    }
-                }
-            }
+        // Pièce rigide sur une pente : le terrain est raccordé en talus (une pente de
+        // 2 blocs de haut par bloc d'écart) plutôt que coupé à la verticale
+        if let (Some(under), false) = (how.under, piece.follows_ground) {
+            earthworks(b, piece, under);
         }
         for ((rx, ry, rz), loot) in piece.template.chests(piece.rot) {
             if !piece.follows_ground {
@@ -415,6 +427,125 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
         }
         let y = if follows { ground(b, x, z) + y } else { y };
         b.put((x, y, z), state);
+    }
+    if how.carve {
+        sculk_patches(b, rng, layout, floors);
+    }
+}
+
+/// Talus autour d'une pièce rigide : le terrain plus haut qu'elle est entaillé en pente
+/// douce, le terrain plus bas est remblayé en pente jusqu'à son plancher. Les colonnes déjà
+/// occupées par la structure (rues, autres maisons) ne sont pas touchées.
+fn earthworks(b: &mut Builder, piece: &super::templates::Piece, under: &str) {
+    const M: i32 = 4;
+    let (lo, hi) = (piece.bbox.min, piece.bbox.max);
+    let floor = lo.1;
+    let fill = b.id(under);
+    let desert = under == "sandstone";
+    let top_block = if desert { b.p.sand } else { b.p.grass };
+    let air = b.p.air;
+    for x in lo.0 - M..=hi.0 + M {
+        for z in lo.2 - M..=hi.2 + M {
+            let dx = (lo.0 - x).max(x - hi.0).max(0);
+            let dz = (lo.2 - z).max(z - hi.2).max(0);
+            let d = dx.max(dz);
+            let g = b.top(x, z);
+            if d == 0 {
+                // Au-dessus de la pièce : dégagé
+                for y in hi.1 + 1..=g.min(hi.1 + 12) {
+                    b.air((x, y, z));
+                }
+                continue;
+            }
+            let taken = |b: &Builder, y: i32| b.blocks.get(&(x, y, z)).map(|s| *s != air).unwrap_or(false);
+            // Entaille : le sol ne dépasse pas le plancher + 2 blocs par bloc d'écart
+            let cut = floor + 2 * d - 1;
+            if g > cut && !(cut..=g).any(|y| taken(b, y)) {
+                for y in cut + 1..=g.min(cut + 14) {
+                    b.air((x, y, z));
+                }
+                b.put((x, cut, z), top_block);
+            }
+            // Remblai : jusqu'au plancher - 1, en descendant de 2 blocs par bloc d'écart
+            let bank = floor - 1 - 2 * (d - 1);
+            if g < bank && !(g + 1..=bank).any(|y| taken(b, y)) {
+                for y in (g + 1).max(bank - 12)..bank {
+                    b.put((x, y, z), fill);
+                }
+                b.put((x, bank, z), top_block);
+            }
+        }
+    }
+}
+
+/// Bruit lisse (0 à 1), grille de 5 blocs : bords de caverne irréguliers mais continus.
+fn soft_noise(seed: u64, x: i32, y: i32, z: i32) -> f64 {
+    const S: i32 = 5;
+    let (gx, gy, gz) = (x.div_euclid(S), y.div_euclid(S), z.div_euclid(S));
+    let f = |v: i32| {
+        let t = v.rem_euclid(S) as f64 / S as f64;
+        t * t * (3.0 - 2.0 * t)
+    };
+    let (fx, fy, fz) = (f(x), f(y), f(z));
+    let at = |i: i32, j: i32, k: i32| (mix(seed, (gx + i) as i64, (gy + j) as i64 * 1_000_003 + (gz + k) as i64, 4_242) % 1000) as f64 / 1000.0;
+    let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t;
+    let plane = |j: i32| lerp(lerp(at(0, j, 0), at(1, j, 0), fx), lerp(at(0, j, 1), at(1, j, 1), fx), fz);
+    lerp(plane(0), plane(1), fy)
+}
+
+/// Sculk de la cité antique : des plaques sur les sols (ceux des pièces et celui de la
+/// caverne), avec des capteurs, des hurleurs qui appellent le Warden, et quelques
+/// catalyseurs, comme les plaques de sculk que le jeu ajoute autour des cités.
+fn sculk_patches(b: &mut Builder, rng: &mut Rng, layout: &Layout, mut floors: Vec<(i32, i32, i32)>) {
+    let air = b.p.air;
+    // Sols des pièces : bloc de roche avec de l'air au-dessus
+    let rock: Vec<u32> = ["deepslate", "cobbled_deepslate", "polished_deepslate", "deepslate_bricks", "deepslate_tiles", "cracked_deepslate_bricks", "cracked_deepslate_tiles", "smooth_basalt", "chiseled_deepslate"]
+        .iter()
+        .filter_map(|n| b.p.named.get(*n).copied())
+        .chain([b.p.deepslate])
+        .collect();
+    for (&(x, y, z), s) in &b.blocks {
+        if rock.contains(s) && b.blocks.get(&(x, y + 1, z)) == Some(&air) {
+            floors.push((x, y, z));
+        }
+    }
+    if floors.is_empty() {
+        return;
+    }
+    floors.sort_unstable();
+    floors.dedup();
+    let floor_set: std::collections::HashSet<(i32, i32, i32)> = floors.iter().copied().collect();
+    let (sculk, sensor, shrieker, catalyst) = (b.id("sculk"), b.id("sculk_sensor"), b.id("sculk_shrieker[can_summon=1]"), b.id("sculk_catalyst"));
+    let patches = 12 + layout.pieces.len() as u32 * 2;
+    for n in 0..patches {
+        let (cx, cy, cz) = floors[rng.below(floors.len() as u32) as usize];
+        let radius = 2 + rng.below(5) as i32;
+        for dx in -radius..=radius {
+            for dz in -radius..=radius {
+                if dx * dx + dz * dz > radius * radius || rng.below(5) == 0 {
+                    continue;
+                }
+                // Le sol voisin peut être un peu plus haut ou plus bas
+                for dy in -2..=2 {
+                    let at = (cx + dx, cy + dy, cz + dz);
+                    if !floor_set.contains(&at) {
+                        continue;
+                    }
+                    b.put(at, sculk);
+                    let above = (at.0, at.1 + 1, at.2);
+                    match rng.below(70) {
+                        0..=2 => b.put(above, sensor),
+                        3 => b.put(above, shrieker),
+                        _ => {}
+                    }
+                    break;
+                }
+            }
+        }
+        // Un catalyseur au cœur d'une plaque sur quatre
+        if n % 4 == 0 {
+            b.put((cx, cy + 1, cz), catalyst);
+        }
     }
 }
 
@@ -3042,7 +3173,7 @@ mod tests {
             (Target::Village, Kind::Village, "bell", 1),
             (Target::PillagerOutpost, Kind::PillagerOutpost, "dark_oak_fence", 1),
             (Target::TrailRuins, Kind::TrailRuins, "suspicious_gravel", 0),
-            (Target::AncientCity, Kind::AncientCity, "reinforced_deepslate", 2),
+            (Target::AncientCity, Kind::AncientCity, "sculk_shrieker", 2),
         ] {
             let (x, _, z) = locate(&v, what, 0, 0).unwrap_or_else(|| panic!("{:?} introuvable", what));
             let plan = build(&v, &p, (kind, (x - 8) >> 4, (z - 8) >> 4));
