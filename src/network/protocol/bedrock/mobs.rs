@@ -1,8 +1,8 @@
 //! Créatures (animaux) : apparition d'une entité du jeu.
 //!
-//! Disposition de AddActor d'après la documentation du protocole et les serveurs existants ;
-//! pas encore relevée auprès du serveur officiel 1.26. Les données d'entité s'écrivent comme
-//! celles des objets au sol, relevées, elles (numéro, variante, type sur un octet, valeur).
+//! Disposition de AddActor relevée auprès du serveur officiel 1.26.65 (paquet d'un marchand
+//! ambulant, outil de capture) : attributs, 69 données d'entité, et quatre octets nuls à la
+//! fin (propriétés entières, propriétés décimales, liens, puis un octet de plus).
 
 #[allow(unused_imports)]
 use super::*;
@@ -17,6 +17,9 @@ pub enum Meta {
     Float(f32),
     Text(String),
     Long(i64),
+    Vec3(f32, f32, f32),
+    /// Document NBT vide (un « compound » sans nom ni contenu)
+    EmptyNbt,
 }
 
 /// Écrit des données d'entité.
@@ -31,6 +34,8 @@ pub fn write_metadata(w: &mut W, entries: &[(u32, Meta)]) {
             Meta::Float(_) => 3,
             Meta::Text(_) => 4,
             Meta::Long(_) => 7,
+            Meta::Vec3(..) => 8,
+            Meta::EmptyNbt => 5,
         };
         // La variante répète le type (comme dans les paquets relevés)
         w.varu32(t as u32);
@@ -42,28 +47,106 @@ pub fn write_metadata(w: &mut W, entries: &[(u32, Meta)]) {
             Meta::Float(v) => w.f32(*v),
             Meta::Text(v) => w.string(v),
             Meta::Long(v) => w.vari64(*v),
+            Meta::Vec3(x, y, z) => {
+                w.f32(*x);
+                w.f32(*y);
+                w.f32(*z);
+            }
+            Meta::EmptyNbt => w.0.extend_from_slice(&[0x0a, 0x00, 0x00]),
         }
     }
 }
 
-/// Indicateurs d'une créature : respire (35), a des collisions (48), subit la gravité (49),
-/// peut grimper (19), marche (« can walk », 64… inconnu : non mis).
-pub const MOB_FLAGS: i64 = (1 << 19) | (1 << 35) | (1 << 48) | (1 << 49);
+/// Indicateurs d'une créature, ceux du serveur officiel : peut grimper (19), 22, 34,
+/// respire (35), a des collisions (48), subit la gravité (49).
+pub const MOB_FLAGS: i64 = (1 << 19) | (1 << 22) | (1 << 34) | (1 << 35) | (1 << 48) | (1 << 49);
 
-/// Données d'entité d'une créature : indicateurs, air, taille, boîte de collision, variante.
+/// Données d'entité d'une créature : celles relevées auprès du serveur officiel, avec la
+/// boîte de collision, la variante, la couleur et les indicateurs de cette créature.
+#[allow(clippy::excessive_precision)]
 pub fn mob_metadata(width: f32, height: f32, variant: i32, color: u8, flags: i64) -> Vec<(u32, Meta)> {
-    vec![
-        (0, Meta::Long(flags)),
-        (2, Meta::Int(variant)),
-        (3, Meta::Byte(color)),
-        (4, Meta::Text(String::new())),
+    let mut list = vec![
+        (0, Meta::Long(844476474458112)),
+        (1, Meta::Int(1)),
+        (2, Meta::Int(0)),
+        (3, Meta::Byte(0)),
+        (4, Meta::Text("".into())),
+        (5, Meta::Long(-1)),
+        (6, Meta::Long(0)),
         (7, Meta::Short(300)),
+        (10, Meta::Byte(0)),
+        (22, Meta::Byte(0)),
+        (37, Meta::Long(-1)),
         (38, Meta::Float(1.0)),
+        (39, Meta::Byte(0)),
         (42, Meta::Short(300)),
-        (53, Meta::Float(width)),
-        (54, Meta::Float(height)),
+        (43, Meta::Int(0)),
+        (44, Meta::Byte(0)),
+        (45, Meta::Int(0)),
+        (46, Meta::Int(0)),
+        (53, Meta::Float(0.6000000238418579)),
+        (54, Meta::Float(1.899999976158142)),
+        (55, Meta::Int(-1)),
+        (56, Meta::Vec3(0.0, 0.0, 0.0)),
+        (57, Meta::Byte(0)),
+        (58, Meta::Float(0.0)),
+        (59, Meta::Byte(0)),
+        (60, Meta::Float(0.0)),
+        (68, Meta::Long(0)),
+        (70, Meta::Byte(0)),
+        (71, Meta::Text("".into())),
+        (72, Meta::Text("".into())),
+        (73, Meta::Byte(1)),
+        (74, Meta::Byte(0)),
+        (75, Meta::Int(0)),
+        (76, Meta::Int(0)),
+        (77, Meta::Int(0)),
+        (78, Meta::Int(-1)),
         (81, Meta::Byte(0)),
-    ]
+        (82, Meta::Byte(0)),
+        (91, Meta::Int(0)),
+        (92, Meta::Long(-9_223_372_036_821_221_376)),
+        (101, Meta::Int(0)),
+        (102, Meta::Int(0)),
+        (103, Meta::Int(0)),
+        (104, Meta::Int(0)),
+        (106, Meta::Int(3)),
+        (107, Meta::Byte(1)),
+        (108, Meta::Float(8.0)),
+        (109, Meta::Float(16.0)),
+        (110, Meta::Text("ambient".into())),
+        (111, Meta::Float(1.0)),
+        (114, Meta::Int(0)),
+        (115, Meta::Int(0)),
+        (116, Meta::Int(0)),
+        (117, Meta::Int(0)),
+        (118, Meta::EmptyNbt),
+        (119, Meta::Byte(0)),
+        (120, Meta::Float(0.0)),
+        (124, Meta::Float(1.0)),
+        (125, Meta::Int(20)),
+        (126, Meta::Int(615)),
+        (131, Meta::Long(0)),
+        (132, Meta::Text("".into())),
+        (134, Meta::Float(0.0)),
+        (135, Meta::Float(0.0)),
+        (136, Meta::Int(-1)),
+        (137, Meta::Int(-1)),
+        (138, Meta::Int(-1)),
+        (139, Meta::Long(0)),
+        (140, Meta::Float(64.0)),
+    ];
+    for (key, value) in list.iter_mut() {
+        match *key {
+            0 => *value = Meta::Long(flags),
+            2 => *value = Meta::Int(variant),
+            3 => *value = Meta::Byte(color),
+            53 => *value = Meta::Float(width),
+            54 => *value = Meta::Float(height),
+            _ => {}
+        }
+    }
+    list
 }
 
 /// AddActor : une créature apparaît chez le joueur.
@@ -80,16 +163,21 @@ pub fn add_actor(id: i64, kind: &str, pos: (f32, f32, f32), motion: (f32, f32, f
     w.f32(yaw);
     w.f32(yaw); // tête
     w.f32(yaw); // corps
-    // Attributs : la vie, pour la barre affichée et les animations
-    w.varu32(1);
-    w.string("minecraft:health");
-    w.f32(0.0);
-    w.f32(health);
-    w.f32(health);
+    // Attributs : (nom, minimum, valeur, maximum), comme le serveur officiel
+    let attributes: [(&str, f32, f32, f32); 2] = [("minecraft:health", 0.0, health, health), ("minecraft:movement", 0.0, 0.25, f32::MAX)];
+    w.varu32(attributes.len() as u32);
+    for (name, min, value, max) in attributes {
+        w.string(name);
+        w.f32(min);
+        w.f32(value);
+        w.f32(max);
+    }
     write_metadata(&mut w, metadata);
     w.varu32(0); // propriétés entières
     w.varu32(0); // propriétés décimales
     w.varu32(0); // liens
+    // Un octet nul de plus, comme dans le paquet officiel (sans lui : « invalid numeric value »)
+    w.u8(0);
     w.0
 }
 
@@ -106,5 +194,9 @@ mod tests {
         assert_eq!(&w.0[8..11], &[0, 7, 7]);
         let p = add_actor(5, "minecraft:cow", (1.0, 2.0, 3.0), (0.0, 0.0, 0.0), 90.0, 10.0, &mob_metadata(0.9, 1.4, 0, 0, MOB_FLAGS));
         assert_eq!(&p[..3], &[10, 5, 13]);
+        assert_eq!(&p[p.len() - 4..], &[0, 0, 0, 0], "quatre octets nuls à la fin");
+        // 69 données d'entité, comme le paquet officiel
+        assert_eq!(mob_metadata(0.9, 1.4, 0, 0, MOB_FLAGS).len(), 69);
     }
 }
+
