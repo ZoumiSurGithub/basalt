@@ -208,7 +208,7 @@ pub struct Palette {
     pub lapis: (u32, u32),
     pub diamond: (u32, u32),
     /// Autres blocs, par nom court (« mycelium », « acacia_log »…), pour le terrain vanilla
-    pub named: std::collections::HashMap<&'static str, u32>,
+    pub named: std::collections::HashMap<String, u32>,
     /// Plantes qui ne vivent que dans l'eau (herbes marines, laminaires) : toujours envoyées
     /// avec de l'eau dans le même bloc (seconde couche)
     pub aquatic: std::collections::HashSet<u32>,
@@ -283,7 +283,15 @@ impl Palette {
             redstone: ore("redstone"),
             lapis: ore("lapis"),
             diamond: ore("diamond"),
-            named: EXTRA_BLOCKS.iter().map(|n| (*n, or(n, n.split('[').next().unwrap_or(n)))).collect(),
+            named: EXTRA_BLOCKS
+                .iter()
+                .map(|n| n.to_string())
+                .chain(super::structures::block_specs())
+                .map(|n| {
+                    let state = or(&n, n.split('[').next().unwrap_or(&n));
+                    (n, state)
+                })
+                .collect(),
             aquatic: Default::default(),
             soaked: Default::default(),
         }
@@ -333,6 +341,8 @@ pub struct Column {
     /// Biomes du terrain vanilla : identifiant Bedrock par case de 4×4×4 blocs, sous-chunk par
     /// sous-chunk (64 cases chacun, x * 16 + z * 4 + y). Absent : `biome` partout.
     pub biome_ids: Option<Vec<u8>>,
+    /// Coffres des structures générées (x local, y, z local, butin) : remplis au premier clic
+    pub chests: Vec<(u8, i16, u8, super::structures::Loot)>,
 }
 
 impl Column {
@@ -370,7 +380,7 @@ impl Column {
             sections.push(if palette.len() == 1 { Section::Uniform(palette[0]) } else { Section::Mixed { palette, index } });
         }
         let _ = air;
-        Column { sections, biome, biome_ids: None }
+        Column { sections, biome, biome_ids: None, chests: Vec::new() }
     }
 }
 

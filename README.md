@@ -77,8 +77,21 @@ taillée. Les seaux remplissent et vident ; un bloc posé dans l'eau (dalle, esc
 clôture…) la garde, et la laisse en place quand on le casse. Les modifications faites par
 les plugins (EasyEdit…) ne déclenchent pas l'écoulement, comme WorldEdit dans le jeu.
 
-Pas encore générés : villages et autres structures, lacs, aquifères (l'eau souterraine du
-jeu), filons géants de fer et de cuivre. Les valeurs ne sont pas celles du jeu : le monde
+**Structures** (`src/world/structures.rs`), reconstruites à la main faute des modèles
+officiels du jeu, mais placées comme dans le jeu (une par case d'une grille) :
+
+- **villages** dans les plaines, le désert, la savane, la taïga et les plaines enneigées,
+  aux matériaux du biome : puits central, rues, maisons petites et grandes, fermes,
+  forges, tours, enclos, lampadaires ;
+- **pyramides du désert**, avec leur chambre secrète à quatre coffres piégée de TNT ;
+- **temples de la jungle**, sur deux étages, avec coffres, leviers et lianes ;
+- **mines abandonnées** sous terre : galeries étayées, rails, toiles d'araignée, coffres.
+
+Les coffres se remplissent au premier clic (ou lâchent leur butin si on les casse sans les
+ouvrir), toujours avec le même contenu pour une graine donnée.
+
+Pas encore générés : autres structures (avant-postes, épaves, monuments…), lacs,
+aquifères (l'eau souterraine du jeu), filons géants de fer et de cuivre. Les valeurs ne sont pas celles du jeu : le monde
 a la même allure, mais une graine ne redonne pas le même monde que dans Minecraft.
 
 Dans `server.properties` :

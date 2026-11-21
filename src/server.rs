@@ -3284,6 +3284,8 @@ impl Server {
                     .collect();
             }
         }
+        // Coffre de structure jamais ouvert : son butin tombe quand on le casse
+        let unopened_loot = if self.world.tiles.get((x, y, z)).is_none() { self.world.structure_chest((x, y, z)) } else { None };
         // Une plante aquatique (ou un corail immergé) laisse son eau derrière elle
         let after = self.world.left_behind(x, y, z);
         if !self.world.set(x, y, z, after) {
@@ -3316,6 +3318,14 @@ impl Server {
         }
         // Un coffre ou un four cassé rend ce qu'il contenait
         let mut loot = loot;
+        if let Some(kind) = unopened_loot {
+            let seed = self.world.generator().seed;
+            for (_, name, count) in crate::world::structures::loot(kind, seed, (x, y, z)) {
+                if let Some(id) = self.item_id(name) {
+                    loot.push((id, count));
+                }
+            }
+        }
         if let Some(tile) = self.world.tiles.remove((x, y, z)) {
             if let Some(inv) = tile.inventory() {
                 loot.extend(inv.contents().into_iter().map(|(_, item)| (item.id, item.count)));
@@ -3718,7 +3728,11 @@ impl Server {
         // Un bloc posé avant cette version n'a pas encore ses données : on les crée au premier clic
         if let Some(kind) = kind {
             if self.world.tiles.get(pos).is_none() {
-                if let Some(new) = tile::create(kind) {
+                if let Some(mut new) = tile::create(kind) {
+                    // Coffre d'un village, d'un temple ou d'une mine : son butin, tiré une fois
+                    if let Some(loot) = self.world.structure_chest(pos) {
+                        self.fill_loot(new.as_mut(), loot, pos);
+                    }
                     self.world.tiles.insert(pos, new);
                 }
             }
@@ -3733,6 +3747,22 @@ impl Server {
             }
         }
         true
+    }
+
+    /// Remplit un coffre de structure avec son butin (le même pour une graine et une place
+    /// données). Les objets inconnus de cette version du jeu sont ignorés.
+    fn fill_loot(&mut self, tile: &mut dyn tile::Tile, loot: crate::world::structures::Loot, pos: (i32, i32, i32)) {
+        let seed = self.world.generator().seed;
+        let items: Vec<(usize, i16, u8)> = crate::world::structures::loot(loot, seed, pos).into_iter().filter_map(|(slot, name, count)| Some((slot, self.item_id(name)?, count))).collect();
+        if let Some(inv) = tile.inventory_mut() {
+            for (slot, id, count) in items {
+                self.tile_net_id = if self.tile_net_id >= i32::MAX - 1 { 1_000_000_000 } else { self.tile_net_id + 1 };
+                inv.set_item(slot, crate::item::ItemStack { id, count, net_id: self.tile_net_id });
+            }
+        }
+        if self.cfg.debug {
+            info!("Coffre de structure ({:?}) ouvert pour la première fois en {} {} {}", loot, pos.0, pos.1, pos.2);
+        }
     }
 
     /// Ouvre chez le joueur l'écran d'un bloc : coffre, tonneau, four, établi…

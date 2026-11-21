@@ -429,6 +429,8 @@ pub struct Vanilla {
     surface: Normal,
     badlands_bands: Normal,
     patches: Normal,
+    /// Villages, temples et mines déjà calculés
+    structures: super::structures::PlanCache,
 }
 
 /// Taille des cellules de la grille de densité (comme dans le jeu).
@@ -485,7 +487,12 @@ impl Vanilla {
             surface: Normal::new(seed, 17, -6, &[1.0, 1.0, 1.0]),
             badlands_bands: Normal::new(seed, 18, -9, &[1.0]),
             patches: Normal::new(seed, 19, -5, &[1.0, 1.0]),
+            structures: Default::default(),
         }
+    }
+
+    pub fn seed(&self) -> u64 {
+        self.seed
     }
 
     fn climate(&self, x: i32, z: i32) -> Climate {
@@ -984,7 +991,16 @@ impl Vanilla {
             }
         }
 
-        // 7. Biomes en 3D (cases de 4 blocs), y compris les biomes souterrains
+        // 7. Structures : villages, temples, mines (la part qui tombe dans ce chunk)
+        let mut chests = Vec::new();
+        for plan in super::structures::near(self, p, &self.structures, cx, cz) {
+            for (x, y, z, s) in plan.blocks_in(cx, cz) {
+                blocks[at(*x as usize, *z as usize, *y as i32)] = *s;
+            }
+            chests.extend_from_slice(plan.chests_in(cx, cz));
+        }
+
+        // 8. Biomes en 3D (cases de 4 blocs), y compris les biomes souterrains
         let mut ids = vec![0u8; SECTIONS * 64];
         for qx in 0..4usize {
             for qz in 0..4usize {
@@ -1000,6 +1016,7 @@ impl Vanilla {
         }
         let mut column = Column::from_blocks(&blocks, p.air, super::generator::Biome::Plains);
         column.biome_ids = Some(ids);
+        column.chests = chests;
         let _ = Section::Uniform(0);
         column
     }
@@ -1845,6 +1862,15 @@ mod pictures {
             }
         }
         eprintln!("100 chunks vanilla en {:?}", start.elapsed());
+        // Autour d'un village (graine 12345, chunk 46 -17) : le plan est calculé une fois
+        let v = Vanilla::new(12345);
+        let start = std::time::Instant::now();
+        for cx in 41..51 {
+            for cz in -22..-12 {
+                v.generate(&p, cx, cz);
+            }
+        }
+        eprintln!("100 chunks autour d'un village en {:?}", start.elapsed());
     }
 
     /// Vue de dessus avec les vrais blocs (`cargo test dump_top -- --ignored`).
@@ -1920,7 +1946,7 @@ mod decorations {
     fn decorations_exist_and_appear() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
         let Ok(data) = crate::data::GameData::load(&dir) else { return };
-        for n in super::super::generator::EXTRA_BLOCKS {
+        for n in super::super::generator::EXTRA_BLOCKS.iter().map(|s| s.to_string()).chain(super::super::structures::block_specs()) {
             assert!(data.state_from_spec(&format!("minecraft:{}", n)).is_some(), "bloc absent du jeu : {}", n);
         }
         let p = Palette::new(&|n| data.state_from_spec(n));

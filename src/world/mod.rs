@@ -13,6 +13,7 @@
 
 pub mod generator;
 pub mod liquid;
+pub mod structures;
 pub mod vanilla;
 
 use std::collections::{HashMap, HashSet};
@@ -232,6 +233,19 @@ impl World {
         } else {
             self.air
         }
+    }
+
+    /// Butin d'un coffre de structure (village, temple, mine) encore à sa place d'origine.
+    pub fn structure_chest(&self, (x, y, z): (i32, i32, i32)) -> Option<structures::Loot> {
+        if !Self::in_bounds(y) {
+            return None;
+        }
+        let key = ((x & 15) as u8, y as i16, (z & 15) as u8);
+        if self.edits.get(&(x >> 4, z >> 4)).map(|c| c.contains_key(&key)).unwrap_or(false) {
+            return None; // remplacé par un joueur
+        }
+        let column = self.terrain.column((x >> 4, z >> 4));
+        column.chests.iter().find(|c| (c.0, c.1, c.2) == key).map(|c| c.3)
     }
 
     /// Le bloc posé ici contient-il de l'eau (posé dans l'eau) ?
