@@ -9,6 +9,10 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ## [Non publié]
 
+### Corrigé
+
+- Un animal frappé ne fait plus deux bruits différents à la fois.
+
 ## [0.0.1] — 2026-11-21
 
 Première version publiée.

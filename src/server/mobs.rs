@@ -763,9 +763,8 @@ impl Server {
             self.mob_sound(id, bedrock::SOUND_DEATH);
             self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_DEATH, 0));
             self.mob_loot(id);
-        } else {
-            self.mob_sound(id, bedrock::SOUND_HURT);
         }
+        // Pas de son « hurt » envoyé : le jeu le joue déjà de lui-même à l'événement du coup
         true
     }
 
