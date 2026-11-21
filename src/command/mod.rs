@@ -45,7 +45,7 @@ impl VanillaCommands {
             def(
                 "locate",
                 "commands.locate.description",
-                "/locate <mode:structure> <structure:village|mineshaft|temple|desert_pyramid|jungle_temple|ancient_city|bastion_remnant|buried_treasure|end_city|fortress|mansion|monument|ocean_ruins|pillager_outpost|ruined_portal|shipwreck|stronghold|trail_ruins|trial_chambers> | /locate <mode:biome> <biome:text>",
+                "/locate <mode:structure> <structure:village|desert_pyramid|jungle_temple|mineshaft|pillager_outpost|ancient_city|trail_ruins|trial_chambers> | /locate <mode:biome> <biome:biome>",
                 true,
             ),
             def("kick", "commands.kick.description", "/kick <name:player> [reason:text]", true),

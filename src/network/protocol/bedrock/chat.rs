@@ -140,6 +140,8 @@ fn command_args(usage: &str) -> Overload {
             "block" => ArgKind::Block,
             "item" => ArgKind::Item,
             "pos" | "position" => ArgKind::Position,
+            // Les biomes du terrain vanilla, proposés pendant la frappe
+            "biome" => ArgKind::Choice(crate::world::vanilla::B::ALL.iter().map(|b| b.name().to_string()).collect()),
             k if k.contains('|') => {
                 let words: Vec<String> = k
                     .split('|')
@@ -204,6 +206,31 @@ impl Enums {
     }
 }
 
+impl Enums {
+    /// Liste de choix d'un paramètre. Le jeu affiche son nom dans l'aide (« <structure:
+    /// structure> »), il reste donc court : le nom du paramètre, ou le mot lui-même pour un
+    /// mot imposé. Deux listes différentes de même nom reçoivent un numéro (structure2…).
+    fn choice(&mut self, param: &str, words: &[String]) -> u32 {
+        let base = if words.len() == 1 { words[0].clone() } else { param.to_string() };
+        let mut name = base.clone();
+        let mut n = 1;
+        loop {
+            match self.lists.iter().position(|l| l.0 == name) {
+                None => break,
+                Some(i) => {
+                    let same = self.lists[i].1.len() == words.len() && self.lists[i].1.iter().zip(words).all(|(id, w)| self.values[*id as usize] == *w);
+                    if same {
+                        return i as u32;
+                    }
+                    n += 1;
+                    name = format!("{}{}", base, n);
+                }
+            }
+        }
+        self.list(&name, words.iter().map(|w| w.as_str()))
+    }
+}
+
 /// Liste des commandes annoncée au jeu (format relevé auprès du serveur officiel, protocole
 /// 2225) : sans elle, le jeu n'affiche ni n'envoie aucune commande en « / ».
 /// Une commande sans forme connue (`None`) reçoit un texte libre facultatif. `blocks` et
@@ -248,10 +275,7 @@ pub fn available_commands(commands: &[(String, String, Option<Vec<Overload>>)], 
                     ArgKind::Position => (ARG_POSITION, 0),
                     ArgKind::Block => (ARG_ENUM | enums.list("Block", both(blocks)), 2),
                     ArgKind::Item => (ARG_ENUM | enums.list("Item", both(items)), 2),
-                    ArgKind::Choice(words) => {
-                        let list = format!("{}_{}_{}", name, arg.name, words.join("-"));
-                        (ARG_ENUM | enums.list(&list, words.iter().map(|w| w.as_str())), 0)
-                    }
+                    ArgKind::Choice(words) => (ARG_ENUM | enums.choice(&arg.name, words), 0),
                 };
                 body.string(&arg.name);
                 body.u32(kind);
@@ -376,12 +400,30 @@ mod command_list_tests {
         }
         expected.extend_from_slice(&[0, 0, 2]);
         expected.extend_from_slice(b"\x05Block\x02\x00\x00\x00\x00\x01\x00\x00\x00");
-        expected.extend_from_slice(b"\x0cset_mode_a-b\x02\x02\x00\x00\x00\x03\x00\x00\x00");
+        expected.extend_from_slice(b"\x04mode\x02\x02\x00\x00\x00\x03\x00\x00\x00");
         expected.extend_from_slice(&[0, 1]);
         expected.extend_from_slice(b"\x03set\x01d\x00\x00\x03any\xff\xff\xff\xff\x00\x01\x00\x02");
         expected.extend_from_slice(b"\x04bloc\x00\x00\x30\x00\x00\x02");
         expected.extend_from_slice(b"\x04mode\x01\x00\x30\x00\x01\x00");
         expected.extend_from_slice(&[0, 0]);
         assert_eq!(p, expected);
+    }
+
+    /// Les listes portent un nom court (affiché par le jeu) ; deux listes différentes de même
+    /// nom sont distinguées, deux identiques partagées.
+    #[test]
+    fn choice_lists_have_short_names() {
+        let mut e = Enums::default();
+        let words = |l: &[&str]| l.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        let a = e.choice("mode", &words(&["on", "off"]));
+        let b = e.choice("mode", &words(&["on", "off"]));
+        let c = e.choice("mode", &words(&["a", "b"]));
+        let d = e.choice("mode", &words(&["structure"]));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        let names: Vec<&str> = e.lists.iter().map(|l| l.0.as_str()).collect();
+        assert_eq!(names, vec!["mode", "mode2", "structure"]);
+        assert!(d == 2);
+        assert_eq!(command_overloads("/locate <mode:biome> <biome:biome>")[0][1].kind, ArgKind::Choice(crate::world::vanilla::B::ALL.iter().map(|b| b.name().to_string()).collect()));
     }
 }

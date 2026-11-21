@@ -40,7 +40,7 @@ for _, name in ipairs({{"io", "os", "debug", "package", "load", "loadfile", "dof
 end
 say("dump", string.dump)
 say("time", type(server.time()))
-say("anciennes", tostring(server.connect) .. tostring(server.players) .. tostring(server.kick) .. tostring(server.after) .. tostring(server.every) .. tostring(server.position))
+say("anciennes", select(2, pcall(function() return server.every end)))
 say("outside", server.read([[{secret}]]))
 say("parent", server.read("../essai.lua"))
 say("drive", server.write("C:/x.txt", "x"))
@@ -70,7 +70,7 @@ server.setMotd(table.concat(out, ";"))
     let text: String = m.take_actions().into_iter().filter_map(|a| if let Action::SetMotd(s) = a { Some(s) } else { None }).collect();
     for expected in [
         "io=nil", "os=nil", "debug=nil", "package=nil", "load=nil", "loadfile=nil", "dofile=nil", "collectgarbage=nil",
-        "dump=nil", "time=number", "anciennes=nilnilnilnilnilnil", "outside=nil", "parent=nil", "drive=false", "require=false",
+        "dump=nil", "time=number", "server.every n'existe plus : utilisez server.everySeconds(secondes, fonction)", "outside=nil", "parent=nil", "drive=false", "require=false",
         "written=true", "appended=true", "inside=bonjour", "module=42",
         "globals=EntityDamageEvent,EventPriority,GameMode,PlayerInteractEvent,TextFormat,_G,_VERSION,assert,coroutine,error,getmetatable,ipairs,math,next,pairs,pcall,print,rawequal,rawget,rawlen,rawset,require,select,server,setmetatable,string,table,tonumber,tostring,type,utf8,xpcall",
     ] {

@@ -64,6 +64,26 @@ end
 local raw_players, raw_kick, raw_after, raw_every = server._players, server._kick, server._after, server._every
 server._players, server._kick, server._after, server._every = nil, nil, nil, nil
 
+-- Anciennes fonctions retirées : un plugin qui les appelle reçoit une erreur qui dit quoi
+-- utiliser à la place, au lieu de « attempt to call a nil value ».
+local REMOVED = {
+  every = "server.everySeconds(secondes, fonction)",
+  after = "server.afterSeconds(secondes, fonction)",
+  players = "server.getOnlinePlayers()",
+  kick = "server.getPlayer(pseudo):kick(raison)",
+  position = "server.getPlayer(pseudo):getPosition()",
+  motd = "server.getMotd()",
+  set_motd = "server.setMotd(texte)",
+  connect = "server.on(événement, fonction)",
+  getPluginManager = "server.registerEvents(écouteur)",
+}
+setmetatable(server, { __index = function(_, key)
+  local instead = REMOVED[key]
+  if instead then
+    error("server." .. key .. " n'existe plus : utilisez " .. instead, 2)
+  end
+end })
+
 -- Objet joueur. Il ne contient que le pseudo : chaque lecture interroge le serveur, donc
 -- un objet gardé dans une variable reste juste, et `isOnline` dit si le joueur est là.
 local pget, pset, pdo, kick = server._pget, server._pset, server._pdo, raw_kick
