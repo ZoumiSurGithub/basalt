@@ -386,11 +386,14 @@ impl Server {
             }
             for m in self.mobs.values() {
                 let far = (m.pos.0 - c.pos.0).powi(2) + (m.pos.2 - c.pos.2).powi(2);
-                if far < VIEW * VIEW && m.dead.is_none() {
+                // Le jeu oublie une créature arrivée avant son chunk : elle attend qu'il soit parti
+                let chunk = ((m.pos.0.floor() as i32) >> 4, (m.pos.2.floor() as i32) >> 4);
+                let has_chunk = c.delivered.contains(&chunk);
+                if far < VIEW * VIEW && m.dead.is_none() && has_chunk {
                     if c.mobs_seen.insert(m.id) {
                         out.push((*addr, bedrock::ID_ADD_ACTOR, Self::mob_packet(m)));
                     }
-                } else if far > (VIEW + 16.0) * (VIEW + 16.0) && c.mobs_seen.remove(&m.id) {
+                } else if (far > (VIEW + 16.0) * (VIEW + 16.0) || !has_chunk) && c.mobs_seen.remove(&m.id) {
                     out.push((*addr, bedrock::ID_REMOVE_ACTOR, bedrock::remove_actor(m.id)));
                 }
             }

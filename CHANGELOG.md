@@ -23,6 +23,9 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Corrigé
 
+- Animaux et objets au sol invisibles après un redémarrage : ils étaient montrés au jeu
+  avant le terrain où ils se trouvent, et le jeu les oubliait. Ils attendent maintenant
+  que leur chunk soit arrivé. Le nombre d'animaux enregistrés s'affiche à l'arrêt.
 - Les lapins avaient la taille d'un mouton : ils ont maintenant celle du jeu (bébés compris).
 - À-coups du serveur : un animal au bord d'une zone pas encore générée faisait générer
   le terrain dans la boucle du jeu (jusqu'à plusieurs dixièmes de seconde avec une

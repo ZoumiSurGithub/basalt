@@ -302,6 +302,9 @@ struct Client {
     radius: i32,
     /// Chunks déjà envoyés, et chunks restant à envoyer (les plus proches d'abord)
     loaded: HashSet<(i32, i32)>,
+    /// Chunks réellement partis vers le jeu (le jeu ignore une créature posée dans un chunk
+    /// qu'il n'a pas encore : elle ne lui est montrée qu'ensuite)
+    delivered: HashSet<(i32, i32)>,
     queue: VecDeque<(i32, i32)>,
     pitch: f32,
     yaw: f32,
@@ -1256,6 +1259,8 @@ impl Server {
                         // chunk celle-ci : il ne jette jamais un chunk que le serveur croit chargé.)
                         let r = c.radius;
                         c.loaded.retain(|(x, z)| (x - center.0) * (x - center.0) + (z - center.1) * (z - center.1) <= r * r);
+                        let loaded = &c.loaded;
+                        c.delivered.retain(|xz| loaded.contains(xz));
                         let wanted = Self::chunks_around(center, c.radius);
                         c.queue = wanted.into_iter().filter(|xz| !c.loaded.contains(xz)).collect();
                         publish = Some((pos, c.radius));
@@ -1660,6 +1665,9 @@ impl Server {
         for (addr, c) in self.clients.iter_mut() {
             while let Some(chunk) = c.chunk_ready.remove(&c.chunk_sent) {
                 c.chunk_sent += 1;
+                if c.loaded.contains(&(chunk.x, chunk.z)) {
+                    c.delivered.insert((chunk.x, chunk.z));
+                }
                 if chunk.version != self.world.chunk_version(chunk.x, chunk.z) {
                     stale.push((*addr, chunk.x, chunk.z, crate::versions::features(c.protocol), c.compression));
                 } else {
@@ -3307,11 +3315,13 @@ impl Server {
             for (id, g) in &self.ground {
                 let (dx, dz) = (g.body.pos.0 - c.pos.0, g.body.pos.2 - c.pos.2);
                 let far = dx * dx + dz * dz;
-                if far < 64.0 * 64.0 {
+                // Comme les créatures : montré seulement une fois son chunk arrivé chez le jeu
+                let has_chunk = c.delivered.contains(&((g.body.pos.0.floor() as i32) >> 4, (g.body.pos.2.floor() as i32) >> 4));
+                if far < 64.0 * 64.0 && has_chunk {
                     if c.items_seen.insert(*id) {
                         out.push((*addr, bedrock::ID_ADD_ITEM_ACTOR, bedrock::add_item_actor(*id, g.item, g.count, g.block, g.body.pos, g.body.vel)));
                     }
-                } else if far > 80.0 * 80.0 && c.items_seen.remove(id) {
+                } else if (far > 80.0 * 80.0 || !has_chunk) && c.items_seen.remove(id) {
                     out.push((*addr, bedrock::ID_REMOVE_ACTOR, bedrock::remove_actor(bedrock::item_unique_id(*id))));
                 }
             }
@@ -5403,6 +5413,7 @@ impl Server {
                             c.move_budget = SPEED_CREATIVE * 2.0;
                             c.move_budget_at = Instant::now();
                             c.loaded.clear();
+                            c.delivered.clear();
                             c.queue = coords.into_iter().collect();
                         }
                         // Le signal d'apparition part quand tout le terrain initial est envoyé
@@ -5694,6 +5705,7 @@ impl Server {
                         center: (0, 0),
                         radius: 0,
                         loaded: HashSet::new(),
+                        delivered: HashSet::new(),
                         queue: VecDeque::new(),
                         pitch: 0.0,
                         yaw: 0.0,
@@ -6435,9 +6447,12 @@ impl Server {
             });
         }
         // Animaux (réécrits quand ils ont changé)
-        if self.mobs_dirty {
+        if self.mobs_dirty || !self.running {
             self.mobs_dirty = false;
             let text = self.mobs_json();
+            if !self.running {
+                info!("Animaux enregistrés : {}", self.mobs.values().filter(|m| m.dead.is_none()).count());
+            }
             let path = dir.join("mobs.json");
             crate::background::DISK.run(move || {
                 let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
