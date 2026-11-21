@@ -42,7 +42,7 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   une monture qui refuse d'être apprivoisée se cabre. Sons envoyés par le serveur comme le
   serveur officiel : selle posée, tonte, traite, repas, monture en colère, saut et
   atterrissage (pour les autres joueurs).
-- Commande `/summon <animal> [position] [minecraft:entity_born]`.
+- Commande `/summon <animal> [position] [minecraft:entity_born | minecraft:on_tame]`.
 - Guide d'installation pas à pas pour Windows et Linux : `docs/INSTALLER.md`.
 - `/timings report` indique l'état de la machine pendant les mesures (processeur, temps
   volé par l'hébergeur, attente disque, mémoire, swap) et dit si les à-coups viennent d'elle.
@@ -62,6 +62,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Corrigé
 
+- Une monture apprivoisée mais blessée mangeait la carotte ou la pomme dorée sans devenir
+  amoureuse : elle est maintenant soignée et prête à avoir un petit en même temps.
 - Un joueur parti en selle revenait au point d'apparition du monde : il était enregistré
   à la position que donne son jeu, sous sa monture (dans le sol). Il est maintenant
   enregistré (et descend) debout à la place de sa monture ; et un joueur un peu enfoncé

@@ -51,7 +51,7 @@ impl VanillaCommands {
             def(
                 "summon",
                 "commands.summon.description",
-                "/summon <entityType:cow|pig|sheep|chicken|rabbit|mooshroom|goat|llama|horse|donkey|mule> [spawnPos:pos] [spawnEvent:minecraft:entity_born|entity_born]",
+                "/summon <entityType:cow|pig|sheep|chicken|rabbit|mooshroom|goat|llama|horse|donkey|mule> [spawnPos:pos] [spawnEvent:minecraft:entity_born|entity_born|minecraft:on_tame|on_tame]",
                 true,
             ),
             def("kick", "commands.kick.description", "/kick <name:player> [reason:text]", true),

@@ -2271,7 +2271,8 @@ impl Server {
                 let pos = if args.len() >= 4 { crate::command::position(args, 1, here) } else { Some(here) };
                 let Some(pos) = pos else { return usage(self) };
                 let baby = args.iter().skip(1).any(|a| a == "minecraft:entity_born" || a == "entity_born");
-                match self.summon_mob(arg(0), pos, baby) {
+                let tamed = args.iter().skip(1).any(|a| a == "minecraft:on_tame" || a == "on_tame");
+                match self.summon_mob(arg(0), pos, baby, tamed) {
                     Ok(()) => self.reply(sender, &format!("Objet invoqué : {}", arg(0).trim_start_matches("minecraft:"))),
                     Err(e) => self.reply(sender, &format!("§c{}", e)),
                 }

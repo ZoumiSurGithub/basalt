@@ -1454,6 +1454,15 @@ impl Server {
             self.mob_sound(id, bedrock::SOUND_SADDLE, None);
             changed = true;
             used = true;
+        } else if breeds && !m.baby() && m.age == 0 && m.love == 0 {
+            // Prête à avoir un petit (une monture blessée est soignée en même temps)
+            if let Some(s) = self.mobs.get_mut(&id) {
+                s.love = LOVE_TICKS;
+                s.health = (s.health + heal.unwrap_or(0.0)).min(s.max_health);
+            }
+            self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_LOVE_PARTICLES, 0));
+            changed = true;
+            used = true;
         } else if heal.is_some() && (m.health < m.max_health || temper.is_some()) {
             // Monture blessée : le repas la soigne ; sauvage, il l'amadoue (dressage plus facile)
             if let Some(s) = self.mobs.get_mut(&id) {
@@ -1497,7 +1506,7 @@ impl Server {
 
     /// `/summon` : fait apparaître un animal (pelage, robe, qualités tirés au sort comme à
     /// l'apparition naturelle). `baby` : un petit (événement « minecraft:entity_born »).
-    pub(super) fn summon_mob(&mut self, name: &str, pos: (f32, f32, f32), baby: bool) -> Result<(), String> {
+    pub(super) fn summon_mob(&mut self, name: &str, pos: (f32, f32, f32), baby: bool, tamed: bool) -> Result<(), String> {
         let short = name.trim_start_matches("minecraft:").to_ascii_lowercase();
         let Some(species) = Species::from_id(&format!("minecraft:{}", short)) else {
             return Err(format!("Basalt ne sait pas encore faire apparaître : {}", name));
@@ -1519,6 +1528,8 @@ impl Server {
             if baby {
                 m.age = -GROW_TICKS;
             }
+            // Événement « minecraft:on_tame » du jeu : une monture déjà apprivoisée
+            m.tamed = tamed && species.mount();
         }
         // Son chunk compte désormais parmi ceux qui sont en mémoire (sinon il serait rangé aussitôt)
         let chunk = mob_store::chunk_of(pos.0, pos.2);
