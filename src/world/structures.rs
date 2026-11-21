@@ -3621,6 +3621,14 @@ mod tests {
         world.get(cx * 16 + bx as i32, by as i32, cz * 16 + bz as i32);
         let (_, payload) = world.chunk_payload(cx, cz);
         assert!(payload.windows(3).any(|w| w == b"Bed"), "couleur des lits absente du chunk");
+        // Épave : ses escaliers et dalles gardent l'eau de la mer
+        let (x, _, z) = locate(&v, Target::Shipwreck, 0, 0).unwrap();
+        let plan = build(&v, &p, (Kind::Shipwreck, (x - 8) >> 4, (z - 8) >> 4));
+        let wet = plan.blocks.iter().flat_map(|((cx, cz), list)| list.iter().map(move |b| (cx * 16 + b.0 as i32, b.1 as i32, cz * 16 + b.2 as i32))).filter(|&(x, y, z)| {
+            world.get(x, y, z);
+            world.is_wet(x, y, z)
+        });
+        assert!(wet.count() > 10, "épave sans eau dans ses blocs");
     }
 
     /// Tout le butin des structures existe dans le jeu.

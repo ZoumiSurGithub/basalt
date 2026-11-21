@@ -257,7 +257,12 @@ impl World {
     /// Le bloc posé ici contient-il de l'eau (posé dans l'eau) ?
     pub fn is_wet(&self, x: i32, y: i32, z: i32) -> bool {
         let key = ((x & 15) as u8, y as i16, (z & 15) as u8);
-        self.wet.get(&(x >> 4, z >> 4)).map(|c| c.contains(&key)).unwrap_or(false)
+        if self.wet.get(&(x >> 4, z >> 4)).map(|c| c.contains(&key)).unwrap_or(false) {
+            return true;
+        }
+        // Bloc d'une structure posé dans l'eau, que personne n'a remplacé
+        let chunk = (x >> 4, z >> 4);
+        !self.edits.get(&chunk).map(|c| c.contains_key(&key)).unwrap_or(false) && self.terrain.ready(chunk) && self.terrain.column(chunk).wet.contains(&key)
     }
 
     /// Le bloc garde (ou perd) l'eau dans laquelle il a été posé.
@@ -543,7 +548,9 @@ fn encode_chunk(terrain: &Terrain, all_edits: &HashMap<(i32, i32), Arc<ChunkEdit
             let y_index = ((MIN_Y >> 4) + s as i32) as i8;
             let base_y = MIN_Y + s as i32 * 16;
             let in_section = |y: i16| (y as i32) >= base_y && (y as i32) < base_y + 16;
-            let touched = edits.map(|e| e.keys().any(|(_, y, _)| in_section(*y))).unwrap_or(false) || wet.map(|w| w.iter().any(|(_, y, _)| in_section(*y))).unwrap_or(false);
+            let touched = edits.map(|e| e.keys().any(|(_, y, _)| in_section(*y))).unwrap_or(false)
+                || wet.map(|w| w.iter().any(|(_, y, _)| in_section(*y))).unwrap_or(false)
+                || column.wet.iter().any(|(_, y, _)| in_section(*y));
             let p = &terrain.generator.blocks;
             match (&column.sections[s], touched) {
                 (Section::Mixed { palette, index }, false) if !palette.iter().any(|b| p.aquatic.contains(b) || p.soaked.contains(b)) => {
@@ -572,6 +579,13 @@ fn encode_chunk(terrain: &Terrain, all_edits: &HashMap<(i32, i32), Arc<ChunkEdit
                     let mut water = waterlogged(p, &palette, &indices);
                     // Blocs posés dans l'eau par les joueurs
                     for (x, y, z) in wet.iter().flat_map(|w| w.iter()).filter(|(_, y, _)| in_section(*y)) {
+                        water.get_or_insert_with(|| vec![false; 4096])[((*x as usize) << 8) | ((*z as usize) << 4) | (*y as i32 - base_y) as usize] = true;
+                    }
+                    // Blocs des structures posés dans l'eau, tant que personne n'y a touché
+                    for (x, y, z) in column.wet.iter().filter(|(_, y, _)| in_section(*y)) {
+                        if edits.map(|e| e.contains_key(&(*x, *y, *z))).unwrap_or(false) {
+                            continue;
+                        }
                         water.get_or_insert_with(|| vec![false; 4096])[((*x as usize) << 8) | ((*z as usize) << 4) | (*y as i32 - base_y) as usize] = true;
                     }
                     encode_sub_chunk(&mut w, y_index, &palette, &indices, water.as_ref().map(|wl| (wl, p.air, p.water)));

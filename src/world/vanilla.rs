@@ -1222,9 +1222,17 @@ impl Vanilla {
                 }
             }
         }
+        let mut wet = Vec::new();
         for plan in plans {
             for (x, y, z, s) in plan.blocks_in(cx, cz) {
-                blocks[at(*x as usize, *z as usize, *y as i32)] = *s;
+                let i = at(*x as usize, *z as usize, *y as i32);
+                // Bloc posé à la place de l'eau : il la garde (pas de bulle d'air autour)
+                if blocks[i] == p.water && *s != p.air && *s != p.water {
+                    wet.push((*x, *y, *z));
+                } else if *s == p.air || *s == p.water {
+                    wet.retain(|w| *w != (*x, *y, *z));
+                }
+                blocks[i] = *s;
             }
             chests.extend_from_slice(plan.chests_in(cx, cz));
             beds.extend_from_slice(plan.beds_in(cx, cz));
@@ -1248,6 +1256,7 @@ impl Vanilla {
         column.biome_ids = Some(ids);
         column.chests = chests;
         column.beds = beds;
+        column.wet = wet;
         let _ = Section::Uniform(0);
         column
     }
