@@ -237,6 +237,8 @@ pub struct Palette {
     pub aquatic: std::collections::HashSet<u32>,
     /// Coraux, gorgones, cornichons de mer : avec de l'eau si un bloc voisin est de l'eau
     pub soaked: std::collections::HashSet<u32>,
+    /// Plans officiels des structures, s'ils sont fournis (voir `templates`)
+    pub templates: Option<std::sync::Arc<super::templates::Templates>>,
 }
 
 /// Blocs supplémentaires employés par le terrain vanilla.
@@ -317,8 +319,15 @@ impl Palette {
                 .collect(),
             aquatic: Default::default(),
             soaked: Default::default(),
+            templates: None,
         }
         .with_water_sets()
+    }
+
+    /// Même palette, avec les plans officiels des structures.
+    pub fn with_templates(mut self, templates: Option<std::sync::Arc<super::templates::Templates>>) -> Palette {
+        self.templates = templates;
+        self
     }
 
     /// Note les plantes aquatiques et les blocs gorgés d'eau de la palette.

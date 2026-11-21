@@ -87,8 +87,23 @@ taillée. Les seaux remplissent et vident ; un bloc posé dans l'eau (dalle, esc
 clôture…) la garde, et la laisse en place quand on le casse. Les modifications faites par
 les plugins (EasyEdit…) ne déclenchent pas l'écoulement, comme WorldEdit dans le jeu.
 
-**Structures** (`src/world/structures.rs`), reconstruites à la main faute des modèles
-officiels du jeu, mais placées comme dans le jeu (une par case d'une grille) :
+**Structures** (`src/world/structures.rs`), placées comme dans le jeu (une par case d'une
+grille).
+
+**Plans officiels.** Si le dossier `structures` du serveur officiel de Mojang est copié à
+côté de Basalt (dossier `structures`, ou archive `structures.zip`, au même endroit que
+`server.properties`), les **villages**, **avant-postes de pillards**, **cités antiques** et
+**ruines de piste** sont assemblés avec les vrais plans du jeu, pièce par pièce, comme
+dans le jeu (`src/world/templates.rs`) : mêmes maisons, mêmes rues, même centre de cité.
+Ces fichiers appartiennent à Mojang : ils ne sont pas fournis avec Basalt. On les trouve
+dans le serveur officiel (Bedrock Dedicated Server, Windows ou Linux), dans
+`behavior_packs/vanilla/structures`. Pour une archive : clic droit sur ce dossier,
+« Compresser dans un fichier ZIP », puis copier `structures.zip` à côté de Basalt. Le
+journal du démarrage indique combien de plans ont été chargés. Seuls les nouveaux chunks
+en profitent. Les lits y sont rouges (leur couleur n'est pas encore transmise), et les
+bannières, les animaux et les villageois des plans ne sont pas posés.
+
+Sans ces fichiers, chaque structure est reconstruite à la main, au plus près du jeu :
 
 - **villages** au style du jeu actuel (depuis la 1.14), dans les plaines, le désert, la
   savane, la taïga et les plaines enneigées, aux matériaux du biome : place centrale avec

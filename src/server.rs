@@ -2941,7 +2941,21 @@ impl Server {
         };
         let palette = {
             let data = &self.data;
-            Palette::new(&|name: &str| data.as_ref().and_then(|d| d.state_from_spec(name)))
+            let resolve = |name: &str| data.as_ref().and_then(|d| d.state_from_spec(name));
+            // Plans officiels des structures (fichiers du serveur de Mojang), s'ils sont là
+            let templates = ["structures", "structures.zip"].iter().map(Path::new).find(|p| p.exists()).and_then(|p| {
+                match crate::world::templates::Templates::load(p, &resolve) {
+                    Ok(t) => {
+                        info!("Structures : {} plans officiels chargés depuis {}", t.count(), p.display());
+                        Some(std::sync::Arc::new(t))
+                    }
+                    Err(e) => {
+                        warn!("Structures : plans de {} illisibles ({}) ; structures faites à la main", p.display(), e);
+                        None
+                    }
+                }
+            });
+            Palette::new(&resolve).with_templates(templates)
         };
         let generator = if kind == Kind::Plugin {
             // Générateur fourni par un plugin : plugins/<plugin>/generators/<nom>.lua

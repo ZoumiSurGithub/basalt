@@ -2,8 +2,9 @@
 //! mines abandonnées, avant-postes de pillards, cités antiques, ruines de piste et chambres
 //! des épreuves.
 //!
-//! Les modèles officiels du jeu (fichiers de structures) ne sont pas disponibles : chaque
-//! structure est reconstruite à la main, au plus près de celle du jeu.
+//! Si les plans officiels du jeu sont fournis (voir `templates`), les villages, avant-postes,
+//! cités antiques et ruines de piste sont assemblés avec eux. Sinon, et pour les autres
+//! structures, chaque structure est reconstruite à la main, au plus près de celle du jeu.
 //!
 //! Comme le reste du terrain, tout se déduit de la graine. Une structure est d'abord
 //! calculée en entier (un « plan » : les blocs rangés par chunk, et ses coffres), une seule
@@ -18,6 +19,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use super::generator::{mix, Palette, Rng, SEA_LEVEL};
+use super::templates::{pick as pick_plan, Layout, Rules, Templates};
 use super::vanilla::{Vanilla, B};
 use super::{MAX_Y, MIN_Y};
 
@@ -38,6 +40,8 @@ pub enum Loot {
 #[derive(Default)]
 pub struct Plan {
     blocks: HashMap<(i32, i32), Vec<(u8, i16, u8, u32)>>,
+    /// Colonnes (x, z locaux, hauteur) au-dessus desquelles les arbres sont abattus
+    clear: HashMap<(i32, i32), Vec<(u8, u8, i16)>>,
     chests: HashMap<(i32, i32), Vec<(u8, i16, u8, Loot)>>,
 }
 
@@ -45,6 +49,11 @@ impl Plan {
     /// Blocs de la structure qui tombent dans ce chunk : (x, y, z locaux, état).
     pub fn blocks_in(&self, cx: i32, cz: i32) -> &[(u8, i16, u8, u32)] {
         self.blocks.get(&(cx, cz)).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// Colonnes de ce chunk où les arbres sont abattus au-dessus d'une hauteur.
+    pub fn clear_in(&self, cx: i32, cz: i32) -> &[(u8, u8, i16)] {
+        self.clear.get(&(cx, cz)).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     /// Coffres de la structure dans ce chunk, avec leur table de butin.
@@ -78,9 +87,9 @@ const GRID: [(Kind, i32, i32, u64, i32); 7] = [
     (Kind::DesertPyramid, 32, 8, 14_357_617, 2),
     (Kind::JungleTemple, 32, 8, 14_357_619, 2),
     (Kind::PillagerOutpost, 32, 8, 165_745_296, 2),
-    (Kind::TrailRuins, 34, 8, 83_469_867, 3),
+    (Kind::TrailRuins, 34, 8, 83_469_867, 6),
     (Kind::TrialChambers, 34, 12, 94_251_327, 4),
-    (Kind::AncientCity, 24, 8, 20_083_232, 4),
+    (Kind::AncientCity, 24, 8, 20_083_232, 8),
 ];
 
 /// Plans déjà calculés (y compris « rien ici »), partagés par les fils de génération.
@@ -149,6 +158,13 @@ fn build(v: &Vanilla, p: &Palette, (kind, sx, sz): (Kind, i32, i32)) -> Plan {
     let mut b = Builder::new(v, p);
     let mut rng = Rng::new(mix(v.seed(), sx as i64, sz as i64, 31_337 + kind as u64));
     let (x, z) = (sx * 16 + 8, sz * 16 + 8);
+    // Plans officiels du jeu, s'ils sont fournis : villages, avant-postes, cités antiques et
+    // ruines de piste assemblés comme dans le jeu
+    if let Some(t) = p.templates.clone() {
+        if official(&mut b, &t, &mut rng, kind, sx, sz) {
+            return b.finish();
+        }
+    }
     match kind {
         Kind::Village => {
             let biome = b.biome(x, z);
@@ -189,6 +205,228 @@ fn build(v: &Vanilla, p: &Palette, (kind, sx, sz): (Kind, i32, i32)) -> Plan {
         }
     }
     b.finish()
+}
+
+// --- Plans officiels ---------------------------------------------------------------------
+
+/// Construit une structure avec les plans du jeu. Faux si cette sorte n'en a pas (ou si le
+/// lieu ne convient pas : rien n'est alors construit, comme avec les plans faits à la main).
+fn official(b: &mut Builder, t: &Templates, rng: &mut Rng, kind: Kind, sx: i32, sz: i32) -> bool {
+    let (x, z) = (sx * 16 + 8, sz * 16 + 8);
+    match kind {
+        Kind::Village => {
+            let Some(style) = Style::for_biome(b.biome(x, z)) else { return true };
+            let theme = match style.theme {
+                Theme::Plains => "plains",
+                Theme::Desert => "desert",
+                Theme::Savanna => "savanna",
+                Theme::Taiga => "taiga",
+                Theme::Snowy => "snowy",
+            };
+            // Pas de village dans l'eau
+            if b.top(x, z) <= SEA_LEVEL {
+                return true;
+            }
+            let Some(start) = pick_plan(&t.pool(&format!("village/{}/town_centers", theme)), rng) else { return false };
+            let rot = rng.below(4) as u8;
+            let y = ground(b, x, z);
+            let terminators = format!("village/{}/terminators", theme);
+            let rules = Rules {
+                depth: 6,
+                reach: 80,
+                follows_ground: &|pool| pool.ends_with("/streets") || pool.ends_with("/terminators"),
+                fallback: &|pool| pool.ends_with("/streets").then(|| terminators.clone()),
+                empty_chance: &|pool| {
+                    if pool.ends_with("/houses") {
+                        0.15
+                    } else if pool.ends_with("/decor") {
+                        0.7
+                    } else if pool.ends_with("/streets") || pool.ends_with("/town_centers") || pool.ends_with("/well_bottoms") {
+                        0.0
+                    } else {
+                        // Animaux, chats, villageois, arbres : pas de blocs à poser
+                        1.0
+                    }
+                },
+            };
+            let layout = t.assemble(start, rot, (x, z), y, &rules, rng, &mut |x, z| ground(b, x, z));
+            let under = if style.theme == Theme::Desert { "sandstone" } else { "dirt" };
+            place_layout(b, rng, &layout, Placing { under: Some(under), air: true, planks: Some(style.planks), clear_trees: true, archaeology: false, carve: false });
+            true
+        }
+        Kind::PillagerOutpost => {
+            let Some((x, y, z)) = placed(b.v, kind, sx, sz) else { return true };
+            let tower = if rng.below(4) == 0 { "pillageroutpost/watchtower_overgrown" } else { "pillageroutpost/watchtower" };
+            let Some(tower) = t.get(tower) else { return false };
+            let rules = Rules { depth: 0, reach: 40, follows_ground: &|_| false, fallback: &|_| None, empty_chance: &|_| 1.0 };
+            let mut layout = t.assemble(tower, rng.below(4) as u8, (x, z), y - 1, &rules, rng, &mut |x, z| ground(b, x, z));
+            // Tentes, cages, rondins et cibles autour de la tour, posés sur le sol
+            let features = t.pool("pillager_outpost/features");
+            for _ in 0..(3 + rng.below(3)) {
+                let Some(f) = pick_plan(&features, rng) else { break };
+                let angle = rng.unit() * std::f64::consts::TAU;
+                let dist = 13.0 + rng.unit() * 8.0;
+                let (fx, fz) = (x + (angle.cos() * dist) as i32, z + (angle.sin() * dist) as i32);
+                let fy = ground(b, fx, fz) + 1;
+                let piece = t.assemble(f, rng.below(4) as u8, (fx, fz), fy, &rules, rng, &mut |x, z| ground(b, x, z));
+                if piece.pieces.iter().all(|p| layout.pieces.iter().all(|q| !overlap(&p.bbox, &q.bbox))) {
+                    layout.pieces.extend(piece.pieces);
+                }
+            }
+            place_layout(b, rng, &layout, Placing { under: Some("dirt"), air: true, planks: None, clear_trees: true, archaeology: false, carve: false });
+            true
+        }
+        Kind::AncientCity => {
+            if placed(b.v, kind, sx, sz).is_none() {
+                return true;
+            }
+            let Some(start) = pick_plan(&t.pool("ancient_city/city_center"), rng) else { return false };
+            let rot = rng.below(4) as u8;
+            // Le point d'ancrage du centre est à y = -27, comme dans le jeu
+            let anchor = start.anchor_y("minecraft:city_anchor").unwrap_or(24);
+            let rules = Rules { depth: 7, reach: 116, follows_ground: &|_| false, fallback: &|_| None, empty_chance: &|_| 0.0 };
+            let layout = t.assemble(start, rot, (x, z), -27 - anchor, &rules, rng, &mut |x, z| ground(b, x, z));
+            place_layout(b, rng, &layout, Placing { under: None, air: true, planks: None, clear_trees: false, archaeology: false, carve: true });
+            true
+        }
+        Kind::TrailRuins => {
+            if placed(b.v, kind, sx, sz).is_none() {
+                return true;
+            }
+            let Some(start) = pick_plan(&t.pool("trail_ruins/tower"), rng) else { return false };
+            let rot = rng.below(4) as u8;
+            // Enfouies : le bas de la tour est 15 blocs sous la surface
+            let y = ground(b, x, z) - 15;
+            let rules = Rules { depth: 7, reach: 80, follows_ground: &|_| false, fallback: &|_| None, empty_chance: &|_| 0.0 };
+            let layout = t.assemble(start, rot, (x, z), y, &rules, rng, &mut |x, z| ground(b, x, z));
+            place_layout(b, rng, &layout, Placing { under: None, air: false, planks: None, clear_trees: false, archaeology: true, carve: false });
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Hauteur du sol, l'eau comptant comme sol (une rue passe sur l'eau en pont de planches).
+fn ground(b: &mut Builder, x: i32, z: i32) -> i32 {
+    b.top(x, z).max(SEA_LEVEL)
+}
+
+fn overlap(a: &super::templates::Box3, c: &super::templates::Box3) -> bool {
+    a.min.0 <= c.max.0 && a.max.0 >= c.min.0 && a.min.2 <= c.max.2 && a.max.2 >= c.min.2
+}
+
+/// Façon de poser les pièces d'un assemblage.
+struct Placing {
+    /// Remblai sous les pièces rigides, jusqu'au sol
+    under: Option<&'static str>,
+    /// Poser l'air des plans (qui creuse le terrain) ; sinon les pièces restent enfouies
+    air: bool,
+    /// Planches qui remplacent les chemins posés sur l'eau
+    planks: Option<&'static str>,
+    /// Abattre les arbres qui poussent dans la structure
+    clear_trees: bool,
+    /// Ruines de piste : une partie du gravier devient du gravier suspect
+    archaeology: bool,
+    /// Cité antique : le volume de chaque pièce est d'abord vidé (la grande caverne)
+    carve: bool,
+}
+
+/// Pose les pièces d'un assemblage dans le chantier.
+fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
+    let air = b.p.air;
+    let path = b.id("grass_path");
+    let gravel = b.p.gravel;
+    let suspicious = b.id("suspicious_gravel");
+    let planks = how.planks.map(|n| b.id(n));
+    if how.carve {
+        for piece in &layout.pieces {
+            let (lo, hi) = (piece.bbox.min, piece.bbox.max);
+            for x in lo.0..=hi.0 {
+                for z in lo.2..=hi.2 {
+                    for y in lo.1..=hi.1 {
+                        b.put((x, y, z), air);
+                    }
+                }
+            }
+        }
+    }
+    for piece in &layout.pieces {
+        let (ax, ay, az) = piece.at;
+        let mut columns: HashMap<(i32, i32), i32> = HashMap::new();
+        for ((rx, ry, rz), state) in piece.template.blocks(piece.rot) {
+            let (x, z) = (ax + rx, az + rz);
+            if state == air && !how.air {
+                continue;
+            }
+            let y = if piece.follows_ground {
+                let top = b.top(x, z);
+                let g = top.max(SEA_LEVEL);
+                // Chemin sur l'eau : un pont de planches
+                let s = if state == path && top < SEA_LEVEL { planks.unwrap_or(state) } else { state };
+                b.put((x, g + ry, z), s);
+                columns.entry((x, z)).or_insert(g + 1);
+                continue;
+            } else {
+                ay + ry
+            };
+            let s = if how.archaeology && state == gravel && rng.below(6) == 0 { suspicious } else { state };
+            b.put((x, y, z), s);
+            if ry == 0 && state != air {
+                if let Some(under) = how.under {
+                    // Remblai jusqu'au sol, sur 12 blocs au plus (au bord d'une falaise)
+                    if y - b.top(x, z) <= 12 {
+                        b.foundation((x, y, z), under);
+                    } else {
+                        let s = b.id(under);
+                        for yy in y - 12..y {
+                            b.put((x, yy, z), s);
+                        }
+                    }
+                }
+            }
+            columns.entry((x, z)).or_insert(ay);
+        }
+        // Pièce rigide adossée à une pente : le terrain au-dessus d'elle est dégagé
+        if how.under.is_some() && !piece.follows_ground {
+            let roof = piece.bbox.max.1;
+            for x in piece.bbox.min.0..=piece.bbox.max.0 {
+                for z in piece.bbox.min.2..=piece.bbox.max.2 {
+                    let g = b.top(x, z);
+                    for y in roof + 1..=g.min(roof + 12) {
+                        b.air((x, y, z));
+                    }
+                }
+            }
+        }
+        for ((rx, ry, rz), loot) in piece.template.chests(piece.rot) {
+            if !piece.follows_ground {
+                b.chests.push(((ax + rx, ay + ry, az + rz), loot_of(loot)));
+            }
+        }
+        if how.clear_trees {
+            for ((x, z), from) in columns {
+                b.clear.push((x, z, from));
+            }
+        }
+    }
+    for &((x, y, z), state, follows) in &layout.finals {
+        if state == air && !how.air {
+            continue;
+        }
+        let y = if follows { ground(b, x, z) + y } else { y };
+        b.put((x, y, z), state);
+    }
+}
+
+/// Table de butin du jeu -> butin de Basalt.
+fn loot_of(table: &str) -> Loot {
+    if table.contains("pillager_outpost") {
+        Loot::PillagerOutpost
+    } else if table.contains("ancient_city") {
+        Loot::AncientCity
+    } else {
+        Loot::Village
+    }
 }
 
 // --- Construction -----------------------------------------------------------------------
@@ -286,6 +524,8 @@ struct Builder<'a> {
     p: &'a Palette,
     blocks: HashMap<(i32, i32, i32), u32>,
     chests: Vec<((i32, i32, i32), Loot)>,
+    /// Colonnes où les arbres du terrain sont abattus, à partir d'une hauteur
+    clear: Vec<(i32, i32, i32)>,
     tops: HashMap<(i32, i32), i32>,
     /// Barrières posées : reliées à leurs voisines à la fin
     fences: HashMap<(i32, i32, i32), &'static str>,
@@ -294,7 +534,7 @@ struct Builder<'a> {
 impl<'a> Builder<'a> {
     /// Nouveau chantier vide.
     fn new(v: &'a Vanilla, p: &'a Palette) -> Builder<'a> {
-        Builder { v, p, blocks: HashMap::new(), chests: Vec::new(), tops: HashMap::new(), fences: HashMap::new() }
+        Builder { v, p, blocks: HashMap::new(), chests: Vec::new(), clear: Vec::new(), tops: HashMap::new(), fences: HashMap::new() }
     }
 
     /// État d'un bloc d'après son nom ; erreur en test si le nom est absent de block_specs().
@@ -377,6 +617,9 @@ impl<'a> Builder<'a> {
         let mut plan = Plan::default();
         for ((x, y, z), s) in self.blocks {
             plan.blocks.entry((x >> 4, z >> 4)).or_default().push(((x & 15) as u8, y as i16, (z & 15) as u8, s));
+        }
+        for (x, z, y) in self.clear {
+            plan.clear.entry((x >> 4, z >> 4)).or_default().push(((x & 15) as u8, (z & 15) as u8, y as i16));
         }
         for ((x, y, z), loot) in self.chests {
             plan.chests.entry((x >> 4, z >> 4)).or_default().push(((x & 15) as u8, y as i16, (z & 15) as u8, loot));
@@ -2782,6 +3025,42 @@ mod tests {
         }
     }
 
+    /// Avec les plans officiels (s'ils sont présents) : chaque structure est assemblée de
+    /// plusieurs pièces, avec ses blocs typiques et ses coffres.
+    #[test]
+    fn official_plans_are_assembled() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
+        let Ok(data) = crate::data::GameData::load(&dir) else { return };
+        let path = std::env::var("BASALT_STRUCTURES").unwrap_or_else(|_| "/tmp/vs/structures".into());
+        let Ok(t) = Templates::load(std::path::Path::new(&path), &|n| data.state_from_spec(n)) else {
+            eprintln!("plans absents : test ignoré");
+            return;
+        };
+        let p = Palette::new(&|n| data.state_from_spec(n)).with_templates(Some(std::sync::Arc::new(t)));
+        let v = Vanilla::new(12345);
+        for (what, kind, signature, chests) in [
+            (Target::Village, Kind::Village, "bell", 1),
+            (Target::PillagerOutpost, Kind::PillagerOutpost, "dark_oak_fence", 1),
+            (Target::TrailRuins, Kind::TrailRuins, "suspicious_gravel", 0),
+            (Target::AncientCity, Kind::AncientCity, "reinforced_deepslate", 2),
+        ] {
+            let (x, _, z) = locate(&v, what, 0, 0).unwrap_or_else(|| panic!("{:?} introuvable", what));
+            let plan = build(&v, &p, (kind, (x - 8) >> 4, (z - 8) >> 4));
+            let names: Vec<&str> = plan.blocks.values().flatten().filter_map(|b| data.block_name(b.3)).collect();
+            let has = |n: &str| names.iter().any(|b| b.trim_start_matches("minecraft:") == n);
+            let count = plan.chests.values().map(|c| c.len()).sum::<usize>();
+            eprintln!("{:?} : {} blocs, {} coffres", what, names.len(), count);
+            assert!(has(signature), "{:?} sans {}", what, signature);
+            assert!(count >= chests, "{:?} : {} coffres", what, count);
+            // Plus de jigsaw ni de bloc de structure dans le monde
+            assert!(!has("jigsaw") && !has("structure_block"));
+        }
+        // Le monde généré contient bien le village, sans erreur
+        let (x, y, z) = locate(&v, Target::Village, 0, 0).unwrap();
+        let world = super::super::World::with_generator(super::super::generator::Generator::new(super::super::generator::Kind::Vanilla, 12345, p.clone()));
+        assert_ne!(world.get(x, y, z), p.air);
+    }
+
     /// Tout le butin des structures existe dans le jeu.
     #[test]
     fn loot_items_exist() {
@@ -2794,6 +3073,18 @@ mod tests {
         }
     }
 
+    /// Palette de test, avec les plans officiels si `OFFICIAL` est défini (et les plans
+    /// présents, voir `templates`).
+    fn test_palette(data: &crate::data::GameData) -> Palette {
+        let p = Palette::new(&|n| data.state_from_spec(n));
+        if std::env::var("OFFICIAL").is_err() {
+            return p;
+        }
+        let path = std::env::var("BASALT_STRUCTURES").unwrap_or_else(|_| "/tmp/vs/structures".into());
+        let t = Templates::load(std::path::Path::new(&path), &|n| data.state_from_spec(n)).ok().map(std::sync::Arc::new);
+        p.with_templates(t)
+    }
+
     /// Écrit les blocs d'une structure récente dans /tmp/plan-<sorte>.txt (x y z nom), pour
     /// les dessiner. `cargo test plan_files -- --ignored`
     #[test]
@@ -2801,7 +3092,7 @@ mod tests {
     fn plan_files() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
         let data = crate::data::GameData::load(&dir).unwrap();
-        let p = Palette::new(&|n| data.state_from_spec(n));
+        let p = test_palette(&data);
         let v = Vanilla::new(12345);
         for (what, kind, label) in [
             (Target::PillagerOutpost, Kind::PillagerOutpost, "outpost"),
@@ -2810,7 +3101,9 @@ mod tests {
             (Target::AncientCity, Kind::AncientCity, "city"),
         ] {
             let (x, _, z) = locate(&v, what, 0, 0).unwrap();
+            let started = std::time::Instant::now();
             let plan = build(&v, &p, (kind, (x - 8) >> 4, (z - 8) >> 4));
+            eprintln!("{} : {} blocs en {:?}", label, plan.blocks.values().map(|b| b.len()).sum::<usize>(), started.elapsed());
             let mut out = String::new();
             for ((cx, cz), list) in &plan.blocks {
                 for (bx, y, bz, s) in list {
@@ -2829,7 +3122,7 @@ mod tests {
     fn village_files() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
         let data = crate::data::GameData::load(&dir).unwrap();
-        let p = Palette::new(&|n| data.state_from_spec(n));
+        let p = test_palette(&data);
         let v = Vanilla::new(std::env::var("SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(12345));
         let mut done: Vec<String> = Vec::new();
         let write = |plan: &Plan, label: &str| {

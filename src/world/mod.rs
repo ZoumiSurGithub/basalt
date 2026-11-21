@@ -14,6 +14,7 @@
 pub mod generator;
 pub mod liquid;
 pub mod structures;
+pub mod templates;
 pub mod vanilla;
 
 use std::collections::{HashMap, HashSet};

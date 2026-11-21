@@ -1206,7 +1206,22 @@ impl Vanilla {
 
         // 7. Structures : villages, temples, mines (la part qui tombe dans ce chunk)
         let mut chests = Vec::new();
-        for plan in super::structures::near(self, p, &self.structures, cx, cz) {
+        let plans = super::structures::near(self, p, &self.structures, cx, cz);
+        // Arbres du terrain qui poussent dans une structure : abattus avant de la poser
+        if plans.iter().any(|plan| !plan.clear_in(cx, cz).is_empty()) {
+            let wood: std::collections::HashSet<u32> = p.named.iter().filter(|(n, _)| n.ends_with("_log") || n.ends_with("_leaves") || n.contains("leaves[")).map(|(_, s)| *s).chain([p.oak_log, p.oak_leaves, p.birch_log, p.birch_leaves, p.spruce_log, p.spruce_leaves]).collect();
+            for plan in &plans {
+                for (x, z, from) in plan.clear_in(cx, cz) {
+                    for y in (*from as i32).max(MIN_Y)..=(*from as i32 + 28).min(MAX_Y) {
+                        let i = at(*x as usize, *z as usize, y);
+                        if wood.contains(&blocks[i]) {
+                            blocks[i] = p.air;
+                        }
+                    }
+                }
+            }
+        }
+        for plan in plans {
             for (x, y, z, s) in plan.blocks_in(cx, cz) {
                 blocks[at(*x as usize, *z as usize, *y as i32)] = *s;
             }
@@ -1519,9 +1534,27 @@ impl Vanilla {
             B::IceSpikes => 2,
             _ => 0,
         };
-        let mut out = Vec::new();
-        for _ in 0..tries {
-            let (lx, lz) = (rng.below(16) as i32, rng.below(16) as i32);
+        let mut out: Vec<Plant> = Vec::new();
+        // Forêts sombres et jardins pâles : troncs de 2 × 2 sur une grille de cases de 4,
+        // décalés d'au plus 1 bloc dans leur case, pour qu'il reste toujours un passage entre
+        // deux troncs (comme dans le jeu, où la forêt est dense mais traversable)
+        let grid = matches!(center, B::DarkForest | B::PaleGarden);
+        let tries = if grid { 16 } else { tries };
+        for n in 0..tries {
+            let (lx, lz) = if grid {
+                ((n % 4) * 4 + rng.below(2) as i32, (n / 4) * 4 + rng.below(2) as i32)
+            } else {
+                (rng.below(16) as i32, rng.below(16) as i32)
+            };
+            // Quelques cases vides : des clairières
+            if grid && rng.below(5) == 0 {
+                continue;
+            }
+            // Ailleurs, pas deux troncs collés : au moins deux blocs d'écart
+            if !grid && out.iter().any(|o| (o.x - (cx * 16 + lx)).abs() <= 2 && (o.z - (cz * 16 + lz)).abs() <= 2) {
+                let _ = rng.next();
+                continue;
+            }
             let (x, z) = (cx * 16 + lx, cz * 16 + lz);
             let roll = rng.next();
             let (top, biome) = match own {
@@ -1646,18 +1679,21 @@ impl Plant {
         let named = |n: &str| p.named.get(n).copied().unwrap_or(p.air);
         let mut rng = Rng::new(self.seed);
         let soft = [p.air, p.snow_layer, p.short_grass, p.water, named("fern"), named("seagrass")];
-        let mut put = |x: i32, y: i32, z: i32, block: u32, force: bool| {
+        // Pose un bloc (seulement sur de l'air, de l'herbe… sauf si `force`) ; vrai si posé
+        let mut put = |x: i32, y: i32, z: i32, block: u32, force: bool| -> bool {
             let (lx, lz) = (x - bx, z - bz);
             if !(0..16).contains(&lx) || !(0..16).contains(&lz) || y <= MIN_Y || y > MAX_Y {
-                return;
+                return false;
             }
             let i = at(lx as usize, lz as usize, y);
             if force || soft.contains(&blocks[i]) {
                 blocks[i] = block;
+                return true;
             }
+            false
         };
         let (x, z, base) = (self.x, self.z, self.ground + 1);
-        let blob = |put: &mut dyn FnMut(i32, i32, i32, u32, bool), cx: i32, cy: i32, cz: i32, r: i32, h: i32, leaves: u32, rng: &mut Rng| {
+        let blob = |put: &mut dyn FnMut(i32, i32, i32, u32, bool) -> bool, cx: i32, cy: i32, cz: i32, r: i32, h: i32, leaves: u32, rng: &mut Rng| {
             for dy in 0..h {
                 let rr = if dy == h - 1 { r - 1 } else { r };
                 for dx in -rr..=rr {
@@ -1732,7 +1768,7 @@ impl Plant {
                 // Grand chêne : tronc haut, branches en diagonale, boules de feuilles au bout
                 let trunk = 8 + rng.below(5) as i32;
                 let top = base + trunk;
-                let ball = |put: &mut dyn FnMut(i32, i32, i32, u32, bool), cx: i32, cy: i32, cz: i32| {
+                let ball = |put: &mut dyn FnMut(i32, i32, i32, u32, bool) -> bool, cx: i32, cy: i32, cz: i32| {
                     for dy in 0..4i32 {
                         let r: i32 = if dy == 0 || dy == 3 { 2 } else { 3 };
                         for dx in -r..=r {
@@ -1820,6 +1856,14 @@ impl Plant {
                         put(x + dx, y, z + dz, log, true);
                     }
                 }
+                // Sur une pente, les colonnes du tronc plus basses descendent jusqu'au sol
+                for (dx, dz) in [(1, 0), (0, 1), (1, 1)] {
+                    for y in (base - 3..base).rev() {
+                        if !put(x + dx, y, z + dz, log, false) {
+                            break;
+                        }
+                    }
+                }
             }
             Tree::Acacia => {
                 let trunk = 5 + rng.below(3) as i32;
@@ -1890,6 +1934,14 @@ impl Plant {
                 for y in base..top {
                     for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
                         put(x + dx, y, z + dz, log, true);
+                    }
+                }
+                // Sur une pente, les colonnes du tronc plus basses descendent jusqu'au sol
+                for (dx, dz) in [(1, 0), (0, 1), (1, 1)] {
+                    for y in (base - 3..base).rev() {
+                        if !put(x + dx, y, z + dz, log, false) {
+                            break;
+                        }
                     }
                 }
             }
@@ -2055,6 +2107,25 @@ mod tests {
     }
 
     #[test]
+    fn trunks_never_touch() {
+        // Deux troncs d'un même chunk laissent toujours au moins un bloc de passage
+        let v = Vanilla::new(12345);
+        let mut seen = 0;
+        for cx in -20..20 {
+            for cz in -20..20 {
+                let plants = v.plants(cx, cz, None);
+                seen += plants.len();
+                for (i, a) in plants.iter().enumerate() {
+                    for b in &plants[i + 1..] {
+                        assert!((a.x - b.x).abs() >= 3 || (a.z - b.z).abs() >= 3, "{:?} {} {} et {:?} {} {}", a.kind, a.x, a.z, b.kind, b.x, b.z);
+                    }
+                }
+            }
+        }
+        assert!(seen > 500, "{} arbres", seen);
+    }
+
+    #[test]
     fn neighbours_agree_on_trees_across_chunk_borders() {
         // Un arbre près d'un bord est dessiné à l'identique dans les deux chunks
         let v = Vanilla::new(77);
@@ -2120,6 +2191,53 @@ mod pictures {
             }
         }
         std::fs::write("/tmp/top.txt", out).unwrap();
+    }
+
+    /// Troncs qui flottent ou qui pendent dans le vide (`cargo test tree_audit -- --ignored`).
+    #[test]
+    #[ignore]
+    fn tree_audit() {
+        let data = crate::data::GameData::load(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data")).unwrap();
+        let p = Palette::new(&|n| data.state_from_spec(n));
+        let seed = std::env::var("SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(12345);
+        let v = Vanilla::new(seed);
+        let mut bad = std::collections::BTreeMap::<String, (usize, String)>::new();
+        let mut total = 0;
+        for cx in -12..12 {
+            for cz in -12..12 {
+                let col = v.generate(&p, cx, cz);
+                for x in 0..16 {
+                    for z in 0..16 {
+                        for y in (MIN_Y + 1)..MAX_Y {
+                            let b = col.get(x, y, z);
+                            let name = data.block_name(b).unwrap_or("?");
+                            if !name.ends_with("_log") {
+                                continue;
+                            }
+                            let below = data.block_name(col.get(x, y - 1, z)).unwrap_or("?");
+                            let above = data.block_name(col.get(x, y + 1, z)).unwrap_or("?");
+                            // Bas d'un tronc vertical (au moins 2 blocs) posé sur rien de solide
+                            let a2 = data.block_name(col.get(x, y + 2, z)).unwrap_or("?");
+                            let gap = (1..6).find(|d| { let n = data.block_name(col.get(x, y - d, z)).unwrap_or("?"); !n.ends_with("air") }).unwrap_or(9);
+                            let ground = data.block_name(col.get(x, y - gap, z)).unwrap_or("?");
+                            if above.ends_with("_log") && a2.ends_with("_log") && !below.ends_with("_log") && below.ends_with("air") && !ground.contains("leaves") && !ground.ends_with("_log") {
+                                let below = format!("vide de {} puis {}", gap - 1, ground);
+                                total += 1;
+                                let e = bad.entry(format!("{} sur {}", name, below)).or_insert((0, String::new()));
+                                e.0 += 1;
+                                if e.1.is_empty() {
+                                    e.1 = format!("{} {} {}", cx * 16 + x as i32, y, cz * 16 + z as i32);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (k, (n, at)) in &bad {
+            eprintln!("{:5} {} (ex. {})", n, k, at);
+        }
+        eprintln!("total {}", total);
     }
 
     /// Carte et coupe du terrain, pour la mise au point (`cargo test dump_map -- --ignored`).
