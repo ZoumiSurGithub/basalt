@@ -176,6 +176,27 @@ pub const EVENT_LOVE_PARTICLES: u8 = 21;
 pub const EVENT_TAME_FAIL: u8 = 6;
 pub const EVENT_TAME_SUCCESS: u8 = 7;
 
+/// UpdateAttributes d'une monture : sa vitesse et la force de son saut. Le jeu du cavalier
+/// les prend ici pour la faire avancer (sans eux, il garde la vitesse la plus basse).
+pub fn mount_attributes(runtime_id: i64, movement: f32, jump: f32) -> Vec<u8> {
+    let mut w = W::default();
+    w.varu64(runtime_id as u64);
+    // (nom, minimum, maximum, valeur)
+    let list = [("minecraft:movement", 0.0, f32::MAX, movement), ("minecraft:horse.jump_strength", 0.0, 2.0, jump)];
+    w.varu32(list.len() as u32);
+    for (name, min, max, value) in list {
+        w.f32(min);
+        w.f32(max);
+        w.f32(value);
+        w.f32(min); // minimum par défaut
+        w.f32(max); // maximum par défaut
+        w.f32(value); // valeur par défaut
+        w.string(name);
+        w.varu32(0); // aucun modificateur
+    }
+    w.varu64(0); // tick
+    w.0
+}
 /// SetActorLink : un cavalier monte (1) ou descend (0) d'une monture.
 pub const ID_SET_ACTOR_LINK: u32 = 41;
 pub const LINK_REMOVE: u8 = 0;

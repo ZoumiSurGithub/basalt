@@ -20,6 +20,9 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   qui ne leur tendent pas de carotte, les animaux évitent l'eau en se promenant et
   regardent parfois les joueurs proches. Le lama ne suit plus la nourriture ; chevaux, ânes
   et mules apprivoisés suivent les pommes et carottes dorées. Son de l'œuf pondu.
+- Montures plus rapides : leur vitesse et la force de leur saut sont envoyées au jeu du
+  cavalier (il gardait sinon la plus basse), et chevaux, ânes et lamas se promènent à un
+  pas plus proche du jeu.
 - Nouveaux animaux, avec les règles d'apparition du jeu : champimeuh (champs de
   champignons ; bol → soupe, seau → lait, cisailles → 5 champignons et elle redevient
   vache), chèvre (sommets ; 2 % de « hurleuses » ; lait), lama (collines venteuses,

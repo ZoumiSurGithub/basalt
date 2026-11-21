@@ -28,10 +28,15 @@ const LEASH_HARD: f32 = 6.0;
 const LEASH_MAX: f32 = 10.0;
 
 /// Vitesse au sol (blocs par tick) d'une créature qui veut aller à `speed` (vitesse du jeu ×
-/// multiplicateur) : le jeu s'en sert à la fois comme élan et comme vitesse, d'où le carré ;
-/// le sol en garde 0,546 à chaque tick.
+/// multiplicateur) : le jeu s'en sert à la fois comme élan et comme vitesse, d'où le carré
+/// (le sol en garde 0,546 à chaque tick). Sous 0,2 (promenade des équidés et des lamas), le
+/// carré les rendait bien plus lents que dans le jeu : la vitesse y reste proportionnelle.
 fn ground_speed(speed: f32) -> f32 {
-    (speed * speed / 0.454).min(0.4)
+    if speed < 0.2 {
+        speed * 0.2 / 0.454
+    } else {
+        (speed * speed / 0.454).min(0.4)
+    }
 }
 
 /// Espèces connues.
@@ -786,6 +791,7 @@ impl Server {
     pub(super) fn show_mobs(&mut self) {
         let mut out: Vec<(SocketAddr, u32, Vec<u8>)> = Vec::new();
         let ids: HashMap<SocketAddr, i64> = self.clients.iter().map(|(a, c)| (*a, c.id)).collect();
+        let refused_attributes = self.refused_extras.contains(&bedrock::ID_UPDATE_ATTRIBUTES);
         let holder_of = |m: &Mob| match m.leash {
             Some(Leash::Player(a)) => ids.get(&a).copied().unwrap_or(-1),
             Some(Leash::Knot(k, _)) => k,
@@ -817,6 +823,10 @@ impl Server {
                 if far < VIEW * VIEW && m.dead.is_none() && has_chunk {
                     if c.mobs_seen.insert(m.id) {
                         out.push((*addr, bedrock::ID_ADD_ACTOR, Self::mob_packet(m, m.rider.and_then(|r| ids.get(&r).copied()), holder_of(m))));
+                        // Monture : sa vitesse et son saut (le jeu du cavalier s'en sert)
+                        if m.species.mount() && !refused_attributes {
+                            out.push((*addr, bedrock::ID_UPDATE_ATTRIBUTES, bedrock::mount_attributes(m.id, m.movement(), m.jump)));
+                        }
                     }
                 } else if (far > (VIEW + 16.0) * (VIEW + 16.0) || !has_chunk) && c.mobs_seen.remove(&m.id) {
                     out.push((*addr, bedrock::ID_REMOVE_ACTOR, bedrock::remove_actor(m.id)));
@@ -1655,6 +1665,10 @@ impl Server {
         }
         let link = bedrock::set_actor_link(id, player, bedrock::LINK_RIDER, false);
         self.send_to_viewers(id, bedrock::ID_SET_ACTOR_LINK, &link);
+        if let Some(m) = self.mobs.get(&id) {
+            let attributes = bedrock::mount_attributes(id, m.movement(), m.jump);
+            self.send_to_viewers(id, bedrock::ID_UPDATE_ATTRIBUTES, &attributes);
+        }
         self.rider_data(addr, Some(seat));
         self.mob_changed(id);
     }
