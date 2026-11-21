@@ -159,6 +159,49 @@ if [ "$HAS_LUA" = 0 ]; then
     warn "    sudo apt install liblua5.4-0"
 fi
 
+# Plans officiels des structures (villages, avant-postes, cités antiques, ruines de piste) :
+# pris une seule fois dans le serveur officiel de Mojang, téléchargé depuis minecraft.net.
+# Ils ne sont pas publiés avec Basalt (ils appartiennent à Mojang). BASALT_NO_STRUCTURES=1
+# pour s'en passer : les structures sont alors faites à la main.
+if [ ! -e structures ] && [ ! -e structures.zip ] && [ -z "${BASALT_NO_STRUCTURES:-}" ]; then
+    say "Plans officiels des structures : téléchargement du serveur de Mojang (une seule fois)."
+    say "En le téléchargeant, vous acceptez le CLUF de Minecraft : https://www.minecraft.net/eula"
+    LINKS=$(curl -sSfL --proto '=https' -A "Mozilla/5.0" "https://net-secondary.web.minecraft-services.net/api/v1.0/download/links" 2>/dev/null || true)
+    BDS_URL=$(printf '%s' "$LINKS" | tr '{}' '\n\n' | grep '"serverBedrockLinux"' | sed -n 's/.*"downloadUrl" *: *"\([^"]*\)".*/\1/p' | head -n 1)
+    case "$BDS_URL" in
+        https://www.minecraft.net/* | https://minecraft.net/*) ;;
+        *) BDS_URL="" ;;
+    esac
+    if [ -z "$BDS_URL" ]; then
+        warn "Adresse du serveur officiel introuvable : structures faites à la main (réessayez avec ./update.sh)."
+    elif ! curl -sSfL --proto '=https' -A "Mozilla/5.0" -o "$TMP/bds.zip" "$BDS_URL"; then
+        warn "Téléchargement du serveur officiel impossible : structures faites à la main (réessayez avec ./update.sh)."
+    else
+        mkdir -p "$TMP/bds"
+        EXTRACTED=0
+        if command -v unzip >/dev/null 2>&1; then
+            unzip -qo "$TMP/bds.zip" 'behavior_packs/vanilla/structures/*' -d "$TMP/bds" && EXTRACTED=1
+        elif command -v python3 >/dev/null 2>&1; then
+            python3 - "$TMP/bds.zip" "$TMP/bds" <<'EOF' && EXTRACTED=1
+import sys, zipfile, os
+z = zipfile.ZipFile(sys.argv[1])
+for n in z.namelist():
+    if n.startswith("behavior_packs/vanilla/structures/") and ".." not in n and not n.endswith("/"):
+        z.extract(n, sys.argv[2])
+EOF
+        fi
+        if [ "$EXTRACTED" = 1 ] && [ -d "$TMP/bds/behavior_packs/vanilla/structures" ]; then
+            rm -rf ./structures.new
+            mv "$TMP/bds/behavior_packs/vanilla/structures" ./structures.new
+            mv ./structures.new ./structures
+            ok "Plans des structures installés ($(find structures -name '*.nbt' | wc -l) fichiers)."
+        else
+            warn "Impossible d'extraire les plans (installez unzip : sudo apt install unzip)."
+        fi
+        rm -f "$TMP/bds.zip"
+    fi
+fi
+
 ok "Basalt $VERSION est prêt."
 say "Démarrer le serveur :   ./start.sh"
 say "Mettre à jour plus tard : ./update.sh"

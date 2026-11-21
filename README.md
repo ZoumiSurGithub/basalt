@@ -90,18 +90,24 @@ les plugins (EasyEdit…) ne déclenchent pas l'écoulement, comme WorldEdit dan
 **Structures** (`src/world/structures.rs`), placées comme dans le jeu (une par case d'une
 grille).
 
-**Plans officiels.** Si le dossier `structures` du serveur officiel de Mojang est copié à
-côté de Basalt (dossier `structures`, ou archive `structures.zip`, au même endroit que
-`server.properties`), les **villages**, **avant-postes de pillards**, **cités antiques** et
-**ruines de piste** sont assemblés avec les vrais plans du jeu, pièce par pièce, comme
-dans le jeu (`src/world/templates.rs`) : mêmes maisons, mêmes rues, même centre de cité. La cité antique est creusée dans une caverne aux parois irrégulières, couverte de plaques de sculk avec capteurs, catalyseurs et hurleurs (qui pourront appeler le Warden) ; autour des maisons de village, le terrain est raccordé en talus plutôt que coupé net.
-Ces fichiers appartiennent à Mojang : ils ne sont pas fournis avec Basalt. On les trouve
-dans le serveur officiel (Bedrock Dedicated Server, Windows ou Linux), dans
-`behavior_packs/vanilla/structures`. Pour une archive : clic droit sur ce dossier,
-« Compresser dans un fichier ZIP », puis copier `structures.zip` à côté de Basalt. Le
-journal du démarrage indique combien de plans ont été chargés. Seuls les nouveaux chunks
-en profitent. Les lits y sont rouges (leur couleur n'est pas encore transmise), et les
-bannières, les animaux et les villageois des plans ne sont pas posés.
+**Plans officiels.** Les **villages**, **avant-postes de pillards**, **cités antiques** et
+**ruines de piste** sont assemblés avec les vrais plans du jeu, pièce par pièce, comme dans
+le jeu (`src/world/templates.rs`) : mêmes maisons, mêmes rues, même centre de cité. La
+cité antique est creusée dans une caverne aux parois irrégulières, couverte de plaques de
+sculk avec capteurs, catalyseurs et hurleurs ; autour des maisons de village, le terrain
+est raccordé en talus plutôt que coupé net.
+
+Ces plans appartiennent à Mojang : ils ne sont pas publiés avec Basalt. L'installation
+(`get.sh`, `./update.sh`, ou `Installer.cmd` / `Mettre-a-jour.cmd` sous Windows) les
+récupère toute seule, une fois : elle télécharge le serveur officiel depuis minecraft.net
+(ce qui revient à accepter le [CLUF de Minecraft](https://www.minecraft.net/eula)), en
+garde le dossier `behavior_packs/vanilla/structures` (rangé dans `structures` à côté de
+Basalt) et jette le reste. `BASALT_NO_STRUCTURES=1` pour s'en passer. On peut aussi les
+copier soi-même : dossier `structures`, ou archive `structures.zip`, à côté de
+`server.properties`. Le journal du démarrage indique combien de plans ont été chargés.
+Seuls les nouveaux chunks en profitent. Les lits y sont rouges (leur couleur n'est pas
+encore transmise), et les bannières, les animaux et les villageois des plans ne sont pas
+posés.
 
 Sans ces fichiers, chaque structure est reconstruite à la main, au plus près du jeu :
 

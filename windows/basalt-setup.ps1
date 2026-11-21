@@ -365,6 +365,44 @@ function Install-Lua {
     Warn "    $InstallDir"
 }
 
+function Install-Structures {
+    # Plans officiels des structures (villages, avant-postes, cites antiques, ruines de
+    # piste) : pris une seule fois dans le serveur officiel de Mojang, telecharge depuis
+    # minecraft.net. Ils ne sont pas publies avec Basalt (ils appartiennent a Mojang).
+    $target = Join-Path $InstallDir 'structures'
+    if ((Test-Path $target) -or (Test-Path (Join-Path $InstallDir 'structures.zip'))) { return }
+    if ($env:BASALT_NO_STRUCTURES) { return }
+    Say 'Plans officiels des structures : téléchargement du serveur de Mojang (une seule fois).'
+    Say 'En le téléchargeant, vous acceptez le CLUF de Minecraft : https://www.minecraft.net/eula'
+    $zip = Join-Path $env:TEMP 'basalt-bds.zip'
+    try {
+        $links = Invoke-RestMethod -Uri 'https://net-secondary.web.minecraft-services.net/api/v1.0/download/links' -UseBasicParsing
+        $url = ($links.result.links | Where-Object { $_.downloadType -eq 'serverBedrockWindows' } | Select-Object -First 1).downloadUrl
+        if (-not $url -or $url -notmatch '^https://(www\.)?minecraft\.net/') { throw 'adresse du serveur officiel introuvable' }
+        Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -UserAgent 'Mozilla/5.0'
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
+        $prefix = 'behavior_packs/vanilla/structures/'
+        $count = 0
+        try {
+            foreach ($entry in $archive.Entries) {
+                $name = $entry.FullName -replace '\\', '/'
+                if (-not $name.StartsWith($prefix) -or $name.EndsWith('/') -or $name.Contains('..')) { continue }
+                $dest = Join-Path $target ($name.Substring($prefix.Length) -replace '/', '\')
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
+                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
+                $count++
+            }
+        } finally { $archive.Dispose() }
+        Say "Plans des structures installés ($count fichiers)."
+    } catch {
+        Warn "Plans des structures non installés ($($_.Exception.Message)) : structures faites à la main."
+        Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue
+    } finally {
+        Remove-Item $zip -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Add-Shortcuts {
     if ($NoShortcut) { return }
     $shell = New-Object -ComObject WScript.Shell
@@ -444,6 +482,7 @@ function Do-Install {
     $package = Get-Package
     Install-Files $package
     Install-Lua
+    Install-Structures
     Add-Firewall
     Add-Shortcuts
     Say "Basalt $($package.Version) est installé."
@@ -476,6 +515,7 @@ function Do-Update {
     }
     Install-Files $package
     Install-Lua
+    Install-Structures
     Add-Firewall
     Say "Basalt est à jour ($($package.Version)). La version précédente est gardée dans basalt.exe.bak."
     Say 'server.properties et vos plugins n''ont pas été modifiés.'
