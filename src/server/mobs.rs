@@ -849,7 +849,22 @@ impl Server {
                 _ => {}
             }
         }
+        for (k, v) in Self::container_meta(m) {
+            if let Some(cell) = meta.iter_mut().find(|(key, _)| *key == k) {
+                cell.1 = v;
+            }
+        }
         meta
+    }
+
+    /// Inventaire porté par une monture, tel que le jeu le lit dans ses données d'entité :
+    /// type d'écran (44), nombre de cases (45), cases par point de force (46). Laissé à zéro,
+    /// le jeu affichait l'écran mais plantait dès qu'on y prenait un objet : il cherchait les
+    /// cases acceptant l'objet tenu dans un inventaire de taille nulle.
+    fn container_meta(m: &Mob) -> [(u32, bedrock::Meta); 3] {
+        let size = m.inventory_size() as i32;
+        let kind = if size > 0 { bedrock::SCREEN_HORSE } else { 0 };
+        [(44, bedrock::Meta::Byte(kind)), (45, bedrock::Meta::Int(size)), (46, bedrock::Meta::Int(0))]
     }
 
     /// Paquet d'apparition d'une créature.
@@ -876,14 +891,17 @@ impl Server {
         let packet = bedrock::set_actor_data(
             id,
             &[
-                (0, bedrock::Meta::Long(m.flags())),
+                (0u32, bedrock::Meta::Long(m.flags())),
                 (2, bedrock::Meta::Int(m.variant)),
                 (3, bedrock::Meta::Byte(m.color)),
                 (bedrock::META_LEAD_HOLDER, bedrock::Meta::Long(holder)),
                 (38, bedrock::Meta::Float(scale)),
                 (53, bedrock::Meta::Float(w)),
                 (54, bedrock::Meta::Float(h)),
-            ],
+            ]
+            .into_iter()
+            .chain(Self::container_meta(m))
+            .collect::<Vec<_>>()[..],
         );
         self.send_to_viewers(id, bedrock::ID_SET_ACTOR_DATA, &packet);
         self.mobs_dirty = true;

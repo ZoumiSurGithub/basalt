@@ -98,6 +98,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   la fenêtre). Le jeu plantait dès qu'on prenait un objet, l'écran ouvert : le contenu
   était envoyé sous un nom de conteneur qui n'est pas celui de l'écran. Réglage de mise au
   point `debug-mount-screen` (1 : ancienne écriture).
+- Montures : leurs données d'entité annoncent maintenant leur inventaire (écran de monture,
+  nombre de cases). À zéro, le jeu plantait dès qu'on prenait un objet dans l'écran.
 - Crachat du lama : il part de la bouche et vole jusqu'à sa cible au lieu de rester immobile
   au-dessus du lama (données de projectile, position redessinée à chaque tick).
 - Un jeu qui refusait les animaux les supprimait pour tout le serveur (et de la sauvegarde) :
