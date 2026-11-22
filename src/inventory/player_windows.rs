@@ -30,6 +30,9 @@ pub struct PlayerWindows {
     /// Monture dont l'inventaire est ouvert (selle, armure ou tapis, coffre) : il prend la
     /// place de celui d'un bloc
     pub block_mob: Option<i64>,
+    /// Monture ouverte sans selle (lama) : sa seule case d'équipement, le tapis, est la
+    /// case 0 pour le jeu et la case 1 de son inventaire
+    pub block_mob_carpet: bool,
     /// Le bloc ouvert est un four (ingrédient, combustible, résultat)
     pub block_is_furnace: bool,
     next_net_id: i32,
@@ -57,6 +60,7 @@ impl PlayerWindows {
             block: BaseInventory::new("bloc", 0),
             block_pos: None,
             block_mob: None,
+            block_mob_carpet: false,
             block_is_furnace: false,
             next_net_id: 1,
         }

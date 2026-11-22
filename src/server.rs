@@ -4110,9 +4110,13 @@ impl Server {
         // ou le tapis, tenue à part) ; dans l'inventaire de la monture, le coffre commence
         // après les deux cases d'équipement
         let mount = work.block_mob.is_some();
+        let carpet = mount && work.block_mob_carpet;
         let at = |r: &bedrock::SlotRef| match (mount, r.container) {
             (true, 7) if r.slot >= 1 => inventory::resolve(7, r.slot + 1),
-            (true, 7) => None,
+            // Lama : son tapis, que le jeu désigne par la case d'équipement 0 (ou la case 0
+            // de la liste du coffre)
+            (true, 7) | (true, 27) if carpet => Some((Target::Block, 1)),
+            (true, 7) => Some((Target::Block, 0)),
             _ => inventory::resolve(r.container, r.slot),
         };
         for action in &request.actions {
@@ -4174,6 +4178,7 @@ impl Server {
                     // four : ingrédient, combustible, résultat
                     (Target::Block, true) => ([25u8, 24, 26][(*slot).min(2)], *slot),
                     // monture : selle et armure (ou tapis), puis le coffre, compté à partir de 1
+                    (Target::Block, false) if work.block_mob.is_some() && work.block_mob_carpet && *slot < 2 => (27, 0),
                     (Target::Block, false) if work.block_mob.is_some() && *slot < 2 => (27, *slot),
                     (Target::Block, false) if work.block_mob.is_some() => (7, *slot - 1),
                     _ => (inventory::protocol_name(*target, *slot), *slot),
@@ -4333,8 +4338,8 @@ impl Server {
         // (`debug-mount-screen=1` : l'ancienne écriture, tout sous le nom 0)
         if let (Some(species), 0) = (species, self.cfg.mount_screen) {
             let equip = match species {
-                mobs::Species::Donkey | mobs::Species::Mule => 1,
-                _ => 2,
+                mobs::Species::Horse => 2,
+                _ => 1,
             }
             .min(list.len());
             if list.len() > 2 {
@@ -4347,7 +4352,9 @@ impl Server {
                 let pk = bedrock::container_items_named(window as u32, bedrock::CONTAINER_LEVEL_ENTITY, &chest, self.item_net_ids, features);
                 self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
             } else {
-                let pk = bedrock::container_items_named(window as u32, bedrock::CONTAINER_HORSE_EQUIP, &list[..equip], self.item_net_ids, features);
+                // (lama : le tapis seul, en case 0)
+                let cells = if species == mobs::Species::Llama { &list[1..2.min(list.len())] } else { &list[..equip] };
+                let pk = bedrock::container_items_named(window as u32, bedrock::CONTAINER_HORSE_EQUIP, cells, self.item_net_ids, features);
                 self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
             }
             return;
