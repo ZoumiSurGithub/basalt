@@ -156,6 +156,8 @@ pub const FLAG_SHEARED: i64 = 1 << 31;
 /// Montures : sellée, apprivoisée, dirigée au clavier par son cavalier, saut chargé
 pub const FLAG_SADDLED: i64 = 1 << 8;
 pub const FLAG_TAMED: i64 = 1 << 28;
+/// Porte un coffre (âne, mule, lama)
+pub const FLAG_CHESTED: i64 = 1 << 36;
 /// Tenue en laisse
 pub const FLAG_LEASHED: i64 = 1 << 30;
 /// Donnée d'entité : qui tient la laisse (identifiant unique, -1 personne)
@@ -260,6 +262,10 @@ pub const SOUND_JUMP: &str = "jump";
 pub const SOUND_LAND: &str = "land";
 /// Œuf pondu, laisse attachée ou rompue
 pub const SOUND_PLOP: &str = "plop";
+/// Armure, tapis ou coffre posé sur une monture
+pub const SOUND_ARMOR: &str = "armor";
+/// Crachat du lama
+pub const SOUND_SPIT: &str = "spit";
 pub const SOUND_LEASH_PLACE: &str = "leashknot.place";
 pub const SOUND_LEASH_BREAK: &str = "leashknot.break";
 

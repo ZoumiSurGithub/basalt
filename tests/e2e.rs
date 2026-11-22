@@ -2350,6 +2350,8 @@ fn horses_tamed_by_riding_have_a_foal() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    // (Le cheval sauvage gambade avec son cavalier : le joueur le rejoint ensuite d'un pas)
+    std::fs::write(dir.join("deplacements-libres"), "").unwrap();
     let (addr, stop, handle) = start(&dir);
     std::thread::sleep(Duration::from_millis(500));
     let mut steve = Client::join(addr, "Steve");
@@ -2389,18 +2391,51 @@ fn horses_tamed_by_riding_have_a_foal() {
     }
     command(&mut steve, "/clear @s");
     std::thread::sleep(Duration::from_millis(800));
+    let mut seen: std::collections::HashMap<u8, (f32, f32)> = std::collections::HashMap::new();
+    // (Une fois qu'il a bougé, son jeu doit continuer d'envoyer ses mouvements : sinon le
+    // serveur le croit figé)
+    let mut here = (0.5f32, 0.5f32);
+    let mut last_step = std::time::Instant::now();
     for h in &horses {
+        // Rejoint le cheval (dernière position annoncée) avant de monter
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_millis(600) {
+            if let Some((18, body)) = steve.poll_game(Duration::from_millis(50)) {
+                let f = |i: usize| f32::from_le_bytes([body[i], body[i + 1], body[i + 2], body[i + 3]]);
+                seen.insert(body[0], (f(2), f(10)));
+            }
+        }
+        if let Some((x, z)) = seen.get(h) {
+            here = (*x + 1.0, *z);
+            steve.walk_to(here.0, here.1);
+            std::thread::sleep(Duration::from_millis(200));
+        }
         click(&mut steve, *h); // en selle
         // Dressage réussi (cœurs) au bout de 2 à 5 secondes, puis il descend ; jeté à terre
         // (machine chargée : quelques pommes perdues), on remonte
         let started = std::time::Instant::now();
         let mut tamed = false;
         while !tamed && started.elapsed() < Duration::from_secs(30) {
-            if let Some((27, body)) = steve.poll_game(Duration::from_millis(200)) {
-                tamed = body.first() == Some(h) && body.get(1) == Some(&7);
-                if body.first() == Some(h) && body.get(1) == Some(&6) {
-                    click(&mut steve, *h);
+            match steve.poll_game(Duration::from_millis(200)) {
+                Some((27, body)) => {
+                    tamed = body.first() == Some(h) && body.get(1) == Some(&7);
+                    if body.first() == Some(h) && body.get(1) == Some(&6) {
+                        if let Some((x, z)) = seen.get(h) {
+                            here = (*x + 1.0, *z);
+                            steve.walk_to(here.0, here.1);
+                        }
+                        click(&mut steve, *h);
+                    }
                 }
+                Some((18, body)) => {
+                    let f = |i: usize| f32::from_le_bytes([body[i], body[i + 1], body[i + 2], body[i + 3]]);
+                    seen.insert(body[0], (f(2), f(10)));
+                }
+                _ => {}
+            }
+            if last_step.elapsed() > Duration::from_secs(1) {
+                steve.walk_to(here.0, here.1);
+                last_step = std::time::Instant::now();
             }
         }
         assert!(tamed, "cheval {} apprivoisé", h);
@@ -2409,7 +2444,20 @@ fn horses_tamed_by_riding_have_a_foal() {
     }
     command(&mut steve, "/give @s golden_carrot 4");
     std::thread::sleep(Duration::from_millis(800));
+    // (Positions à jour, puis chacun nourri de près)
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_millis(800) {
+        if let Some((18, body)) = steve.poll_game(Duration::from_millis(50)) {
+            let f = |i: usize| f32::from_le_bytes([body[i], body[i + 1], body[i + 2], body[i + 3]]);
+            seen.insert(body[0], (f(2), f(10)));
+        }
+    }
     for h in &horses {
+        if let Some((x, z)) = seen.get(h) {
+            here = (*x + 1.0, *z);
+            steve.walk_to(here.0, here.1);
+            std::thread::sleep(Duration::from_millis(150));
+        }
         click(&mut steve, *h);
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -2418,6 +2466,10 @@ fn horses_tamed_by_riding_have_a_foal() {
     while !foal && started.elapsed() < Duration::from_secs(40) {
         if let Some((13, body)) = steve.poll_game(Duration::from_millis(300)) {
             foal |= body.windows(15).any(|w| w == b"minecraft:horse") && !horses.contains(&body[1]);
+        }
+        if last_step.elapsed() > Duration::from_secs(1) {
+            steve.walk_to(here.0, here.1);
+            last_step = std::time::Instant::now();
         }
     }
     assert!(foal, "un poulain est né");
@@ -2464,6 +2516,88 @@ fn animals_climb_one_block() {
     }
     assert!(cow.is_some(), "vache montrée");
     assert!(crossed, "la vache a sauté le muret");
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = handle.join();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Âne apprivoisé : un coffre posé sur son dos, puis, en selle, la touche d'inventaire ouvre
+/// le sien (écran de monture, selle et armure plus 15 cases de coffre). Un mouton teint
+/// change de couleur.
+#[test]
+fn donkey_chest_and_dyed_sheep() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-coffre-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    let find = |c: &mut Client, kind: &[u8]| {
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(10) {
+            if let Some((13, body)) = c.poll_game(Duration::from_millis(300)) {
+                if body.windows(kind.len()).any(|w| w == kind) {
+                    return Some(body[1]);
+                }
+            }
+        }
+        None
+    };
+    let wait = |c: &mut Client, id: u32| {
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(5) {
+            if let Some((got, body)) = c.poll_game(Duration::from_millis(200)) {
+                if got == id {
+                    return Some(body);
+                }
+            }
+        }
+        None
+    };
+    let click = |c: &mut Client, h: u8| {
+        let mut click = vec![0x00, 0x03, 0x00, h, 0x00];
+        click.extend_from_slice(&[0x00, 0, 0, 0, 0, 0, 0, 0, 0]);
+        c.game(30, &click, Some(0xff));
+    };
+    // Mouton teint en rouge (couleur 14)
+    command(&mut steve, "/summon sheep ~2 ~ ~2");
+    let sheep = find(&mut steve, b"minecraft:sheep").expect("mouton montré");
+    std::thread::sleep(Duration::from_millis(1200));
+    command(&mut steve, "/give @s red_dye");
+    std::thread::sleep(Duration::from_millis(800));
+    click(&mut steve, sheep);
+    let data = wait(&mut steve, 39).expect("données du mouton mises à jour");
+    assert_eq!(data[0], sheep);
+    assert!(data.windows(4).any(|w| w == [3, 0, 0, 14]), "couleur 14 (rouge) : {:?}", data);
+    // Âne apprivoisé, coffre sur le dos
+    std::thread::sleep(Duration::from_millis(1200));
+    command(&mut steve, "/clear @s");
+    std::thread::sleep(Duration::from_millis(1200));
+    command(&mut steve, "/summon donkey ~-2 ~ ~2 minecraft:on_tame");
+    let donkey = find(&mut steve, b"minecraft:donkey").expect("âne montré");
+    std::thread::sleep(Duration::from_millis(1200));
+    command(&mut steve, "/give @s chest");
+    std::thread::sleep(Duration::from_millis(800));
+    click(&mut steve, donkey);
+    assert!(wait(&mut steve, 39).is_some(), "coffre posé (indicateurs mis à jour)");
+    // En selle (main vide), puis la touche d'inventaire
+    std::thread::sleep(Duration::from_millis(1200));
+    command(&mut steve, "/clear @s");
+    std::thread::sleep(Duration::from_millis(800));
+    click(&mut steve, donkey);
+    assert!(wait(&mut steve, 41).is_some(), "en selle");
+    steve.game(33, &[6, donkey, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], Some(0xff));
+    let open = wait(&mut steve, 46).expect("écran ouvert");
+    assert_eq!((open[0], open[1]), (2, 12), "fenêtre 2, écran de monture : {:?}", open);
+    let content = wait(&mut steve, 49).expect("contenu envoyé");
+    assert_eq!((content[0], content[1]), (2, 17), "selle, armure et 15 cases de coffre : {:?}", &content[..4]);
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = handle.join();
     let _ = std::fs::remove_dir_all(&dir);

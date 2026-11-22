@@ -11,6 +11,21 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Ajouté
 
+- Comportements particuliers du jeu :
+  - inventaire des montures apprivoisées (accroupi + clic droit, ou touche d'inventaire en
+    selle) : selle, armure du cheval, tapis du lama, coffre de l'âne, de la mule et du lama
+    (15 cases, 3 par point de force pour le lama), qui tombent à leur mort ; armure, tapis
+    et coffre se posent aussi d'un clic droit ;
+  - cochon sellé à monter et diriger avec une carotte sur un bâton (qui l'accélère) ;
+  - moutons à teindre ;
+  - champimeuh brune qui mange une fleur : son prochain bol est une soupe suspecte ;
+  - chèvre qui fonce sur les joueurs (2 points de dégâts et un recul ; la hurleuse bien
+    plus souvent), perd une corne contre le bois, la pierre, les minerais ou la glace
+    compacte, et bondit de bloc en bloc ;
+  - lamas en caravane derrière celui qu'on tient en laisse (10 au plus), qui crachent sur
+    qui les frappe ;
+  - lapins qui grignotent les carottes plantées ;
+  - monture sauvage qui gambade avec son cavalier pendant le dressage.
 - Laisses : une laisse en main sur un animal l'attache au joueur, un clic droit sur une
   barrière l'y noue (nœud visible), clic sur l'animal ou le nœud pour détacher ; elle tire
   au-delà de 4 blocs, fort au-delà de 6 et casse à 10, comme dans le jeu. Les animaux

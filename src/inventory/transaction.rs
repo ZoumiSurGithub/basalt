@@ -29,6 +29,8 @@ pub fn resolve(container_name: u8, slot: u8) -> Option<(Target, usize)> {
         6 if slot < 4 => Some((Target::Armor, slot)),
         34 => Some((Target::Offhand, 0)),
         7 | 30 | 58 => Some((Target::Block, slot)),
+        // Selle et armure (ou tapis) d'une monture : mêmes numéros que son inventaire
+        27 if slot < 2 => Some((Target::Block, slot)),
         // four : ingrédient, combustible, résultat
         25 => Some((Target::Block, 0)),
         24 => Some((Target::Block, 1)),

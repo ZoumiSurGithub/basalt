@@ -238,6 +238,36 @@ pub fn container_open_inventory(window: u8, unique_id: i64) -> Vec<u8> {
     w.0
 }
 
+/// Écran lié à une entité (inventaire d'une monture) : fenêtre, type d'écran, entité.
+pub fn container_open_entity(window: u8, kind: u8, unique_id: i64) -> Vec<u8> {
+    let mut w = W::default();
+    w.u8(window);
+    w.u8(kind);
+    w.vari32(0);
+    w.vari32(0);
+    w.vari32(0);
+    w.vari64(unique_id);
+    w.0
+}
+/// Type d'écran de l'inventaire d'une monture (cheval, âne, mule, lama)
+pub const SCREEN_HORSE: u8 = 12;
+
+/// MobArmorEquipment : ce que porte une créature (tête, torse, jambes, pieds, corps) ; seul
+/// le corps sert ici (armure du cheval, tapis du lama). `body` : (objet, quantité).
+pub const ID_MOB_ARMOR_EQUIPMENT: u32 = 32;
+pub fn mob_armor(runtime_id: i64, body: Option<(i16, u8)>) -> Vec<u8> {
+    let mut w = W::default();
+    w.varu64(runtime_id as u64);
+    for _ in 0..4 {
+        item_stack(&mut w, 0, 0, 0, 0);
+    }
+    match body {
+        Some((id, count)) => item_stack(&mut w, id, count, 0, 0),
+        None => item_stack(&mut w, 0, 0, 0, 0),
+    }
+    w.0
+}
+
 pub const ID_CONTAINER_SET_DATA: u32 = 51;
 
 /// Ouvre l'écran d'un bloc (coffre, four, établi…) situé en `pos`.

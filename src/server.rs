@@ -405,6 +405,8 @@ pub struct Server {
     mob_chunks: HashSet<(i32, i32)>,
     /// Nœuds de laisse attachés aux barrières : identifiant → bloc de la barrière
     knots: HashMap<i64, (i32, i32, i32)>,
+    /// Crachats de lama en vol
+    spits: Vec<mobs::Spit>,
     /// Animaux changés depuis le dernier enregistrement
     mobs_dirty: bool,
     /// Objets posés au sol
@@ -573,6 +575,8 @@ enum Cause {
     Player(String),
     Command,
     Plugin,
+    /// Une créature (son nom pour le message : « une chèvre »)
+    Mob(&'static str),
 }
 
 /// L'événement a-t-il été annulé par un écouteur ?
@@ -717,6 +721,7 @@ impl Server {
             mob_store: mob_store::MobStore::new(std::path::PathBuf::from("world").join("entities")),
             mob_chunks: HashSet::new(),
             knots: HashMap::new(),
+            spits: Vec::new(),
             mobs_dirty: false,
             ground: HashMap::new(),
             plugin_blocks: None,
@@ -2886,6 +2891,7 @@ impl Server {
                 Cause::Player(by) => ("ENTITY_ATTACK", Some(by.clone())),
                 Cause::Command => ("SUICIDE", None),
                 Cause::Plugin => ("CUSTOM", None),
+                Cause::Mob(_) => ("ENTITY_ATTACK", None),
             };
             let mut fields = vec![("entity", self.name_json(addr)), ("cause", Json::Str(label.into())), ("baseDamage", Json::Num(amount as f64))];
             if let Some(by) = damager {
@@ -2960,6 +2966,7 @@ impl Server {
                 format!("{} a été tué par {}", name, shown)
             }
             Cause::Command | Cause::Plugin => format!("{} est mort", name),
+            Cause::Mob(by) => format!("{} a été tué par {}", name, by),
         };
         // Écouteurs : message de mort, inventaire gardé
         let out = self.fire(
@@ -3852,6 +3859,12 @@ impl Server {
 
     /// Le joueur ouvre son inventaire : le serveur confirme l'ouverture de l'écran.
     fn on_open_inventory(&mut self, addr: &SocketAddr) {
+        // En selle sur une monture apprivoisée : c'est son inventaire qui s'ouvre
+        if let Some(mob) = self.clients.get(addr).and_then(|c| c.riding) {
+            if self.open_mob_inventory(addr, mob) {
+                return;
+            }
+        }
         let id = match self.clients.get_mut(addr) {
             Some(c) if c.protocol >= 2225 && c.inv.open_window == 0 => {
                 c.inv.open_window = 1;
@@ -3873,6 +3886,7 @@ impl Server {
         if let Some(c) = self.clients.get_mut(addr) {
             c.inv.open_window = 0;
             c.inv.block_pos = None;
+            c.inv.block_mob = None;
             c.inv.block.slots.clear();
             c.inv.block_is_furnace = false;
             let held = c.inv.cursor.slots[0];
@@ -3909,7 +3923,7 @@ impl Server {
                 // Le jeu a déjà appliqué sa demande de son côté : on lui renvoie l'état réel
                 self.send_inventory(addr);
                 if self.load_block_view(addr) {
-                    let view = self.clients.get(addr).filter(|c| c.inv.block_pos.is_some()).map(|c| c.inv.block.slots.clone());
+                    let view = self.clients.get(addr).filter(|c| c.inv.block_pos.is_some() || c.inv.block_mob.is_some()).map(|c| c.inv.block.slots.clone());
                     if let Some(slots) = view {
                         self.send_block_content(addr, &slots);
                     }
@@ -3974,7 +3988,7 @@ impl Server {
             if outcome.is_none() {
                 // Refus : on renvoie l'état exact pour que le jeu et le serveur restent d'accord
                 self.send_inventory(addr);
-                let view = self.clients.get(addr).filter(|c| c.inv.block_pos.is_some()).map(|c| c.inv.block.slots.clone());
+                let view = self.clients.get(addr).filter(|c| c.inv.block_pos.is_some() || c.inv.block_mob.is_some()).map(|c| c.inv.block.slots.clone());
                 if let Some(slots) = view {
                     self.send_block_content(addr, &slots);
                 }
@@ -4139,6 +4153,8 @@ impl Server {
                 let name = match (*target, work.block_is_furnace) {
                     // four : ingrédient, combustible, résultat
                     (Target::Block, true) => [25u8, 24, 26][(*slot).min(2)],
+                    // monture : selle et armure, puis le coffre
+                    (Target::Block, false) if work.block_mob.is_some() && *slot < 2 => 27,
                     _ => inventory::protocol_name(*target, *slot),
                 };
                 (name, *slot as u8, stack.count, stack.net_id)
@@ -4294,6 +4310,21 @@ impl Server {
     /// Recopie le contenu réel du bloc ouvert dans la vue du joueur. Faux si le bloc a
     /// disparu : l'écran est alors fermé.
     fn load_block_view(&mut self, addr: &SocketAddr) -> bool {
+        // Inventaire d'une monture : recopié depuis elle (fermé si elle a disparu)
+        if let Some(mob) = self.clients.get(addr).and_then(|c| c.inv.block_mob) {
+            return match self.mob_inventory_view(mob) {
+                Some(slots) => {
+                    if let Some(c) = self.clients.get_mut(addr) {
+                        c.inv.block.slots = slots;
+                    }
+                    true
+                }
+                None => {
+                    self.force_close(addr);
+                    false
+                }
+            };
+        }
         let pos = match self.clients.get(addr).and_then(|c| c.inv.block_pos) {
             Some(p) => p,
             None => return true,
@@ -4313,6 +4344,10 @@ impl Server {
 
     /// Recopie la vue du joueur dans le bloc, après une demande acceptée.
     fn store_block_view(&mut self, addr: &SocketAddr) {
+        if let Some((mob, slots)) = self.clients.get(addr).and_then(|c| c.inv.block_mob.map(|m| (m, c.inv.block.slots.clone()))) {
+            self.store_mob_inventory(addr, mob, &slots);
+            return;
+        }
         let (pos, slots) = match self.clients.get(addr) {
             Some(c) => match c.inv.block_pos {
                 Some(p) => (p, c.inv.block.slots.clone()),
@@ -4335,6 +4370,7 @@ impl Server {
             Some(c) if c.inv.open_window != 0 => {
                 let w = c.inv.open_window;
                 c.inv.block_pos = None;
+                c.inv.block_mob = None;
                 c.inv.block.slots.clear();
                 w
             }
@@ -5711,8 +5747,11 @@ impl Server {
                                 }
                             }
                         } else if u.action == 1 {
-                            // Clic dans le vide : un seau vide peut viser une source d'eau ou de lave
-                            self.bucket_in_air(&addr);
+                            // Clic dans le vide : un seau vide peut viser une source d'eau ou de lave ;
+                            // en selle sur un cochon, la carotte sur un bâton l'accélère
+                            if !self.boost_mount(&addr) {
+                                self.bucket_in_air(&addr);
+                            }
                         }
                     }
                 }
@@ -6687,6 +6726,9 @@ impl Server {
                     }
                     if !self.mobs.is_empty() {
                         self.move_mobs();
+                    }
+                    if !self.spits.is_empty() {
+                        self.move_spits();
                     }
                     if self.tick % 10 == 3 {
                         self.show_mobs();

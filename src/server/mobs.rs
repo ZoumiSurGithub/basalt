@@ -119,6 +119,8 @@ impl Species {
         match self {
             Species::Donkey | Species::Mule => (0.0, 2.175, -0.2),
             Species::Llama => (0.0, 2.37, -0.3),
+            // Siège du cochon : 0,63 dans le jeu
+            Species::Pig => (0.0, 1.83, 0.0),
             _ => (0.0, 2.3, -0.2),
         }
     }
@@ -304,6 +306,26 @@ pub(super) struct Mob {
     airborne: bool,
     /// Tenue en laisse
     pub leash: Option<Leash>,
+    /// Porte un coffre (âne, mule, lama)
+    chested: bool,
+    /// Ticks d'accélération restants (cochon piqué par la carotte sur un bâton)
+    boost: u32,
+    /// Chèvre : cornes restantes (une tombe quand elle fonce dans un bloc dur), attente avant
+    /// la prochaine charge, charge en cours (direction, ticks restants), saut en cours
+    horns: u8,
+    ram_cooldown: u32,
+    ram: Option<(f32, f32, u32)>,
+    leap: u32,
+    /// Lapin : plant de carottes visé
+    garden: Option<(i32, i32, i32)>,
+    /// Lama : celui qu'il suit en caravane ; joueur qui l'a frappé (il lui crache dessus)
+    caravan: Option<i64>,
+    angry: Option<(SocketAddr, u32)>,
+    /// Champimeuh brune qui a mangé une fleur : son prochain bol sera une soupe suspecte
+    stew: bool,
+    /// Inventaire d'une monture : 0 selle, 1 armure (cheval) ou tapis (lama), puis le coffre ;
+    /// chaque case : (nom de l'objet, quantité)
+    items: Vec<Option<(String, u8)>>,
 }
 
 impl Mob {
@@ -330,6 +352,9 @@ impl Mob {
         if self.leash.is_some() {
             f |= bedrock::FLAG_LEASHED;
         }
+        if self.chested {
+            f |= bedrock::FLAG_CHESTED;
+        }
         if self.saddled {
             f |= bedrock::FLAG_SADDLED;
             // Apprivoisée et sellée : son cavalier la dirige (saut chargé du cheval)
@@ -338,6 +363,30 @@ impl Mob {
             }
         }
         f
+    }
+    /// Taille de l'inventaire d'une monture : selle et armure, plus le coffre (15 cases pour
+    /// l'âne et la mule, 3 par point de force pour le lama)
+    fn inventory_size(&self) -> usize {
+        if !self.species.mount() {
+            return 0;
+        }
+        let chest = match (self.chested, self.species) {
+            (true, Species::Llama) => 3 * self.strength.max(1) as usize,
+            (true, _) => 15,
+            _ => 0,
+        };
+        2 + chest
+    }
+    /// L'inventaire à la bonne taille (coffre ajouté, ancienne monture)
+    fn fit_items(&mut self) {
+        let size = self.inventory_size();
+        if self.items.len() != size {
+            self.items.resize(size, None);
+        }
+    }
+    /// Armure ou tapis porté (case 1)
+    fn body_item(&self) -> Option<&str> {
+        self.items.get(1).and_then(|i| i.as_ref()).map(|(n, _)| n.as_str())
     }
     /// Vitesse du jeu de cette créature (le cheval a la sienne)
     fn movement(&self) -> f32 {
@@ -397,6 +446,11 @@ pub(super) struct MobRecord {
     pub temper: u32,
     /// Attachée à la barrière de ce bloc
     pub knot: Option<(i32, i32, i32)>,
+    pub chested: bool,
+    /// Cornes de la chèvre
+    pub horns: u8,
+    /// Inventaire d'une monture : (case, objet, quantité)
+    pub items: Vec<(u8, String, u8)>,
 }
 
 impl MobRecord {
@@ -425,6 +479,9 @@ impl MobRecord {
                 Some((x, y, z)) => Json::Arr(vec![Json::Num(x as f64), Json::Num(y as f64), Json::Num(z as f64)]),
                 None => Json::Null,
             }),
+            ("chested".into(), Json::Bool(self.chested)),
+            ("horns".into(), Json::Num(self.horns as f64)),
+            ("items".into(), Json::Arr(self.items.iter().map(|(slot, name, count)| Json::Arr(vec![Json::Num(*slot as f64), Json::Str(name.clone()), Json::Num(*count as f64)])).collect())),
         ])
     }
 
@@ -449,6 +506,18 @@ impl MobRecord {
                 [x, y, z] => Some((x.as_f64()? as i32, y.as_f64()? as i32, z.as_f64()? as i32)),
                 _ => None,
             }),
+            chested: v.get("chested").and_then(|s| s.as_bool()).unwrap_or(false),
+            horns: num("horns").unwrap_or(2.0).clamp(0.0, 2.0) as u8,
+            items: v
+                .get("items")
+                .and_then(|i| i.as_arr())
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|e| match e.as_arr()? {
+                    [slot, name, count] => Some((slot.as_f64()?.clamp(0.0, 64.0) as u8, name.as_str()?.to_string(), count.as_f64()?.clamp(1.0, 64.0) as u8)),
+                    _ => None,
+                })
+                .collect(),
             age: num("age").unwrap_or(0.0) as i64,
             color: num("color").unwrap_or(0.0) as u8 & 15,
             variant: num("variant").unwrap_or(0.0) as i32,
@@ -480,6 +549,9 @@ impl Mob {
                 Some(Leash::Knot(_, pos)) => Some(pos),
                 _ => None,
             },
+            chested: self.chested,
+            horns: self.horns,
+            items: self.items.iter().enumerate().filter_map(|(i, it)| it.as_ref().map(|(n, c)| (i as u8, n.clone(), *c))).collect(),
         }
     }
 }
@@ -742,6 +814,17 @@ impl Server {
             rearing: 0,
             airborne: false,
             leash: None,
+            chested: false,
+            boost: 0,
+            horns: 2,
+            ram_cooldown: 600 + self.mob_rng.below(5400),
+            ram: None,
+            leap: 0,
+            garden: None,
+            caravan: None,
+            angry: None,
+            stew: false,
+            items: Vec::new(),
         };
         self.mobs.insert(id, mob);
         self.mobs_dirty = true;
@@ -789,7 +872,15 @@ impl Server {
         let holder = self.holder_id(m);
         let packet = bedrock::set_actor_data(
             id,
-            &[(0, bedrock::Meta::Long(m.flags())), (bedrock::META_LEAD_HOLDER, bedrock::Meta::Long(holder)), (38, bedrock::Meta::Float(scale)), (53, bedrock::Meta::Float(w)), (54, bedrock::Meta::Float(h))],
+            &[
+                (0, bedrock::Meta::Long(m.flags())),
+                (2, bedrock::Meta::Int(m.variant)),
+                (3, bedrock::Meta::Byte(m.color)),
+                (bedrock::META_LEAD_HOLDER, bedrock::Meta::Long(holder)),
+                (38, bedrock::Meta::Float(scale)),
+                (53, bedrock::Meta::Float(w)),
+                (54, bedrock::Meta::Float(h)),
+            ],
         );
         self.send_to_viewers(id, bedrock::ID_SET_ACTOR_DATA, &packet);
         self.mobs_dirty = true;
@@ -800,6 +891,8 @@ impl Server {
         let mut out: Vec<(SocketAddr, u32, Vec<u8>)> = Vec::new();
         let ids: HashMap<SocketAddr, i64> = self.clients.iter().map(|(a, c)| (*a, c.id)).collect();
         let refused_attributes = self.refused_extras.contains(&bedrock::ID_UPDATE_ATTRIBUTES);
+        // Identifiants des armures et tapis portés
+        let item_ids: HashMap<String, i16> = self.mobs.values().filter_map(|m| m.body_item()).filter_map(|n| self.item_id(n).map(|id| (n.to_string(), id))).collect();
         let holder_of = |m: &Mob| match m.leash {
             Some(Leash::Player(a)) => ids.get(&a).copied().unwrap_or(-1),
             Some(Leash::Knot(k, _)) => k,
@@ -834,6 +927,10 @@ impl Server {
                         // Monture : sa vitesse et son saut (le jeu du cavalier s'en sert)
                         if m.species.mount() && !refused_attributes {
                             out.push((*addr, bedrock::ID_UPDATE_ATTRIBUTES, bedrock::mount_attributes(m.id, m.movement(), m.jump)));
+                        }
+                        // Armure du cheval, tapis du lama
+                        if let Some(body) = m.body_item().and_then(|n| item_ids.get(n)) {
+                            out.push((*addr, bedrock::ID_MOB_ARMOR_EQUIPMENT, bedrock::mob_armor(m.id, Some((*body, 1)))));
                         }
                     }
                 } else if (far > (VIEW + 16.0) * (VIEW + 16.0) || !has_chunk) && c.mobs_seen.remove(&m.id) {
@@ -921,7 +1018,7 @@ impl Server {
                     self.mob_changed(id);
                 }
             }
-            if m.rider.is_some() {
+            if let Some(rider) = m.rider {
                 // En selle : la monture suit son cavalier (ou attend le dressage)
                 let had_love = m.love > 0;
                 self.mob_age(&mut m);
@@ -929,6 +1026,50 @@ impl Server {
                     m.tame_in -= 1;
                     m.tame_in == 0
                 };
+                // Le serveur la déplace lui-même : cochon dirigé par la carotte sur un bâton,
+                // monture sauvage qui gambade avant d'accepter son cavalier (ou de le jeter)
+                let (rider_yaw, held) = self.clients.get(&rider).map(|c| (c.yaw, self.held_name(c))).unwrap_or((0.0, String::new()));
+                let moves = if m.species == Species::Pig && m.saddled {
+                    if held == "carrot_on_a_stick" {
+                        m.yaw = rider_yaw.rem_euclid(360.0);
+                        let (dx, dz) = (-m.yaw.to_radians().sin(), m.yaw.to_radians().cos());
+                        let speed = if m.boost > 0 { 0.23 } else { 0.115 };
+                        m.boost = m.boost.saturating_sub(1);
+                        m.vel.0 = dx * speed;
+                        m.vel.2 = dz * speed;
+                    } else {
+                        m.vel.0 = 0.0;
+                        m.vel.2 = 0.0;
+                    }
+                    true
+                } else if m.species.mount() && !m.tamed {
+                    if m.target.is_none() || self.mob_rng.below(15) == 0 {
+                        let a = self.mob_rng.unit() as f32 * std::f32::consts::TAU;
+                        m.target = Some((m.pos.0 + a.cos() * 5.0, m.pos.2 + a.sin() * 5.0));
+                    }
+                    if let Some((tx, tz)) = m.target {
+                        let (dx, dz) = (tx - m.pos.0, tz - m.pos.2);
+                        let d = (dx * dx + dz * dz).sqrt().max(0.01);
+                        let speed = ground_speed(m.movement() * 1.2);
+                        m.vel.0 = dx / d * speed;
+                        m.vel.2 = dz / d * speed;
+                        m.yaw = (-dx).atan2(dz).to_degrees().rem_euclid(360.0);
+                    }
+                    true
+                } else {
+                    false
+                };
+                if moves && self.world.is_ready((m.pos.0.floor() as i32) >> 4, (m.pos.2.floor() as i32) >> 4) {
+                    self.mob_physics(&mut m);
+                    let moved = (m.pos.0 - m.sent.0).abs() + (m.pos.1 - m.sent.1).abs() + (m.pos.2 - m.sent.2).abs() > 0.01 || (m.yaw - m.sent_yaw).abs() > 3.0;
+                    if moved {
+                        m.sent = m.pos;
+                        m.sent_yaw = m.yaw;
+                        let packet = bedrock::move_actor_absolute(m.id, m.pos, 0.0, m.yaw, m.yaw, m.on_ground);
+                        self.send_to_viewers(m.id, bedrock::ID_MOVE_ACTOR_ABSOLUTE, &packet);
+                        self.mobs_dirty = true;
+                    }
+                }
                 let love = m.love;
                 self.mobs.insert(id, m);
                 if had_love && love == 0 {
@@ -961,7 +1102,15 @@ impl Server {
             let had_love = m.love > 0;
             let grew = self.mob_age(&mut m);
             self.mob_think(&mut m, &players, leash_to);
+            let before = m.pos;
             self.mob_physics(&mut m);
+            // Chèvre arrêtée net par un bloc en pleine charge : une corne peut tomber
+            if let Some((dx, dz, _)) = m.ram {
+                if (m.pos.0 - before.0).abs() + (m.pos.2 - before.2).abs() < 0.01 {
+                    m.ram = None;
+                    self.goat_impact(&mut m, dx, dz);
+                }
+            }
             let moved = (m.pos.0 - m.sent.0).abs() + (m.pos.1 - m.sent.1).abs() + (m.pos.2 - m.sent.2).abs() > 0.01 || (m.yaw - m.sent_yaw).abs() > 3.0;
             if moved {
                 m.sent = m.pos;
@@ -1006,6 +1155,35 @@ impl Server {
     fn mob_habits(&mut self, id: i64) {
         let Some(m) = self.mobs.get_mut(&id) else { return };
         match m.species {
+            // Lapin : cherche de temps en temps des carottes plantées (16 blocs autour), et
+            // grignote le plant arrivé dessus (il perd un stade, ou disparaît)
+            Species::Rabbit if !m.baby() => {
+                let (pos, garden, idle) = (m.pos, m.garden, m.target.is_none() && m.panic == 0);
+                match garden {
+                    Some(g) => {
+                        let carrots = self.world.is_ready(g.0 >> 4, g.2 >> 4) && self.block_name_of(self.world.get(g.0, g.1, g.2)).as_deref() == Some("minecraft:carrots");
+                        if !carrots {
+                            if let Some(m) = self.mobs.get_mut(&id) {
+                                m.garden = None;
+                            }
+                        } else if (pos.0 - g.0 as f32 - 0.5).powi(2) + (pos.2 - g.2 as f32 - 0.5).powi(2) < 0.8 && (pos.1 - g.1 as f32).abs() < 1.5 {
+                            self.nibble_carrots(g);
+                            if let Some(m) = self.mobs.get_mut(&id) {
+                                m.garden = None;
+                                m.target = None;
+                            }
+                        }
+                    }
+                    None if idle && self.mob_rng.below(400) == 0 => {
+                        if let Some(g) = self.find_carrots(pos) {
+                            if let Some(m) = self.mobs.get_mut(&id) {
+                                m.garden = Some(g);
+                            }
+                        }
+                    }
+                    None => {}
+                }
+            }
             Species::Chicken if !m.baby() => {
                 m.egg = m.egg.saturating_sub(1);
                 if m.egg == 0 {
@@ -1065,7 +1243,42 @@ impl Server {
             m.vel.2 *= 0.7;
             return;
         }
-        // Vitesses du jeu : vitesse propre × multiplicateur du comportement en cours
+        // Chèvre en plein bond : elle garde son élan
+        if m.leap > 0 {
+            m.leap -= 1;
+            return;
+        }
+        // Chèvre qui charge, tête baissée, en ligne droite
+        if let Some((dx, dz, left)) = m.ram {
+            m.vel.0 = dx * 0.4;
+            m.vel.2 = dz * 0.4;
+            m.yaw = (-dx).atan2(dz).to_degrees().rem_euclid(360.0);
+            m.target = None;
+            m.ram = (left > 0).then_some((dx, dz, left.saturating_sub(1)));
+            // Un joueur sur sa route : renversé
+            let hit = self
+                .clients
+                .iter()
+                .filter(|(_, c)| c.joined && c.dead.is_none() && c.mode.takes_damage())
+                .find(|(_, c)| (c.pos.0 - m.pos.0).powi(2) + (c.pos.2 - m.pos.2).powi(2) < 1.4 * 1.4 && (c.pos.1 - EYE - m.pos.1).abs() < 1.5)
+                .map(|(a, c)| (*a, c.id));
+            if let Some((a, pid)) = hit {
+                m.ram = None;
+                m.vel.0 = 0.0;
+                m.vel.2 = 0.0;
+                self.hurt(&a, if m.baby() { 1.0 } else { 2.0 }, Cause::Mob("une chèvre"));
+                if !self.refused_extras.contains(&bedrock::ID_SET_ACTOR_MOTION) {
+                    self.send(&a, bedrock::ID_SET_ACTOR_MOTION, &bedrock::set_actor_motion(pid, (dx * 1.2, 0.5, dz * 1.2)));
+                }
+            }
+            return;
+        }
+        if m.species == Species::Goat {
+            m.ram_cooldown = m.ram_cooldown.saturating_sub(1);
+        }
+        if m.species == Species::Llama {
+            m.caravan = None;
+        }
         let (stroll, panic, tempt, follow) = m.species.multipliers();
         let attr = m.movement();
         let mut speed = ground_speed(attr * stroll);
@@ -1117,6 +1330,56 @@ impl Server {
             m.target = Some(parent);
             stop_at = 2.5;
             speed = ground_speed(attr * follow);
+        } else if let Some((a, left)) = m.angry {
+            // Lama en colère : il fait face à celui qui l'a frappé et lui crache dessus
+            m.angry = (left > 1).then_some((a, left - 1));
+            m.target = None;
+            if let Some(p) = self.clients.get(&a).filter(|c| c.dead.is_none()).map(|c| c.pos) {
+                m.yaw = (-(p.0 - m.pos.0)).atan2(p.2 - m.pos.2).to_degrees().rem_euclid(360.0);
+                let d2 = (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2);
+                if d2 < 10.0 * 10.0 && left % 40 == 0 {
+                    self.spit(m, a);
+                }
+            }
+        } else if m.species == Species::Goat && m.ram_cooldown == 0 && !m.baby() {
+            // Chèvre : de temps en temps, elle fonce sur un joueur à 4 à 7 blocs
+            let target = self
+                .clients
+                .values()
+                .filter(|c| c.joined && c.dead.is_none() && c.mode.takes_damage())
+                .map(|c| c.pos)
+                .find(|p| {
+                    let d2 = (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2);
+                    (16.0..49.0).contains(&d2) && (p.1 - EYE - m.pos.1).abs() < 2.0
+                });
+            // Hurleuse : bien plus souvent
+            m.ram_cooldown = if m.variant == 1 { 100 + self.mob_rng.below(200) } else { 600 + self.mob_rng.below(5400) };
+            if let Some(p) = target {
+                let (dx, dz) = (p.0 - m.pos.0, p.2 - m.pos.2);
+                let d = (dx * dx + dz * dz).sqrt().max(0.1);
+                m.ram = Some((dx / d, dz / d, 30));
+            }
+        } else if let Some(leader) = (m.species == Species::Llama && m.leash.is_none()).then(|| self.caravan_leader(m)).flatten() {
+            // Lama : suit en file celui de devant (caravane derrière un lama tenu en laisse)
+            m.caravan = Some(leader.0);
+            m.target = Some((leader.1, leader.2));
+            stop_at = 2.5;
+            speed = ground_speed(attr * 2.1);
+        } else if let Some(g) = m.garden {
+            // Lapin : va grignoter un plant de carottes
+            m.target = Some((g.0 as f32 + 0.5, g.2 as f32 + 0.5));
+            stop_at = 0.6;
+            speed = ground_speed(attr);
+        } else if m.species == Species::Goat && m.target.is_none() && m.on_ground && self.mob_rng.below(600) == 0 {
+            // Chèvre : bondit sur un bloc plus haut ou plus bas
+            if let Some((dx, dy, dz)) = self.leap_spot(m) {
+                const T: f32 = 12.0;
+                m.vel = (dx / T, (dy + 0.5 * 0.08 * T * T) / T, dz / T);
+                m.yaw = (-dx).atan2(dz).to_degrees().rem_euclid(360.0);
+                m.on_ground = false;
+                m.leap = T as u32;
+                return;
+            }
         } else if m.target.is_none() && self.mob_rng.below(120) == 0 {
             // Promenade, en évitant l'eau
             let a = self.mob_rng.unit() as f32 * std::f32::consts::TAU;
@@ -1155,6 +1418,164 @@ impl Server {
                 m.vel.2 = 0.0;
             }
         }
+    }
+
+    /// Nom du bloc de cet état.
+    fn block_name_of(&self, state: u32) -> Option<String> {
+        self.data.as_ref().and_then(|d| d.block_name(state)).map(|n| n.to_string())
+    }
+
+    /// Un plant de carottes à moins de 16 blocs (même hauteur à un bloc près).
+    fn find_carrots(&self, pos: (f32, f32, f32)) -> Option<(i32, i32, i32)> {
+        let (x0, y0, z0) = (pos.0.floor() as i32, pos.1.floor() as i32, pos.2.floor() as i32);
+        let mut best: Option<((i32, i32, i32), i32)> = None;
+        for dx in -16..=16 {
+            for dz in -16..=16 {
+                let (x, z) = (x0 + dx, z0 + dz);
+                if !self.world.is_ready(x >> 4, z >> 4) {
+                    continue;
+                }
+                for dy in -1..=1 {
+                    let y = y0 + dy;
+                    if self.block_name_of(self.world.get(x, y, z)).as_deref() == Some("minecraft:carrots") {
+                        let d = dx * dx + dz * dz;
+                        if best.map(|b| d < b.1).unwrap_or(true) {
+                            best = Some(((x, y, z), d));
+                        }
+                    }
+                }
+            }
+        }
+        best.map(|b| b.0)
+    }
+
+    /// Le lapin grignote un plant de carottes : il perd un stade de croissance, ou disparaît.
+    fn nibble_carrots(&mut self, g: (i32, i32, i32)) {
+        let state = self.world.get(g.0, g.1, g.2);
+        let next = match self.data.as_ref().and_then(|d| d.prop(state, "growth")) {
+            Some(crate::data::Prop::Int(n)) if n > 0 => self.data.as_ref().and_then(|d| d.with_props(state, &[("growth", crate::data::Prop::Int(n - 1))])),
+            _ => Some(self.world.air),
+        };
+        if let Some(next) = next {
+            self.world.set(g.0, g.1, g.2, next);
+            self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(g.0, g.1, g.2, next), None);
+        }
+    }
+
+    /// Chèvre qui a foncé dans un bloc : sur du bois, de la pierre, un minerai ou de la glace
+    /// compacte, une de ses cornes tombe (deux au plus).
+    fn goat_impact(&mut self, m: &mut Mob, dx: f32, dz: f32) {
+        let (x, y, z) = ((m.pos.0 + dx * 0.9).floor() as i32, m.pos.1.floor() as i32, (m.pos.2 + dz * 0.9).floor() as i32);
+        let hard = [y, y + 1].iter().any(|&yy| {
+            self.block_name_of(self.world.get(x, yy, z))
+                .map(|n| n.ends_with("_log") || n.ends_with("_ore") || n == "minecraft:stone" || n == "minecraft:packed_ice" || n.ends_with("_stem"))
+                .unwrap_or(false)
+        });
+        if hard && m.horns > 0 && !m.baby() {
+            m.horns -= 1;
+            if let Some(horn) = self.item_id("goat_horn") {
+                self.drop_item((m.pos.0, m.pos.1 + 0.8, m.pos.2), (-dx * 0.2, 0.25, -dz * 0.2), horn, 1, 10);
+            }
+            self.mobs_dirty = true;
+        }
+    }
+
+    /// Lama : celui qu'il peut suivre en caravane (à moins de 8 blocs, tenu en laisse ou déjà
+    /// dans une file, sans boucle, 10 lamas au plus, un seul suiveur chacun).
+    fn caravan_leader(&self, m: &Mob) -> Option<(i64, f32, f32)> {
+        let depth = |mut id: i64| -> Option<usize> {
+            for n in 0..10 {
+                let o = self.mobs.get(&id)?;
+                if o.id == m.id {
+                    return None; // boucle
+                }
+                if matches!(o.leash, Some(Leash::Player(_))) {
+                    return Some(n);
+                }
+                id = o.caravan?;
+            }
+            None
+        };
+        self.mobs
+            .values()
+            .filter(|o| o.id != m.id && o.species == Species::Llama && o.dead.is_none())
+            .filter(|o| (o.pos.0 - m.pos.0).powi(2) + (o.pos.2 - m.pos.2).powi(2) < 64.0)
+            .filter(|o| !self.mobs.values().any(|f| f.id != m.id && f.caravan == Some(o.id)))
+            .filter(|o| depth(o.id).map(|d| d < 9).unwrap_or(false))
+            .min_by(|a, b| {
+                let d = |o: &Mob| (o.pos.0 - m.pos.0).powi(2) + (o.pos.2 - m.pos.2).powi(2);
+                // Celui qu'il suivait déjà d'abord
+                (Some(a.id) != m.caravan).cmp(&(Some(b.id) != m.caravan)).then(d(a).total_cmp(&d(b)))
+            })
+            .map(|o| (o.id, o.pos.0, o.pos.2))
+    }
+
+    /// Chèvre : un bloc où bondir, plus haut ou plus bas d'1 à 3 blocs, à 2 à 4 blocs de là
+    /// (écart par rapport à sa position).
+    fn leap_spot(&mut self, m: &Mob) -> Option<(f32, f32, f32)> {
+        for _ in 0..6 {
+            let (dx, dz) = (self.mob_rng.below(9) as i32 - 4, self.mob_rng.below(9) as i32 - 4);
+            if dx.abs().max(dz.abs()) < 2 {
+                continue;
+            }
+            let (x, z) = (m.pos.0.floor() as i32 + dx, m.pos.2.floor() as i32 + dz);
+            let base = m.pos.1.floor() as i32;
+            for dy in [3, 2, 1, -1, -2] {
+                let y = base + dy;
+                if !self.mob_free(x, y - 1, z) && self.mob_free(x, y, z) && self.mob_free(x, y + 1, z) && !self.mob_water(x as f32 + 0.5, y as f32 + 0.2, z as f32 + 0.5) {
+                    return Some((x as f32 + 0.5 - m.pos.0, y as f32 - m.pos.1, z as f32 + 0.5 - m.pos.2));
+                }
+            }
+        }
+        None
+    }
+
+    /// Le lama crache sur ce joueur : un crachat part de sa bouche, droit sur lui.
+    fn spit(&mut self, m: &Mob, at: SocketAddr) {
+        let Some(target) = self.clients.get(&at).map(|c| (c.pos.0, c.pos.1 - 0.6, c.pos.2)) else { return };
+        let from = (m.pos.0, m.pos.1 + 1.6, m.pos.2);
+        let (dx, dy, dz) = (target.0 - from.0, target.1 - from.1, target.2 - from.2);
+        let d = (dx * dx + dy * dy + dz * dz).sqrt().max(0.1);
+        let vel = (dx / d * 1.2, dy / d * 1.2, dz / d * 1.2);
+        let id = self.next_id;
+        self.next_id += 1;
+        let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.joined && (c.pos.0 - from.0).powi(2) + (c.pos.2 - from.2).powi(2) < 64.0 * 64.0).map(|(a, _)| *a).collect();
+        let meta = bedrock::mob_metadata(0.25, 0.25, 0, 0, 0);
+        let packet = bedrock::add_actor(id, "minecraft:llama_spit", from, vel, m.yaw, (1.0, 1.0), None, None, &meta);
+        for v in &viewers {
+            self.send(v, bedrock::ID_ADD_ACTOR, &packet);
+        }
+        self.mob_sound(m.id, bedrock::SOUND_SPIT, None);
+        self.spits.push(Spit { id, pos: from, vel, ttl: 30, target: at, viewers });
+    }
+
+    /// Les crachats en vol avancent ; celui qui touche son joueur lui retire un demi-cœur.
+    pub(super) fn move_spits(&mut self) {
+        let mut spits = std::mem::take(&mut self.spits);
+        spits.retain_mut(|s| {
+            s.pos = (s.pos.0 + s.vel.0, s.pos.1 + s.vel.1, s.pos.2 + s.vel.2);
+            s.ttl = s.ttl.saturating_sub(1);
+            let hit = self.clients.get(&s.target).filter(|c| c.dead.is_none()).map(|c| (c.pos.0 - s.pos.0).powi(2) + (c.pos.1 - 0.8 - s.pos.1).powi(2) + (c.pos.2 - s.pos.2).powi(2) < 1.2 * 1.2).unwrap_or(false);
+            let wall = !self.mob_free(s.pos.0.floor() as i32, s.pos.1.floor() as i32, s.pos.2.floor() as i32);
+            if hit {
+                let takes = self.clients.get(&s.target).map(|c| c.mode.takes_damage()).unwrap_or(false);
+                if takes {
+                    self.hurt(&s.target, 1.0, Cause::Mob("un lama"));
+                }
+            }
+            if hit || wall || s.ttl == 0 {
+                for v in &s.viewers {
+                    self.send(v, bedrock::ID_REMOVE_ACTOR, &bedrock::remove_actor(s.id));
+                }
+                return false;
+            }
+            let packet = bedrock::move_actor_absolute(s.id, s.pos, 0.0, 0.0, 0.0, false);
+            for v in &s.viewers {
+                self.send(v, bedrock::ID_MOVE_ACTOR_ABSOLUTE, &packet);
+            }
+            true
+        });
+        self.spits.append(&mut spits);
     }
 
     /// Petit : position d'un adulte de son espèce entre 3 et 8 blocs (il le rejoint).
@@ -1368,6 +1789,17 @@ impl Server {
         if dead {
             m.dead = Some(tick);
         }
+        // Lama frappé : il crache sur le joueur le plus proche du coup, une dizaine de secondes
+        if m.species == Species::Llama && !dead {
+            let attacker = self.clients.iter().filter(|(_, c)| c.joined).min_by(|a, b| {
+                let d = |c: &Client| (c.pos.0 - from.0).powi(2) + (c.pos.2 - from.2).powi(2);
+                d(a.1).total_cmp(&d(b.1))
+            });
+            if let (Some((a, _)), Some(m)) = (attacker.map(|(a, c)| (*a, c.id)), self.mobs.get_mut(&id)) {
+                m.angry = Some((a, 200));
+                m.panic = 0;
+            }
+        }
         self.mobs_dirty = true;
         self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_HURT, 0));
         if dead {
@@ -1388,15 +1820,19 @@ impl Server {
         if m.dead.is_some() {
             return true;
         }
-        let (held, creative, near, riding) = match self.clients.get(addr) {
+        let (held, creative, near, riding, sneaking) = match self.clients.get(addr) {
             Some(c) => {
                 let h = c.inv.held();
                 let name = if h.is_empty() { String::new() } else { self.data.as_ref().and_then(|d| d.item_by_id(h.id)).map(|d| d.name.trim_start_matches("minecraft:").to_string()).unwrap_or_default() };
                 let near = (c.pos.0 - m.pos.0).powi(2) + (c.pos.2 - m.pos.2).powi(2) < 8.0 * 8.0;
-                (name, c.mode == GameMode::Creative, near, c.riding.is_some())
+                (name, c.mode == GameMode::Creative, near, c.riding.is_some(), c.sneaking)
             }
             None => return true,
         };
+        // Accroupi devant une monture apprivoisée : son inventaire (selle, armure, coffre)
+        if sneaking && !riding && m.species.mount() && m.tamed && !m.baby() && self.open_mob_inventory(addr, id) {
+            return true;
+        }
         if !near {
             return true;
         }
@@ -1469,17 +1905,67 @@ impl Server {
             self.mob_sound(id, bedrock::SOUND_MILK, None);
             swap(self, "milk_bucket");
         } else if held == "bowl" && m.species == Species::Mooshroom && !m.baby() {
-            // Champimeuh : un bol devient une soupe de champignons
+            // Champimeuh : un bol devient une soupe de champignons (suspecte si la brune a mangé
+            // une fleur)
             self.mob_sound(id, bedrock::SOUND_MILK, None);
-            swap(self, "mushroom_stew");
-        } else if held == "saddle" && m.tamed && !m.saddled && m.species.steerable() && !m.baby() {
-            // Selle posée : son cavalier pourra la diriger
+            if m.stew {
+                if let Some(s) = self.mobs.get_mut(&id) {
+                    s.stew = false;
+                }
+                swap(self, "suspicious_stew");
+            } else {
+                swap(self, "mushroom_stew");
+            }
+        } else if m.species == Species::Mooshroom && m.variant == 1 && !m.stew && !m.baby() && FLOWERS.contains(&held.as_str()) {
+            // Champimeuh brune : elle mange la fleur
+            if let Some(s) = self.mobs.get_mut(&id) {
+                s.stew = true;
+            }
+            used = true;
+        } else if held == "saddle" && !m.saddled && !m.baby() && ((m.tamed && m.species.steerable()) || m.species == Species::Pig) {
+            // Selle posée : son cavalier pourra la diriger (le cochon, avec une carotte sur un bâton)
             if let Some(s) = self.mobs.get_mut(&id) {
                 s.saddled = true;
+                s.fit_items();
+                if let Some(cell) = s.items.first_mut() {
+                    *cell = Some(("saddle".into(), 1));
+                }
             }
             self.mob_sound(id, bedrock::SOUND_SADDLE, None);
             changed = true;
             used = true;
+        } else if held == "chest" && m.tamed && !m.chested && !m.baby() && matches!(m.species, Species::Donkey | Species::Mule | Species::Llama) {
+            // Un coffre sur le dos : de quoi transporter des objets
+            if let Some(s) = self.mobs.get_mut(&id) {
+                s.chested = true;
+                s.fit_items();
+            }
+            self.mob_sound(id, bedrock::SOUND_ARMOR, None);
+            changed = true;
+            used = true;
+        } else if m.tamed && !m.baby() && m.body_item().is_none() && ((m.species == Species::Horse && held.ends_with("_horse_armor")) || (m.species == Species::Llama && held.ends_with("_carpet"))) {
+            // Armure du cheval, tapis du lama
+            if let Some(s) = self.mobs.get_mut(&id) {
+                s.fit_items();
+                if let Some(cell) = s.items.get_mut(1) {
+                    *cell = Some((held.clone(), 1));
+                }
+            }
+            if let Some(item) = self.item_id(&held) {
+                self.send_to_viewers(id, bedrock::ID_MOB_ARMOR_EQUIPMENT, &bedrock::mob_armor(id, Some((item, 1))));
+            }
+            self.mob_sound(id, bedrock::SOUND_ARMOR, None);
+            self.mobs_dirty = true;
+            used = true;
+        } else if let (Species::Sheep, Some(color)) = (m.species, dye_color(&held)) {
+            // Teinture : la laine prend sa couleur
+            if color != m.color {
+                if let Some(s) = self.mobs.get_mut(&id) {
+                    s.color = color;
+                }
+                changed = true;
+                used = true;
+            }
         } else if breeds && !m.baby() && m.age == 0 && m.love == 0 {
             // Prête à avoir un petit (une monture blessée est soignée en même temps)
             if let Some(s) = self.mobs.get_mut(&id) {
@@ -1509,12 +1995,13 @@ impl Server {
             self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_LOVE_PARTICLES, 0));
             changed = true;
             used = true;
-        } else if m.species.mount() && !m.baby() && m.rider.is_none() && !riding && !m.species.breed_items().contains(&held.as_str()) {
+        } else if (m.species.mount() || (m.species == Species::Pig && m.saddled)) && !m.baby() && m.rider.is_none() && !riding && !m.species.breed_items().contains(&held.as_str()) {
             // Main vide (ou un objet sans usage ici) : en selle
             self.mount_mob(addr, id);
         }
         // Un repas donné : elle mange
-        if used && held != "saddle" {
+        let food = grow.is_some() || heal.is_some() || breeds || temper.is_some() || FLOWERS.contains(&held.as_str());
+        if used && food {
             self.mob_sound(id, bedrock::SOUND_EAT, None);
         }
         if used && !creative {
@@ -1568,6 +2055,139 @@ impl Server {
             }
         }
         Ok(())
+    }
+
+    /// Nom (sans « minecraft: ») de l'objet tenu en main par ce joueur.
+    pub(super) fn held_name(&self, c: &Client) -> String {
+        let h = c.inv.held();
+        if h.is_empty() {
+            return String::new();
+        }
+        self.data.as_ref().and_then(|d| d.item_by_id(h.id)).map(|d| d.name.trim_start_matches("minecraft:").to_string()).unwrap_or_default()
+    }
+
+    /// Clic dans le vide : sur un cochon sellé, la carotte sur un bâton le fait accélérer
+    /// (le double de sa vitesse pendant 3 secondes, comme dans le jeu). Vrai si c'est le cas.
+    pub(super) fn boost_mount(&mut self, addr: &SocketAddr) -> bool {
+        let Some(c) = self.clients.get(addr) else { return false };
+        let Some(id) = c.riding else { return false };
+        if self.held_name(c) != "carrot_on_a_stick" {
+            return false;
+        }
+        match self.mobs.get_mut(&id) {
+            Some(m) if m.species == Species::Pig && m.saddled && m.boost == 0 => {
+                m.boost = 60;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Ouvre l'inventaire d'une monture apprivoisée (selle, armure ou tapis, coffre). Faux
+    /// si ce n'est pas possible (sauvage, petit, un autre écran ouvert).
+    pub(super) fn open_mob_inventory(&mut self, addr: &SocketAddr, id: i64) -> bool {
+        match self.mobs.get(&id) {
+            Some(m) if m.species.mount() && m.tamed && !m.baby() && m.dead.is_none() => {}
+            _ => return false,
+        }
+        if self.clients.get(addr).map(|c| c.inv.open_window != 0).unwrap_or(true) {
+            return false;
+        }
+        // Un seul joueur à la fois dans un même inventaire
+        if self.clients.values().any(|c| c.inv.block_mob == Some(id)) {
+            return false;
+        }
+        let Some(slots) = self.mob_inventory_view(id) else { return false };
+        const WINDOW: u8 = 2;
+        if let Some(c) = self.clients.get_mut(addr) {
+            c.inv.open_window = WINDOW;
+            c.inv.block_mob = Some(id);
+            c.inv.block_is_furnace = false;
+            c.inv.block.slots = slots.clone();
+        }
+        self.send(addr, bedrock::ID_CONTAINER_OPEN, &bedrock::container_open_entity(WINDOW, bedrock::SCREEN_HORSE, id));
+        self.send_block_content(addr, &slots);
+        true
+    }
+
+    /// L'inventaire d'une monture, en piles d'objets (numérotées pour le jeu).
+    pub(super) fn mob_inventory_view(&mut self, id: i64) -> Option<Vec<inventory::ItemStack>> {
+        let m = self.mobs.get_mut(&id).filter(|m| m.dead.is_none())?;
+        m.fit_items();
+        let items = m.items.clone();
+        let mut slots = Vec::with_capacity(items.len());
+        for cell in items {
+            let stack = match cell.and_then(|(name, count)| self.item_id(&name).map(|i| (i, count))) {
+                Some((item, count)) => {
+                    self.tile_net_id = if self.tile_net_id >= i32::MAX - 1 { 1_000_000_000 } else { self.tile_net_id + 1 };
+                    inventory::ItemStack::new(item, count, self.tile_net_id)
+                }
+                None => inventory::ItemStack::EMPTY,
+            };
+            slots.push(stack);
+        }
+        Some(slots)
+    }
+
+    /// Reprend l'inventaire d'une monture après une demande du jeu. Selle et armure ne
+    /// prennent que ce qui leur va : le reste retourne dans le sac du joueur.
+    pub(super) fn store_mob_inventory(&mut self, addr: &SocketAddr, id: i64, slots: &[inventory::ItemStack]) {
+        let names: Vec<Option<(String, u8)>> = slots
+            .iter()
+            .map(|s| if s.is_empty() { None } else { self.data.as_ref().and_then(|d| d.item_by_id(s.id)).map(|d| (d.name.trim_start_matches("minecraft:").to_string(), s.count)) })
+            .collect();
+        let Some(m) = self.mobs.get_mut(&id) else { return };
+        let (species, before_body, before_saddle) = (m.species, m.body_item().map(|s| s.to_string()), m.saddled);
+        let mut refused: Vec<(String, u8)> = Vec::new();
+        let mut items = names;
+        items.resize(m.inventory_size(), None);
+        let fits = |slot: usize, name: &str| match slot {
+            0 => name == "saddle" && species.steerable(),
+            1 => match species {
+                Species::Horse => name.ends_with("_horse_armor"),
+                Species::Llama => name.ends_with("_carpet"),
+                _ => false,
+            },
+            _ => true,
+        };
+        for (slot, cell) in items.iter_mut().enumerate() {
+            if let Some((name, count)) = cell.clone() {
+                if !fits(slot, &name) || (slot < 2 && count > 1) {
+                    refused.push((name, count));
+                    *cell = None;
+                }
+            }
+        }
+        m.items = items;
+        m.saddled = m.items.first().map(|i| i.is_some()).unwrap_or(false);
+        let after_body = m.body_item().map(|s| s.to_string());
+        let after_saddle = m.saddled;
+        self.mobs_dirty = true;
+        if before_body != after_body {
+            let body = after_body.as_deref().and_then(|n| self.item_id(n)).map(|i| (i, 1));
+            self.send_to_viewers(id, bedrock::ID_MOB_ARMOR_EQUIPMENT, &bedrock::mob_armor(id, body));
+            self.mob_sound(id, bedrock::SOUND_ARMOR, None);
+        }
+        if before_saddle != after_saddle {
+            if after_saddle {
+                self.mob_sound(id, bedrock::SOUND_SADDLE, None);
+            }
+            self.mob_changed(id);
+        }
+        if !refused.is_empty() {
+            for (name, count) in refused {
+                if let Some(item) = self.item_id(&name) {
+                    self.add_item(addr, item, count as u16);
+                }
+            }
+            if let Some(view) = self.mob_inventory_view(id) {
+                if let Some(c) = self.clients.get_mut(addr) {
+                    c.inv.block.slots = view.clone();
+                }
+                self.send_block_content(addr, &view);
+            }
+            self.send_inventory(addr);
+        }
     }
 
     /// Une barrière (pas un portillon) : on peut y attacher une laisse.
@@ -1691,7 +2311,8 @@ impl Server {
         m.ride_offset = None;
         m.target = None;
         m.vel = (0.0, 0.0, 0.0);
-        let (seat, wild) = (m.species.seat(), !m.tamed);
+        // (le cochon sellé n'a pas à être apprivoisé)
+        let (seat, wild) = (m.species.seat(), !m.tamed && m.species.mount());
         if wild {
             // Quelques secondes avant de décider : apprivoisée ou jeté à terre
             m.tame_in = 40 + self.mob_rng.below(60);
@@ -1916,9 +2537,18 @@ impl Server {
     /// Butin d'une créature morte, lâché sur place (rien pour un petit).
     fn mob_loot(&mut self, id: i64) {
         let Some(m) = self.mobs.get(&id).cloned() else { return };
-        if m.saddled {
-            if let Some(saddle) = self.item_id("saddle") {
-                self.drop_item((m.pos.0, m.pos.1 + 0.5, m.pos.2), (0.0, 0.2, 0.0), saddle, 1, 10);
+        // Ce qu'elle portait : selle, armure ou tapis, coffre et son contenu
+        let mut worn: Vec<(String, u8)> = m.items.iter().flatten().cloned().collect();
+        if m.saddled && !m.species.mount() {
+            worn.push(("saddle".into(), 1));
+        }
+        if m.chested {
+            worn.push(("chest".into(), 1));
+        }
+        for (name, count) in worn {
+            if let Some(item) = self.item_id(&name) {
+                let vel = ((self.mob_rng.unit() as f32 - 0.5) * 0.2, 0.2, (self.mob_rng.unit() as f32 - 0.5) * 0.2);
+                self.drop_item((m.pos.0, m.pos.1 + 0.5, m.pos.2), vel, item, count, 10);
             }
         }
         if m.baby() {
@@ -2014,6 +2644,18 @@ impl Server {
             m.tamed = r.tamed;
             m.saddled = r.saddled;
             m.temper = r.temper;
+            m.chested = r.chested;
+            m.horns = r.horns;
+            m.items = vec![None; m.inventory_size()];
+            for (slot, name, count) in r.items {
+                if let Some(cell) = m.items.get_mut(slot as usize) {
+                    *cell = Some((name, count));
+                }
+            }
+            // Selle d'avant l'inventaire : elle y prend sa place
+            if m.saddled && m.species.steerable() && m.items.first().map(|i| i.is_none()).unwrap_or(false) {
+                m.items[0] = Some(("saddle".into(), 1));
+            }
             // Monture enregistrée avant que ses qualités existent : celles tirées à l'apparition restent
             if r.move_speed > 0.0 {
                 m.move_speed = r.move_speed;
@@ -2097,6 +2739,49 @@ impl Server {
     }
 }
 
+/// Crachat de lama en vol : identifiant, position, élan, ticks restants, joueur visé et
+/// joueurs qui le voient.
+pub(super) struct Spit {
+    id: i64,
+    pos: (f32, f32, f32),
+    vel: (f32, f32, f32),
+    ttl: u32,
+    target: SocketAddr,
+    viewers: Vec<SocketAddr>,
+}
+
+/// Petites fleurs (pour la soupe suspecte de la champimeuh brune)
+const FLOWERS: [&str; 16] = [
+    "dandelion",
+    "poppy",
+    "blue_orchid",
+    "allium",
+    "azure_bluet",
+    "red_tulip",
+    "orange_tulip",
+    "white_tulip",
+    "pink_tulip",
+    "oxeye_daisy",
+    "cornflower",
+    "lily_of_the_valley",
+    "wither_rose",
+    "torchflower",
+    "open_eyeblossom",
+    "closed_eyeblossom",
+];
+
+/// Couleur de laine d'une teinture (None si ce n'en est pas une).
+fn dye_color(item: &str) -> Option<u8> {
+    const COLORS: [&str; 16] = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black"];
+    match item {
+        "ink_sac" => Some(15),
+        "cocoa_beans" => Some(12),
+        "lapis_lazuli" => Some(11),
+        "bone_meal" => Some(0),
+        _ => item.strip_suffix("_dye").and_then(|c| COLORS.iter().position(|x| *x == c)).map(|i| i as u8),
+    }
+}
+
 /// Espèce du petit de deux parents (None s'ils ne peuvent pas en avoir) : même espèce, ou
 /// cheval et âne qui font une mule ; la mule n'a pas de petit.
 fn mate(a: Species, b: Species) -> Option<Species> {
@@ -2144,6 +2829,15 @@ mod tests {
     }
 
     #[test]
+    fn dyes_and_inventories() {
+        assert_eq!(dye_color("red_dye"), Some(14));
+        assert_eq!(dye_color("light_blue_dye"), Some(3));
+        assert_eq!((dye_color("ink_sac"), dye_color("bone_meal")), (Some(15), Some(0)));
+        assert_eq!(dye_color("wheat"), None);
+        assert!(FLOWERS.contains(&"cornflower"));
+    }
+
+    #[test]
     fn mount_qualities_are_saved() {
         let r = MobRecord {
             species: Species::Horse,
@@ -2163,6 +2857,9 @@ mod tests {
             saddled: true,
             temper: 15,
             knot: Some((4, 65, -7)),
+            chested: true,
+            horns: 1,
+            items: vec![(0, "saddle".into(), 1), (5, "diamond".into(), 3)],
         };
         assert_eq!(MobRecord::from_json(&r.to_json()), Some(r));
         // Ancien enregistrement (sans les nouveaux champs) : valeurs du jeu par défaut

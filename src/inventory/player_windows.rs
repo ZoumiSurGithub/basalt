@@ -27,6 +27,9 @@ pub struct PlayerWindows {
     pub block: BaseInventory,
     /// Position du bloc ouvert
     pub block_pos: Option<(i32, i32, i32)>,
+    /// Monture dont l'inventaire est ouvert (selle, armure ou tapis, coffre) : il prend la
+    /// place de celui d'un bloc
+    pub block_mob: Option<i64>,
     /// Le bloc ouvert est un four (ingrédient, combustible, résultat)
     pub block_is_furnace: bool,
     next_net_id: i32,
@@ -53,6 +56,7 @@ impl PlayerWindows {
             open_window: 0,
             block: BaseInventory::new("bloc", 0),
             block_pos: None,
+            block_mob: None,
             block_is_furnace: false,
             next_net_id: 1,
         }
@@ -74,7 +78,7 @@ impl PlayerWindows {
             Target::Offhand => Some(&self.offhand),
             Target::Created => Some(&self.created),
             Target::Craft => Some(&self.craft),
-            Target::Block if self.block_pos.is_some() => Some(&self.block),
+            Target::Block if self.block_pos.is_some() || self.block_mob.is_some() => Some(&self.block),
             Target::Block => None,
         }
     }
@@ -88,7 +92,7 @@ impl PlayerWindows {
             Target::Offhand => Some(&mut self.offhand),
             Target::Created => Some(&mut self.created),
             Target::Craft => Some(&mut self.craft),
-            Target::Block if self.block_pos.is_some() => Some(&mut self.block),
+            Target::Block if self.block_pos.is_some() || self.block_mob.is_some() => Some(&mut self.block),
             Target::Block => None,
         }
     }
