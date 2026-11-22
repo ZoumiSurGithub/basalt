@@ -28,7 +28,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   biome et avec un métier (ou « nigaud ») ; ils se promènent sans quitter leur village,
   regardent les joueurs, fuient sous les coups. Pas encore de reproduction ni
   d'échange avec eux. Ils ouvrent les portes en bois devant eux, qui se referment après
-  leur passage. `/summon villager`.
+  leur passage (avec leur bruit), et vont régulièrement passer la porte la plus proche
+  pour sortir de chez eux ou y rentrer. `/summon villager`.
 
 ### Corrigé
 

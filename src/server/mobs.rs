@@ -438,6 +438,8 @@ pub(super) struct Mob {
     refresh: bool,
     /// Villageois : là où il vit (il ne s'en éloigne pas)
     home: Option<(f32, f32)>,
+    /// Villageois : où aller une fois la porte visée franchie
+    errand: Option<(f32, f32)>,
 }
 
 impl Mob {
@@ -994,7 +996,50 @@ impl Server {
                 changed = true;
             }
         }
+        // Le bruit de la porte, pour les joueurs proches
+        if changed && !self.refused_extras.contains(&bedrock::ID_LEVEL_SOUND_EVENT) {
+            let at = (pos.0 as f32 + 0.5, pos.1 as f32 + 0.5, pos.2 as f32 + 0.5);
+            let packet = bedrock::level_sound(if open { "door.open" } else { "door.close" }, at, "", false, -1);
+            let near: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.joined && (c.pos.0 - at.0).powi(2) + (c.pos.2 - at.2).powi(2) < 16.0 * 16.0).map(|(a, _)| *a).collect();
+            for a in near {
+                self.send(&a, bedrock::ID_LEVEL_SOUND_EVENT, &packet);
+            }
+        }
         changed
+    }
+    /// Villageois : la porte en bois la plus proche (8 blocs, un étage près) et le point où
+    /// aller une fois passée, de l'autre côté.
+    fn door_errand(&self, m: &Mob) -> Option<((f32, f32), (f32, f32))> {
+        let (px, py, pz) = (m.pos.0.floor() as i32, m.pos.1.floor() as i32, m.pos.2.floor() as i32);
+        let mut best: Option<((i32, i32, i32), i32)> = None;
+        for dx in -8..=8 {
+            for dz in -8..=8 {
+                for dy in -1..=1 {
+                    let (x, y, z) = (px + dx, py + dy, pz + dz);
+                    // (la moitié basse : le sol est dessous)
+                    if self.wood_door(x, y, z) && !self.wood_door(x, y - 1, z) {
+                        let d = dx * dx + dz * dz;
+                        if d > 0 && best.map(|(_, b)| d < b).unwrap_or(true) {
+                            best = Some(((x, y, z), d));
+                        }
+                    }
+                }
+            }
+        }
+        let ((x, y, z), _) = best?;
+        let door = (x as f32 + 0.5, z as f32 + 0.5);
+        // La porte se traverse dans l'axe où ses deux côtés sont libres ; on vise le côté
+        // opposé à celui où se tient le villageois
+        let along_x = self.mob_free(x - 1, y, z) && self.mob_free(x + 1, y, z);
+        let along_z = self.mob_free(x, y, z - 1) && self.mob_free(x, y, z + 1);
+        let beyond = if along_x {
+            (door.0 + if m.pos.0 < door.0 { 3.0 } else { -3.0 }, door.1)
+        } else if along_z {
+            (door.0, door.1 + if m.pos.2 < door.1 { 3.0 } else { -3.0 })
+        } else {
+            return None;
+        };
+        Some((door, beyond))
     }
     /// Portes des villageois : celui qui arrive devant une porte fermée l'ouvre ; elle se
     /// referme une seconde après son passage.
@@ -1114,6 +1159,7 @@ impl Server {
             bite_in: 0,
             refresh: false,
             home: (species == Species::Villager).then_some((pos.0, pos.2)),
+            errand: None,
         };
         self.mobs.insert(id, mob);
         self.mobs_dirty = true;
@@ -1732,6 +1778,15 @@ impl Server {
             let a = self.mob_rng.unit() as f32 * std::f32::consts::TAU;
             let d = 2.0 + self.mob_rng.unit() as f32 * 8.0;
             let mut t = (m.pos.0 + a.cos() * d, m.pos.2 + a.sin() * d);
+            // Villageois : une fois sur trois, il va passer la porte la plus proche (pour
+            // sortir de chez lui, ou y rentrer)
+            m.errand = None;
+            if m.species == Species::Villager && self.mob_rng.below(3) == 0 {
+                if let Some((door, beyond)) = self.door_errand(m) {
+                    t = door;
+                    m.errand = Some(beyond);
+                }
+            }
             // Villageois : il reste dans son village (retour vers chez lui au-delà de 24 blocs)
             if let Some(h) = m.home.filter(|h| (t.0 - h.0).powi(2) + (t.1 - h.1).powi(2) > 24.0 * 24.0) {
                 let (dx, dz) = (h.0 - m.pos.0, h.1 - m.pos.2);
@@ -1757,7 +1812,8 @@ impl Server {
                 m.yaw = (m.yaw + diff.clamp(-20.0, 20.0)).rem_euclid(360.0);
                 if d < stop_at {
                     if stop_at <= 0.4 {
-                        m.target = None;
+                        // (porte atteinte : il continue de l'autre côté)
+                        m.target = m.errand.take();
                     }
                     m.vel.0 = 0.0;
                     m.vel.2 = 0.0;
