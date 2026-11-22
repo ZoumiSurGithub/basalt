@@ -1,6 +1,10 @@
 # Teste le projet a chaque envoi. Sur une etiquette "v*" (ex. v0.2.0), publie une version
 # GitHub avec des archives pretes a l'emploi : c'est ce que telechargent get.sh et update.sh.
 # Une etiquette avec un tiret (v0.3.0-dev.1) donne une preversion.
+#
+# Les tests, la compilation Linux et la compilation Windows tournent en meme temps ; la
+# publication attend les trois. La duree totale est celle du plus long des trois, et non
+# plus leur somme.
 name: build
 on:
   push:
@@ -17,23 +21,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  linux:
-    # Ubuntu 22.04 : l'executable fonctionne aussi sous Debian 12 et les Ubuntu plus recents
+  tests:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      # Les bibliotheques deja compilees sont gardees d'une fois sur l'autre : seul Basalt
-      # est recompile, ce qui ramene la duree de plusieurs minutes a une ou deux
+      # Les bibliotheques deja compilees sont gardees d'une fois sur l'autre
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: tests
       - run: sudo apt-get update && sudo apt-get install -y liblua5.4-0
-      # Inscrit dans l'executable : branche ou etiquette, commit, date. Fixe des le debut,
-      # pour que les tests et la compilation finale partagent exactement le meme travail.
-      - run: echo "BASALT_BUILD=${GITHUB_REF_NAME} ${GITHUB_SHA::7} $(date -u +%Y-%m-%dT%H:%MZ)" >> "$GITHUB_ENV"
-      # Tests compiles en mode « release » : la compilation finale reprend ensuite ce qui
-      # est deja fait, au lieu de tout recompiler une seconde fois.
       # Sur une etiquette (version officielle) : tous les tests. Sur une branche : tous sauf
       # ceux de bout en bout (vrais joueurs simules, une minute, et sensibles a la lenteur
-      # de la machine) ; la version de developpement sort ainsi plus vite.
+      # de la machine).
       - name: Tests
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
@@ -41,8 +40,21 @@ jobs:
           else
             cargo test --release --locked --lib --bins --test auth --test crypto --test placement --test sandbox
           fi
+
+  linux:
+    # Ubuntu 22.04 : l'executable fonctionne aussi sous Debian 12 et les Ubuntu plus recents
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: build
+      - run: sudo apt-get update && sudo apt-get install -y liblua5.4-0
       - name: Compilation
-        run: cargo build --release --locked
+        run: |
+          # Inscrit dans l'executable : branche ou etiquette, commit, date
+          export BASALT_BUILD="${GITHUB_REF_NAME} ${GITHUB_SHA::7} $(date -u +%Y-%m-%dT%H:%MZ)"
+          cargo build --release --locked
       - name: Archive
         run: |
           mkdir basalt
@@ -61,43 +73,8 @@ jobs:
           path: |
             basalt-linux-x64.tar.gz
             basalt-linux-x64.tar.gz.sha256
-      # Notes de la version : sa section de CHANGELOG.md (la compilation echoue si elle
-      # manque, ou si l'etiquette ne correspond pas a la version de Cargo.toml)
-      - name: Notes de version
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: sh .github/notes.sh "${GITHUB_REF_NAME}"
-      - name: Notes de la branche dev
-        if: github.ref == 'refs/heads/dev'
-        run: sh .github/notes.sh dev
-      # Publiee des que Linux est pret, sans attendre Windows
-      - name: Publication
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          name: Basalt ${{ github.ref_name }}
-          body_path: notes.md
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          files: |
-            basalt-linux-x64.tar.gz
-            basalt-linux-x64.tar.gz.sha256
-      # Branche « dev » : chaque envoi remplace la preversion « dev-latest », sans etiquette
-      # a poser. Installation : ./update.sh -v dev
-      - name: Publication de la branche dev
-        if: github.ref == 'refs/heads/dev'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: dev-latest
-          name: Version de développement (branche dev)
-          body_path: notes.md
-          prerelease: true
-          files: |
-            basalt-linux-x64.tar.gz
-            basalt-linux-x64.tar.gz.sha256
 
   windows:
-    # Seulement si les tests (faits par la compilation Linux) passent : les deux versions
-    # publiees restent toujours les memes
-    needs: linux
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -112,7 +89,6 @@ jobs:
           del lua.c luac.c
           cl /nologo /O2 /MD /LD /DLUA_BUILD_AS_DLL /Felua54.dll *.c
           copy lua54.dll ..\..\lua54.dll
-      # Les tests sont faits par la compilation Linux ; ici, seulement l'executable Windows
       - name: Compilation
         shell: pwsh
         run: |
@@ -130,10 +106,27 @@ jobs:
         with:
           name: basalt-windows-x64
           path: basalt-windows-x64.zip
-      - name: Notes de version
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: sh .github/notes.sh "${GITHUB_REF_NAME}"
+
+  # Publication : seulement si les tests passent et que les deux versions sont pretes, pour
+  # que les archives publiees soient toujours testees et toujours les memes
+  publish:
+    needs: [tests, linux, windows]
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      # Notes de la version : sa section de CHANGELOG.md (la publication echoue si elle
+      # manque, ou si l'etiquette ne correspond pas a la version de Cargo.toml)
+      - name: Notes
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            sh .github/notes.sh "${GITHUB_REF_NAME}"
+          else
+            sh .github/notes.sh dev
+          fi
       - name: Publication
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -141,12 +134,21 @@ jobs:
           name: Basalt ${{ github.ref_name }}
           body_path: notes.md
           prerelease: ${{ contains(github.ref_name, '-') }}
-          files: basalt-windows-x64.zip
+          files: |
+            basalt-linux-x64.tar.gz
+            basalt-linux-x64.tar.gz.sha256
+            basalt-windows-x64.zip
+      # Branche « dev » : chaque envoi remplace la preversion « dev-latest », sans etiquette
+      # a poser. Installation : ./update.sh -v dev
       - name: Publication de la branche dev
         if: github.ref == 'refs/heads/dev'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: dev-latest
           name: Version de développement (branche dev)
+          body_path: notes.md
           prerelease: true
-          files: basalt-windows-x64.zip
+          files: |
+            basalt-linux-x64.tar.gz
+            basalt-linux-x64.tar.gz.sha256
+            basalt-windows-x64.zip

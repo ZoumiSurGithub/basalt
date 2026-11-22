@@ -4311,7 +4311,9 @@ impl Server {
         // et le lama, la selle seule pour l'âne et la mule). Dans le contenu de la fenêtre, ces
         // cases sont alors laissées vides : une même pile annoncée deux fois (même numéro dans
         // deux conteneurs) faisait planter le jeu au geste suivant.
-        let equip = match self.clients.get(addr).and_then(|c| c.inv.block_mob).and_then(|id| self.mobs.get(&id)).map(|m| m.species) {
+        // (écritures 0 et 3 de `debug-mount-screen` : tout dans la fenêtre, rien à part)
+        let separate = self.cfg.mount_screen == 1 || self.cfg.mount_screen == 2;
+        let equip = match self.clients.get(addr).and_then(|c| c.inv.block_mob).filter(|_| separate).and_then(|id| self.mobs.get(&id)).map(|m| m.species) {
             Some(mobs::Species::Donkey | mobs::Species::Mule) => 1,
             Some(_) => 2,
             None => 0,

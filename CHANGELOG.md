@@ -66,6 +66,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Modifié
 
+- Compilation sur GitHub plus rapide : tests, version Linux et version Windows en même temps
+  (la publication attend les trois), au lieu de l'un après l'autre.
 - **Versions d'avant la 1.26.60 refusées** (1.26.40 à 1.26.51) : le jeu indique qu'il doit
   être mis à jour. Elles écrivent les objets et plusieurs paquets autrement, et n'étaient en
   pratique pas jouables (inventaire, déplacements). Un `min-protocol` plus bas est relevé à 2225.
@@ -93,8 +95,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   était refusé).
 - Inventaire d'une monture : la selle et l'armure (ou le tapis) posées apparaissent dans
   leurs cases (envoyées dans le conteneur « équipement de monture », et plus en double dans
-  la fenêtre), et l'écran annonce la vraie taille de l'inventaire de la monture (annoncée à
-  0, le jeu plantait dès qu'on prenait un objet, l'écran ouvert).
+  la fenêtre). Le jeu plantait dès qu'on prenait un objet, l'écran ouvert : réglage de mise
+  au point `debug-mount-screen` (0 à 3) pour trouver l'écriture qui convient.
 - Crachat du lama : il part de la bouche et vole jusqu'à sa cible au lieu de rester immobile
   au-dessus du lama (données de projectile, position redessinée à chaque tick).
 - Un jeu qui refusait les animaux les supprimait pour tout le serveur (et de la sauvegarde) :

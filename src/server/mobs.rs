@@ -2154,17 +2154,25 @@ impl Server {
         let species = self.mobs.get(&id).map(|m| m.species);
         const COLORS: [&str; 16] = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black"];
         let carpets: Vec<String> = COLORS.iter().map(|c| format!("{}_carpet", c)).collect();
+        // Écriture de l'écran (mise au point, `debug-mount-screen`) : 0 et 2 montrent dans les
+        // cases les icônes « horsesaddle » / « horsearmor » des autres serveurs, 1 et 3 la vraie
+        // selle et la vraie armure ; 0 et 2 annoncent une taille nulle comme eux.
+        let variant = self.cfg.mount_screen;
+        let legacy = variant == 0 || variant == 2;
+        let (saddle_icon, armor_icon, carpet_icon) = if legacy { ("horsesaddle", "horsearmor", "carpet") } else { ("saddle", "iron_horse_armor", "white_carpet") };
         let mut equip: Vec<(i32, &str, Vec<&str>)> = Vec::new();
         match species {
             Some(Species::Horse) => {
-                equip.push((0, "saddle", vec!["saddle"]));
-                equip.push((1, "iron_horse_armor", vec!["leather_horse_armor", "iron_horse_armor", "golden_horse_armor", "diamond_horse_armor"]));
+                equip.push((0, saddle_icon, vec!["saddle"]));
+                equip.push((1, armor_icon, vec!["leather_horse_armor", "iron_horse_armor", "golden_horse_armor", "diamond_horse_armor"]));
             }
-            Some(Species::Donkey | Species::Mule) => equip.push((0, "saddle", vec!["saddle"])),
-            Some(Species::Llama) => equip.push((1, "white_carpet", carpets.iter().map(|s| s.as_str()).collect())),
+            Some(Species::Donkey | Species::Mule) => equip.push((0, saddle_icon, vec!["saddle"])),
+            Some(Species::Llama) => equip.push((1, carpet_icon, carpets.iter().map(|s| s.as_str()).collect())),
             _ => {}
         }
-        self.send(addr, bedrock::ID_UPDATE_EQUIP, &bedrock::update_equip(WINDOW, id, slots.len() as i32, &equip));
+        let size = if legacy { 0 } else { slots.len() as i32 };
+        info!("{} : inventaire de monture, écriture {} (debug-mount-screen)", addr, variant);
+        self.send(addr, bedrock::ID_UPDATE_EQUIP, &bedrock::update_equip(WINDOW, id, size, &equip));
         self.send_block_content(addr, &slots);
         true
     }

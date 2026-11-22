@@ -257,8 +257,10 @@ pub const SCREEN_HORSE: u8 = 12;
 /// (numéro de case, objet montré, objets acceptés).
 pub const ID_UPDATE_EQUIP: u32 = 81;
 pub fn update_equip(window: u8, unique_id: i64, size: i32, slots: &[(i32, &str, Vec<&str>)]) -> Vec<u8> {
+    // `shown` : nom tel quel (« minecraft: » ajouté s'il manque)
     use crate::nbt::Tag;
-    let item = |name: &str| Tag::compound(vec![("Aux", Tag::Short(i16::MAX)), ("Name", Tag::string(&format!("minecraft:{}", name)))]);
+    let full = |name: &str| if name.contains(':') { name.to_string() } else { format!("minecraft:{}", name) };
+    let item = |name: &str| Tag::compound(vec![("Aux", Tag::Short(i16::MAX)), ("Name", Tag::string(&full(name)))]);
     let list: Vec<Tag> = slots
         .iter()
         .map(|(slot, shown, accepted)| {

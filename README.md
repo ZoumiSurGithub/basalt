@@ -690,7 +690,8 @@ section pour elle. La préversion de la branche `dev` affiche la section « Non 
 
 Tests sur GitHub : à chaque envoi sur une branche, les tests rapides (sans connexion) ;
 pour une étiquette `v…`, tous les tests, y compris ceux de bout en bout avec de vrais
-joueurs simulés. Rien n'est publié, ni pour Linux ni pour Windows, si un test échoue.
+joueurs simulés. Les tests et les deux compilations (Linux, Windows) tournent en même
+temps ; rien n'est publié, ni pour Linux ni pour Windows, si un test échoue.
 
 ## Licence
 
