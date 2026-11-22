@@ -1432,7 +1432,7 @@ fn igloo(b: &mut Builder, t: &Templates, rng: &mut Rng, x: i32, y: i32, z: i32) 
         let at = (ox + rx + mx, y + dy, oz + rz + mz);
         let (w, d) = if rot & 1 == 1 { (sz, sx) } else { (sx, sz) };
         let bbox = super::templates::Box3 { min: at, max: (at.0 + w - 1, at.1 + sy - 1, at.2 + d - 1) };
-        layout.pieces.push(super::templates::Piece { template: tpl, rot, at, follows_ground: false, bbox });
+        layout.pieces.push(super::templates::Piece { template: tpl, rot, at, follows_ground: false, bbox, ground_delta: 1 });
     }
     place_layout(b, rng, &layout, Placing { under: Some("dirt"), air: true, planks: None, clear_trees: true, archaeology: false, carve: false, integrity: 1.0, markers: igloo_markers, slopes: false });
     true
@@ -1551,7 +1551,9 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
     if how.slopes && how.under.is_some() {
         for piece in layout.pieces.iter().filter(|p| !p.follows_ground) {
             let (lo, hi) = (piece.bbox.min, piece.bbox.max);
-            b.pads.push(super::vanilla::Pad { min: (lo.0, lo.2), max: (hi.0, hi.2), floor: lo.1 });
+            // (dernier bloc plein sous la pièce : sa couche du bas si elle est le sol, sinon
+            // le bloc du dessous)
+            b.pads.push(super::vanilla::Pad { min: (lo.0, lo.2), max: (hi.0, hi.2), floor: lo.1 + piece.ground_delta - 1 });
         }
         b.tops.clear();
     }

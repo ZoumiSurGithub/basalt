@@ -53,7 +53,9 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   franchir une barrière d'un saut).
 - Villages : le relief épouse la base des maisons comme dans le jeu (la densité du terrain
   est modifiée autour de chaque pièce, sur 12 blocs : comblé dessous, dégagé dessus), au
-  lieu d'être taillé en talus après coup ; les rues sont posées sur ce relief adapté.
+  lieu d'être taillé en talus après coup ; les rues sont posées sur ce relief adapté. Le
+  niveau du sol de chaque pièce est déduit de sa jointure, comme dans le jeu (un lampadaire
+  ou une petite maison sont posés sur le sol, une grande maison y enfonce sa couche du bas).
 - Villages au bord d'une plage ou d'un désert : les talus autour des maisons sont en sable
   comme le sol d'alentour, plus en blocs d'herbe.
 

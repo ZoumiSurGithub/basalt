@@ -1080,6 +1080,10 @@ pub struct Piece {
     /// sol de sa colonne, plus sa hauteur dans le plan
     pub follows_ground: bool,
     pub bbox: Box3,
+    /// Hauteur du premier bloc libre au-dessus du sol, comptée depuis le bas de la pièce
+    /// (« ground level delta » du jeu) : 1 quand la couche du bas est le sol lui-même, 0
+    /// quand la pièce est posée dessus. Héritée de pièce en pièce le long des jointures.
+    pub ground_delta: i32,
 }
 
 /// Réglages d'un assemblage.
@@ -1122,13 +1126,13 @@ impl Templates {
         let follows = false;
         let bbox = Box3 { min: at, max: (at.0 + sx - 1, at.1 + sy - 1, at.2 + sz - 1) };
         let limit = Box3 { min: (x - rules.reach, -30_000, z - rules.reach), max: (x + rules.reach, 30_000, z + rules.reach) };
-        out.pieces.push(Piece { template: start, rot, at, follows_ground: follows, bbox });
+        out.pieces.push(Piece { template: start, rot, at, follows_ground: follows, bbox, ground_delta: 1 });
         // File des pièces dont les jigsaws restent à traiter : (indice, profondeur)
         let mut queue = std::collections::VecDeque::from([(0usize, 0u32)]);
         while let Some((index, depth)) = queue.pop_front() {
-            let (parent_t, parent_rot, parent_at, parent_box, parent_follows) = {
+            let (parent_t, parent_rot, parent_at, parent_box, parent_follows, parent_delta) = {
                 let p = &out.pieces[index];
-                (p.template.clone(), p.rot, p.at, p.bbox, p.follows_ground)
+                (p.template.clone(), p.rot, p.at, p.bbox, p.follows_ground, p.ground_delta)
             };
             for j in &parent_t.jigsaws {
                 let rel = parent_t.rotate(j.pos, parent_rot);
@@ -1207,7 +1211,9 @@ impl Templates {
                             if !fits {
                                 continue;
                             }
-                            out.pieces.push(Piece { template: cand.clone(), rot: r, at: cat, follows_ground: child_follows, bbox: cbox });
+                            // Niveau du sol de la pièce, comme le jeu le déduit de la jointure
+                            let ground_delta = if child_follows { 1 } else { parent_delta - (rel.1 - krel.1 + step.1) };
+                            out.pieces.push(Piece { template: cand.clone(), rot: r, at: cat, follows_ground: child_follows, bbox: cbox, ground_delta });
                             queue.push_back((out.pieces.len() - 1, depth + 1));
                             break 'search;
                         }
