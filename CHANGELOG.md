@@ -93,7 +93,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   était refusé).
 - Inventaire d'une monture : la selle et l'armure (ou le tapis) posées apparaissent dans
   leurs cases (envoyées dans le conteneur « équipement de monture », et plus en double dans
-  la fenêtre : le jeu plantait dès qu'on touchait un objet, l'écran ouvert).
+  la fenêtre), et l'écran annonce la vraie taille de l'inventaire de la monture (annoncée à
+  0, le jeu plantait dès qu'on prenait un objet, l'écran ouvert).
 - Crachat du lama : il part de la bouche et vole jusqu'à sa cible au lieu de rester immobile
   au-dessus du lama (données de projectile, position redessinée à chaque tick).
 - Un jeu qui refusait les animaux les supprimait pour tout le serveur (et de la sauvegarde) :

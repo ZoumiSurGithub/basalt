@@ -2164,7 +2164,7 @@ impl Server {
             Some(Species::Llama) => equip.push((1, "white_carpet", carpets.iter().map(|s| s.as_str()).collect())),
             _ => {}
         }
-        self.send(addr, bedrock::ID_UPDATE_EQUIP, &bedrock::update_equip(WINDOW, id, &equip));
+        self.send(addr, bedrock::ID_UPDATE_EQUIP, &bedrock::update_equip(WINDOW, id, slots.len() as i32, &equip));
         self.send_block_content(addr, &slots);
         true
     }

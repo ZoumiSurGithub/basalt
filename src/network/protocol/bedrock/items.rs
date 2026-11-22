@@ -256,7 +256,7 @@ pub const SCREEN_HORSE: u8 = 12;
 /// jeu n'affiche pas l'écran de la monture (et refuse ensuite d'ouvrir le sien). `slots` :
 /// (numéro de case, objet montré, objets acceptés).
 pub const ID_UPDATE_EQUIP: u32 = 81;
-pub fn update_equip(window: u8, unique_id: i64, slots: &[(i32, &str, Vec<&str>)]) -> Vec<u8> {
+pub fn update_equip(window: u8, unique_id: i64, size: i32, slots: &[(i32, &str, Vec<&str>)]) -> Vec<u8> {
     use crate::nbt::Tag;
     let item = |name: &str| Tag::compound(vec![("Aux", Tag::Short(i16::MAX)), ("Name", Tag::string(&format!("minecraft:{}", name)))]);
     let list: Vec<Tag> = slots
@@ -272,7 +272,9 @@ pub fn update_equip(window: u8, unique_id: i64, slots: &[(i32, &str, Vec<&str>)]
     let mut w = W::default();
     w.u8(window);
     w.u8(SCREEN_HORSE);
-    w.vari32(0); // taille : 0, comme les serveurs connus
+    // Taille de l'inventaire de la monture (équipement + coffre). À 0, le jeu crée un
+    // inventaire sans case et plante dès qu'on prend un objet, l'écran ouvert.
+    w.vari32(size);
     w.vari64(unique_id);
     w.0.extend_from_slice(&crate::nbt::write_network(&Tag::compound(vec![("slots", Tag::list_of(list))])));
     w.0
