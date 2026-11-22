@@ -4308,6 +4308,12 @@ impl Server {
         let list: Vec<(i16, u8, i32, u32)> = slots.iter().map(|s| (s.id, s.count, s.net_id, self.block_for(s.id).unwrap_or(0))).collect();
         let pk = bedrock::container_items(window as u32, &list, self.item_net_ids, crate::versions::features(protocol));
         self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
+        // Monture : selle et armure (ou tapis) aussi dans le conteneur « équipement », d'où
+        // l'écran de la monture les affiche (sinon la selle posée n'y apparaissait pas)
+        if self.clients.get(addr).and_then(|c| c.inv.block_mob).is_some() && list.len() >= 2 {
+            let pk = bedrock::container_items_named(window as u32, bedrock::CONTAINER_HORSE_EQUIP, &list[..2], self.item_net_ids, crate::versions::features(protocol));
+            self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
+        }
     }
 
     /// Recopie le contenu réel du bloc ouvert dans la vue du joueur. Faux si le bloc a

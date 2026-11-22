@@ -926,13 +926,22 @@ pub fn item_stack(w: &mut W, id: i16, count: u8, net_id: i32, block: u32) {
 
 /// Contenu d'un conteneur : (identifiant d'objet, quantité, numéro de pile, bloc posé).
 pub fn container_items(window: u32, slots: &[(i16, u8, i32, u32)], net_ids: bool, f: crate::versions::Features) -> Vec<u8> {
+    container_items_named(window, 0, slots, net_ids, f)
+}
+
+/// Nom de conteneur « équipement de monture » (selle, armure ou tapis).
+pub const CONTAINER_HORSE_EQUIP: u8 = 27;
+
+/// Idem, en nommant le conteneur visé : l'écran d'une monture montre sa selle et son armure
+/// d'après le conteneur « équipement de monture », à part du coffre.
+pub fn container_items_named(window: u32, name: u8, slots: &[(i16, u8, i32, u32)], net_ids: bool, f: crate::versions::Features) -> Vec<u8> {
     let mut w = W::default();
     w.varu32(window);
     w.varu32(slots.len() as u32);
     for (id, count, net_id, block) in slots {
         item_stack(&mut w, *id, *count, if net_ids { *net_id } else { 0 }, *block);
     }
-    w.u8(0);
+    w.u8(name);
     if f.editor_migration_version {
         w.bool(false);
     } else {
