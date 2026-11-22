@@ -684,6 +684,12 @@ pub(super) struct Mob {
     station: Option<(i32, i32, i32)>,
     /// Pas de nouvelle recherche de poste avant ce tick
     job_wait: u64,
+    /// Villageois : chemin calculé vers sa destination (points restants, le prochain à la fin)
+    path: Vec<(f32, f32)>,
+    /// Pas de nouveau calcul de chemin avant ce tick
+    path_wait: u64,
+    /// Ticks passés à viser le même point du chemin (au-delà de trois secondes : bloqué)
+    path_ticks: u32,
 }
 
 impl Mob {
@@ -1485,6 +1491,9 @@ impl Server {
             asleep: None,
             station: None,
             job_wait: 0,
+            path: Vec::new(),
+            path_wait: 0,
+            path_ticks: 0,
         };
         self.mobs.insert(id, mob);
         self.mobs_dirty = true;
@@ -2252,19 +2261,8 @@ impl Server {
                 m.late = 0;
                 return Some((0.0, f32::MAX));
             }
-            if m.target.is_none() {
-                // Par la porte de sa maison s'il est dehors, puis jusqu'au lit
-                match self.door_near(home, m.pos).filter(|(door, _)| flat2((home.0, home.2)) > 3.0 * 3.0 && flat2(*door) > 1.0) {
-                    Some((door, _)) => {
-                        m.target = Some(door);
-                        m.errand = Some((home.0, home.2));
-                    }
-                    None => {
-                        m.target = Some((home.0, home.2));
-                        m.errand = None;
-                    }
-                }
-            }
+            // Jusqu'à son lit, par un vrai chemin (portes, marches, détours)
+            self.villager_go(m, (home.0, Some(home.1), home.2));
             return Some((ground_speed(attr * 0.6), 0.4));
         }
         m.late = 0;
@@ -2281,43 +2279,143 @@ impl Server {
                 }
             };
             if flat2(center) > 5.0 * 5.0 {
-                if m.target.is_none() {
-                    // Bloqué ou tout juste parti : par la porte la plus proche une fois sur
-                    // deux (il est peut-être enfermé), sinon droit vers le centre
-                    match self.door_errand(m).filter(|_| self.mob_rng.below(2) == 0) {
-                        Some((door, beyond)) => {
-                            m.target = Some(door);
-                            m.errand = Some(beyond);
-                        }
-                        None => {
-                            m.target = Some(center);
-                            m.errand = None;
-                        }
-                    }
-                }
+                self.villager_go(m, (center.0, None, center.1));
                 return Some((ground_speed(attr * 0.6), 0.4));
             }
             return None;
         }
         m.meet = None;
+        if (11_000..12_000).contains(&time) || time < 2_000 {
+            // (plus de rendez-vous ni de travail : un reste de chemin ne le mène nulle part)
+            m.path.clear();
+        }
         // Le matin et en début d'après-midi : de temps en temps, un tour à son poste de travail
         if let Some(st) = m.station.filter(|_| (2_000..9_000).contains(&time) && !m.baby()) {
             let at = (st.0 as f32 + 0.5, st.2 as f32 + 0.5);
             if flat2(at) > 2.0 * 2.0 {
-                if m.target.is_none() && self.mob_rng.below(120) == 0 {
-                    match self.door_errand(m).filter(|_| self.mob_rng.below(2) == 0) {
-                        Some((door, beyond)) => {
-                            m.target = Some(door);
-                            m.errand = Some(beyond);
-                        }
-                        None => {
-                            m.target = Some(at);
-                            m.errand = None;
-                        }
-                    }
+                // (en route tant qu'il lui reste du chemin ; sinon il se décide de temps en temps)
+                if !m.path.is_empty() || (m.target.is_none() && self.mob_rng.below(120) == 0) {
+                    self.villager_go(m, (at.0, Some(st.1 as f32), at.1));
                 }
-                if m.target.is_some() {
-                    return Some((ground_speed(attr * 0.6), 1.4));
+                if !m.path.is_empty() {
+                    return Some((ground_speed(attr * 0.6), 0.4));
+                }
+            }
+        }
+        None
+    }
+
+    /// Mène un villageois vers une destination par un chemin calculé : il vise le point
+    /// suivant du chemin, recalcule s'il reste bloqué trois secondes sur le même, et à défaut
+    /// de chemin marche droit devant lui comme avant.
+    fn villager_go(&mut self, m: &mut Mob, dest: (f32, Option<f32>, f32)) {
+        let tick = self.tick;
+        if m.target.is_some() {
+            m.path_ticks += 1;
+            if m.path_ticks > 60 {
+                // Bloqué : on oublie ce chemin, un autre sera cherché d'ici une seconde
+                m.target = None;
+                m.path.clear();
+                m.path_ticks = 0;
+                m.path_wait = tick + 20;
+            }
+            return;
+        }
+        m.errand = None;
+        m.path_ticks = 0;
+        if let Some(next) = m.path.pop() {
+            m.target = Some(next);
+            return;
+        }
+        if tick < m.path_wait {
+            return;
+        }
+        match self.villager_path(m.pos, dest) {
+            Some(mut path) => {
+                path.reverse();
+                m.target = path.pop();
+                m.path = path;
+                m.path_wait = tick + 20;
+            }
+            None => {
+                // Pas de chemin trouvé : tout droit, et une nouvelle recherche dans cinq secondes
+                m.target = Some((dest.0, dest.2));
+                m.path_wait = tick + 100;
+            }
+        }
+    }
+
+    /// Une créature de deux blocs de haut peut-elle se tenir dans cette case (les pieds en
+    /// `y`) ? Il faut un sol ferme dessous (ni eau, ni barrière ou trappe) et deux cases
+    /// libres ; une porte en bois compte comme libre.
+    fn villager_stands(&self, x: i32, y: i32, z: i32) -> bool {
+        self.mob_pass(true, x, y, z) && self.mob_pass(true, x, y + 1, z) && !self.mob_pass(true, x, y - 1, z) && !self.no_step(x, y - 1, z)
+    }
+
+    /// Chemin à pied (recherche A*) de `from` jusqu'à un bloc de `dest` : pas de côté d'un
+    /// bloc, marches d'un bloc à monter, jusqu'à trois à descendre, portes en bois franchies.
+    /// Points de passage au centre des cases, du premier au dernier. None : pas de chemin
+    /// dans les limites (40 blocs, 1 500 cases explorées) ou destination inaccessible.
+    fn villager_path(&self, from: (f32, f32, f32), dest: (f32, Option<f32>, f32)) -> Option<Vec<(f32, f32)>> {
+        use std::cmp::Reverse;
+        use std::collections::{BinaryHeap, HashMap};
+        let (sx, sz) = (from.0.floor() as i32, from.2.floor() as i32);
+        // (debout sur une dalle ou un chemin de terre : la case du dessus)
+        let sy = [from.1.floor() as i32, from.1.floor() as i32 + 1, from.1.floor() as i32 - 1].into_iter().find(|y| self.villager_stands(sx, *y, sz))?;
+        let (gx, gz) = (dest.0.floor() as i32, dest.2.floor() as i32);
+        let gy = dest.1.map(|y| y.floor() as i32);
+        let arrived = |x: i32, y: i32, z: i32| (x - gx).abs() <= 1 && (z - gz).abs() <= 1 && gy.map(|g| (y - g).abs() <= 1).unwrap_or(true);
+        let guess = |x: i32, y: i32, z: i32| (x - gx).abs() + (z - gz).abs() + gy.map(|g| (y - g).abs()).unwrap_or(0);
+        let start = (sx, sy, sz);
+        let mut open = BinaryHeap::new();
+        let mut cost: HashMap<(i32, i32, i32), i32> = HashMap::new();
+        let mut came: HashMap<(i32, i32, i32), (i32, i32, i32)> = HashMap::new();
+        open.push(Reverse((guess(sx, sy, sz), 0, start)));
+        cost.insert(start, 0);
+        let mut explored = 0;
+        while let Some(Reverse((_, g, at))) = open.pop() {
+            if cost.get(&at).map(|c| g > *c).unwrap_or(false) {
+                continue;
+            }
+            if arrived(at.0, at.1, at.2) {
+                let mut cells = vec![at];
+                let mut cur = at;
+                while let Some(prev) = came.get(&cur) {
+                    cells.push(*prev);
+                    cur = *prev;
+                }
+                cells.reverse();
+                // (la case de départ n'est pas un point à viser)
+                return Some(cells.into_iter().skip(1).map(|c| (c.0 as f32 + 0.5, c.2 as f32 + 0.5)).collect());
+            }
+            explored += 1;
+            if explored > 1500 {
+                return None;
+            }
+            let (x, y, z) = at;
+            for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let (nx, nz) = (x + dx, z + dz);
+                if (nx - sx).abs() > 40 || (nz - sz).abs() > 40 {
+                    continue;
+                }
+                // De plain-pied, une marche à monter (la tête doit passer), ou une descente
+                let step = [0, 1, -1, -2, -3].into_iter().find(|dy| {
+                    let ny = y + dy;
+                    self.villager_stands(nx, ny, nz)
+                        && match *dy {
+                            1 => self.mob_pass(true, x, y + 2, z),
+                            d if d < 0 => (ny + 2..=y + 1).all(|h| self.mob_pass(true, nx, h, nz)),
+                            _ => true,
+                        }
+                });
+                let Some(dy) = step else { continue };
+                let next = (nx, y + dy, nz);
+                // (une porte coûte un peu plus : il préfère un passage ouvert)
+                let g2 = g + 1 + dy.abs() + self.wood_door(nx, y + dy, nz) as i32;
+                if cost.get(&next).map(|c| g2 < *c).unwrap_or(true) {
+                    cost.insert(next, g2);
+                    came.insert(next, at);
+                    open.push(Reverse((g2 + guess(next.0, next.1, next.2), g2, next)));
                 }
             }
         }
@@ -2339,15 +2437,20 @@ impl Server {
                     if d.block_name(s) != Some("minecraft:bed") || d.prop(s, "head_piece_bit") != Some(Prop::Int(1)) {
                         continue;
                     }
-                    let at = (x as f32 + 0.5, y as f32 + 0.5625, z as f32 + 0.5);
+                    // Sens du lit dans la numérotation du jeu (sud, ouest, nord, est) : du pied
+                    // vers l'oreiller. Le jeu couche le dormeur sur le dos, la tête derrière
+                    // lui : il regarde donc vers le pied du lit, et ses pieds sont posés près
+                    // du pied du lit pour que sa tête arrive sur l'oreiller.
+                    let n = match d.prop(s, "direction") {
+                        Some(Prop::Int(n)) => n.rem_euclid(4),
+                        _ => 0,
+                    };
+                    let (hx2, hz2) = [(0.0, 1.0), (-1.0, 0.0), (0.0, -1.0), (1.0, 0.0)][n as usize];
+                    let at = (x as f32 + 0.5 - hx2 * 1.3, y as f32 + 0.5625, z as f32 + 0.5 - hz2 * 1.3);
                     if taken.iter().any(|t| (t.0 - at.0).abs() < 0.6 && (t.2 - at.2).abs() < 0.6 && (t.1 - at.1).abs() < 1.0) {
                         continue;
                     }
-                    // Sens du lit dans la numérotation du jeu : sud, ouest, nord, est
-                    let yaw = match d.prop(s, "direction") {
-                        Some(Prop::Int(n)) => (n.rem_euclid(4) * 90) as f32,
-                        _ => 0.0,
-                    };
+                    let yaw = ((n * 90 + 180) % 360) as f32;
                     let dist = dx * dx + dz * dz + dy * dy;
                     if best.map(|b| dist < b.1).unwrap_or(true) {
                         best = Some(((at, yaw), dist));

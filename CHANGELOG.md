@@ -18,6 +18,9 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   retire tant qu'ils n'ont rien échangé, un poste posé en donne un à un villageois sans
   métier ; ils passent à leur poste dans la journée ; deux adultes côte à côte font un
   petit s'il reste un lit libre dans le village, et le petit prend un métier en grandissant.
+  Pour rentrer chez eux, aller au rendez-vous ou à leur poste, ils suivent un vrai chemin
+  (détours, marches, portes) au lieu de marcher droit devant eux, et en cherchent un autre
+  s'ils restent bloqués.
 - Échanges avec les villageois : un clic sur un villageois qui a un métier ouvre l'écran
   d'échange. Deux offres par niveau, celles de son métier : il achète des matières
   premières contre une émeraude et vend ses produits. Le serveur vérifie le prix payé.

@@ -5,6 +5,9 @@
   <a href="https://github.com/ZoumiSurGithub/basalt/releases/latest"><img src="https://img.shields.io/github/v/release/ZoumiSurGithub/basalt?label=version" alt="Dernière version"></a>
   <a href="https://discord.gg/dc7evQZ77u"><img src="https://img.shields.io/badge/Discord-rejoindre-5865F2?logo=discord&logoColor=white" alt="Rejoindre le Discord"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-blue" alt="Licence MIT"></a>
+  <br>
+  <a href="docs/RESEAU.md#versions-du-jeu-acceptées"><img src="https://img.shields.io/badge/Minecraft%20Bedrock-1.26.60%20%E2%86%92%201.26.70-62B47A" alt="Minecraft Bedrock 1.26.60 à 1.26.70"></a>
+  <a href="docs/RESEAU.md#versions-du-jeu-acceptées"><img src="https://img.shields.io/badge/protocole-2225%20%E2%86%92%202259-orange" alt="Protocoles 2225 à 2259"></a>
 </p>
 
 # Basalt
@@ -14,6 +17,14 @@ exécutable, un fichier `server.properties`, une console, et des plugins en Lua.
 
 Basalt est un projet jeune (version 0.0.x), déjà jouable avec le vrai jeu : il est essayé
 avec Bedrock 1.26.60 et plus sous Windows, avec des comptes Xbox vérifiés.
+
+| | Version de Bedrock | Protocole |
+|---|---|---|
+| **Dernière version prise en charge** | 1.26.70 (préversion) | 2259 |
+| Dernière version stable | 1.26.60 à 1.26.66 | 2225 |
+
+Les joueurs de ces versions peuvent être connectés en même temps ; les versions antérieures
+à la 1.26.60 sont refusées. Détails dans [docs/RESEAU.md](docs/RESEAU.md#versions-du-jeu-acceptées).
 
 **Une question, une idée, un bug ? Rejoignez le [Discord](https://discord.gg/dc7evQZ77u).**
 

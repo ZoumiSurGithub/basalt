@@ -60,3 +60,10 @@ temps ; rien n'est publié, ni pour Linux ni pour Windows, si un test échoue.
 GitHub compile Basalt pour Linux et Windows et publie les archives ; `get.sh` et
 `update.sh` installent toujours la dernière. Chaque envoi sur la branche `dev` publie la
 préversion `dev-latest` (`./update.sh -v dev`).
+
+## Ajouter une version du jeu
+
+Les versions acceptées sont décrites dans `src/network/protocol/versions.rs`. Quand une
+version est ajoutée, mettez aussi à jour le tableau et les deux badges « Minecraft Bedrock »
+et « protocole » en tête du `README.md`, ainsi que le tableau de `docs/RESEAU.md` : ils sont
+écrits à la main.
