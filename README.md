@@ -56,7 +56,7 @@ jeu (Bedrock 1.26.63 à 1.26.66 sous Windows, deux comptes Xbox en même temps).
   coffre) ; cochon à monter avec une carotte sur un bâton ; moutons à teindre ;
   loups (meutes des taïgas et des forêts, à apprivoiser avec un os : ils suivent leur
   maître, s'assoient, attaquent ce qu'il frappe) ; chats errants des villages (à apprivoiser
-  avec du poisson cru) ;
+  avec du poisson cru) ; villageois dans les villages (sans échange pour l'instant) ;
   `/summon <animal>` ;
   `spawn-animals=false` pour s'en passer ;
 - personnages non joueurs (PNJ) créés par les plugins, qui marchent seuls (`server.spawnNpc`) ;
@@ -66,7 +66,7 @@ jeu (Bedrock 1.26.63 à 1.26.66 sous Windows, deux comptes Xbox en même temps).
 
 **Pas encore fait :** chargement de vrais mondes Minecraft (format LevelDB),
 mondes multiples (Nether, End), blocs soumis à la gravité (sable, gravier), redstone,
-monstres, villageois et autres animaux, faim qui baisse et expérience gagnée, cycle jour/nuit animé, météo.
+monstres, échanges avec les villageois, autres animaux, faim qui baisse et expérience gagnée, cycle jour/nuit animé, météo.
 
 **Réglages de secours.** Si un joueur est replacé à tort, ou se déconnecte quand un autre
 joueur apparaît, `movement-check=false` et `show-players=false` désactivent ces fonctions

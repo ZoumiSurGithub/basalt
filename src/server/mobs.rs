@@ -55,6 +55,7 @@ pub(super) enum Species {
     Mule,
     Wolf,
     Cat,
+    Villager,
 }
 
 /// Ce qu'un loup attaque.
@@ -105,7 +106,7 @@ const WOLF_TAMED_HEALTH: f32 = 40.0;
 
 impl Species {
     const FARM: [Species; 4] = [Species::Cow, Species::Pig, Species::Sheep, Species::Chicken];
-    const ALL: [Species; 13] = [
+    const ALL: [Species; 14] = [
         Species::Cow,
         Species::Pig,
         Species::Sheep,
@@ -119,6 +120,7 @@ impl Species {
         Species::Mule,
         Species::Wolf,
         Species::Cat,
+        Species::Villager,
     ];
 
     fn id(self) -> &'static str {
@@ -136,9 +138,13 @@ impl Species {
             Species::Mule => "minecraft:mule",
             Species::Wolf => "minecraft:wolf",
             Species::Cat => "minecraft:cat",
+            Species::Villager => "minecraft:villager_v2",
         }
     }
     fn from_id(s: &str) -> Option<Species> {
+        if s == "minecraft:villager" {
+            return Some(Species::Villager);
+        }
         Species::ALL.into_iter().find(|k| k.id() == s)
     }
     /// Équidés et lamas : vie tirée au sort, apprivoisés avant de se reproduire
@@ -202,6 +208,7 @@ impl Species {
             Species::Llama | Species::Horse | Species::Donkey | Species::Mule => 30.0,
             // (apprivoisé ; sauvage : 8)
             Species::Wolf => WOLF_TAMED_HEALTH,
+            Species::Villager => 20.0,
         }
     }
     /// Largeur et hauteur de la boîte de collision d'un adulte (celles du jeu)
@@ -216,6 +223,7 @@ impl Species {
             Species::Horse | Species::Donkey | Species::Mule => (1.4, 1.6),
             Species::Wolf => (0.6, 0.8),
             Species::Cat => (0.6, 0.7),
+            Species::Villager => (0.6, 1.9),
         }
     }
     /// Taille d'affichage (« minecraft:scale » des fichiers du jeu) : le lapin est un petit
@@ -235,6 +243,7 @@ impl Species {
         match self {
             Species::Rabbit | Species::Wolf | Species::Cat => 0.3,
             Species::Goat => 0.4,
+            Species::Villager => 0.5,
             Species::Donkey | Species::Mule => 0.175,
             _ => 0.25,
         }
@@ -251,6 +260,7 @@ impl Species {
             Species::Llama | Species::Horse | Species::Donkey | Species::Mule => (0.7, 1.2, 1.2, 1.0),
             Species::Wolf => (0.8, 1.0, 1.0, 1.0),
             Species::Cat => (0.8, 1.33, 0.5, 1.0),
+            Species::Villager => (0.6, 1.0, 0.6, 0.6),
         }
     }
     /// Ce qui l'attire : il suit le joueur qui le tient
@@ -265,6 +275,7 @@ impl Species {
             Species::Horse | Species::Donkey | Species::Mule => &["golden_apple", "enchanted_golden_apple", "golden_carrot"],
             Species::Wolf => &[],
             Species::Cat => &["cod", "salmon"],
+            Species::Villager => &[],
         }
     }
     /// Ce qui le rend amoureux (les montures doivent d'abord être apprivoisées ; la mule
@@ -290,6 +301,7 @@ impl Species {
             Species::Rabbit => &[("carrot", 0.1), ("golden_carrot", 0.1), ("dandelion", 0.1)],
             Species::Wolf => &WOLF_GROW,
             Species::Cat => &[("cod", 0.1), ("salmon", 0.1)],
+            Species::Villager => &[],
         }
     }
     /// Ce qui le soigne : (objet, points de vie rendus)
@@ -314,6 +326,7 @@ impl Species {
             Species::Llama | Species::Horse | Species::Donkey | Species::Mule => &[("minecraft:leather", 0, 2)],
             Species::Goat | Species::Wolf => &[],
             Species::Cat => &[("minecraft:string", 0, 2)],
+            Species::Villager => &[],
         }
     }
 }
@@ -423,6 +436,8 @@ pub(super) struct Mob {
     bite_in: u32,
     /// État à renvoyer aux joueurs (changé pendant qu'il réfléchissait)
     refresh: bool,
+    /// Villageois : là où il vit (il ne s'en éloigne pas)
+    home: Option<(f32, f32)>,
 }
 
 impl Mob {
@@ -704,8 +719,37 @@ impl Server {
                     if self.mobs.len() < MAX_MOBS && self.mob_rng.below(10) == 0 {
                         self.spawn_herd(cx, cz, p.1 as i32);
                     }
-                    // Village : un chat errant près d'un lit, de temps en temps
+                    // Village : ses habitants, près de leurs lits (un pour deux blocs de lit,
+                    // quatre par chunk au plus), au costume du biome
                     let beds = self.world.structure_beds(cx, cz);
+                    let villagers = if beds.is_empty() { 0 } else { beds.len().div_ceil(2).min(4) };
+                    for i in 0..villagers {
+                        if self.mobs.len() >= MAX_MOBS {
+                            break;
+                        }
+                        let bed = beds[(i * 2).min(beds.len() - 1)];
+                        let (bx, bz) = (bed.0 + self.mob_rng.below(3) as i32 - 1, bed.2 + self.mob_rng.below(3) as i32 - 1);
+                        let Some(y) = self.surface_y(bx, bz, bed.1) else { continue };
+                        let costume = match self.world.generator().vanilla().map(|v| v.surface_biome_at(bx, bz)) {
+                            Some(B::Desert) => 1,
+                            Some(B::Jungle | B::SparseJungle | B::BambooJungle) => 2,
+                            Some(B::Savanna | B::SavannaPlateau | B::WindsweptSavanna) => 3,
+                            Some(B::SnowyPlains | B::IceSpikes | B::SnowyTaiga | B::SnowySlopes | B::Grove) => 4,
+                            Some(B::Taiga | B::OldGrowthPineTaiga | B::OldGrowthSpruceTaiga) => 6,
+                            _ => 0,
+                        };
+                        let job = self.villager_job();
+                        let baby = self.mob_rng.below(10) == 0;
+                        let id = self.add_mob(Species::Villager, (bx as f32 + 0.5, y as f32, bz as f32 + 0.5));
+                        if let Some(m) = self.mobs.get_mut(&id) {
+                            m.variant = if baby { 0 } else { job };
+                            m.mark = costume;
+                            if baby {
+                                m.age = -GROW_TICKS;
+                            }
+                        }
+                    }
+                    // Un chat errant près d'un lit, de temps en temps
                     if !beds.is_empty() && self.mobs.len() < MAX_MOBS && self.mob_rng.below(3) == 0 {
                         let bed = beds[self.mob_rng.below(beds.len() as u32) as usize];
                         let (bx, bz) = (bed.0 + self.mob_rng.below(7) as i32 - 3, bed.2 + self.mob_rng.below(7) as i32 - 3);
@@ -719,6 +763,17 @@ impl Server {
                     }
                 }
             }
+        }
+    }
+
+    /// Métier d'un villageois (numéros du jeu : 1 fermier, 2 pêcheur, 3 berger, 4 fléchier,
+    /// 5 bibliothécaire, 6 cartographe, 7 clerc, 8 armurier, 9 forgeron d'armes, 10 forgeron
+    /// d'outils, 11 boucher, 12 tanneur, 13 maçon ; 14 « nigaud », un sur dix)
+    fn villager_job(&mut self) -> i32 {
+        if self.mob_rng.below(10) == 0 {
+            14
+        } else {
+            1 + self.mob_rng.below(13) as i32
         }
     }
 
@@ -985,6 +1040,7 @@ impl Server {
             attack: None,
             bite_in: 0,
             refresh: false,
+            home: (species == Species::Villager).then_some((pos.0, pos.2)),
         };
         self.mobs.insert(id, mob);
         self.mobs_dirty = true;
@@ -1601,7 +1657,13 @@ impl Server {
             // Promenade, en évitant l'eau
             let a = self.mob_rng.unit() as f32 * std::f32::consts::TAU;
             let d = 2.0 + self.mob_rng.unit() as f32 * 8.0;
-            let t = (m.pos.0 + a.cos() * d, m.pos.2 + a.sin() * d);
+            let mut t = (m.pos.0 + a.cos() * d, m.pos.2 + a.sin() * d);
+            // Villageois : il reste dans son village (retour vers chez lui au-delà de 24 blocs)
+            if let Some(h) = m.home.filter(|h| (t.0 - h.0).powi(2) + (t.1 - h.1).powi(2) > 24.0 * 24.0) {
+                let (dx, dz) = (h.0 - m.pos.0, h.1 - m.pos.2);
+                let len = (dx * dx + dz * dz).sqrt().max(0.1);
+                t = (m.pos.0 + dx / len * d.min(len), m.pos.2 + dz / len * d.min(len));
+            }
             if !self.mob_water(t.0, m.pos.1 - 0.5, t.1) && !self.mob_water(t.0, m.pos.1 + 0.2, t.1) {
                 m.target = Some(t);
             }
@@ -2546,6 +2608,7 @@ impl Server {
             Species::Llama => self.mob_rng.below(4) as i32,
             Species::Goat => (self.mob_rng.below(100) < 2) as i32,
             Species::Cat => self.cat_variant(),
+            Species::Villager => self.villager_job(),
             _ => 0,
         };
         let mark = if species == Species::Horse { self.mob_rng.below(5) as i32 } else { 0 };
@@ -3401,7 +3464,8 @@ mod tests {
         assert!(Species::Horse.heal_items().iter().any(|(i, h)| *i == "hay_block" && *h == 20.0));
         for s in Species::ALL {
             assert_eq!(Species::from_id(s.id()), Some(s));
-            assert!(!s.grow_items().is_empty(), "{:?} : un petit doit pouvoir grandir plus vite", s);
+            // (le villageois ne se nourrit pas à la main)
+            assert!(s == Species::Villager || !s.grow_items().is_empty(), "{:?} : un petit doit pouvoir grandir plus vite", s);
         }
     }
 
@@ -3453,6 +3517,8 @@ mod tests {
         assert_eq!(MobRecord::from_json(&wolf.to_json()), Some(wolf));
         assert_eq!(Species::from_id("minecraft:wolf"), Some(Species::Wolf));
         assert_eq!(Species::from_id("minecraft:cat"), Some(Species::Cat));
+        assert_eq!(Species::from_id("minecraft:villager"), Some(Species::Villager));
+        assert_eq!(Species::from_id("minecraft:villager_v2"), Some(Species::Villager));
         assert!(Species::Cat.pet() && Species::Cat.taming_items().contains(&"salmon") && Species::Cat.breed_items().contains(&"cod"));
         assert!(Species::Wolf.breed_items().contains(&"cooked_beef") && Species::Wolf.tameable() && !Species::Wolf.mount());
         // Ancien enregistrement (sans les nouveaux champs) : valeurs du jeu par défaut

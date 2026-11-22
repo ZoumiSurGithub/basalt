@@ -24,6 +24,10 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   apprivoisent une fois sur trois : collier (à teindre), assis ou debout d'un clic, ils
   suivent leur maître ; le poisson les soigne et les rend amoureux (chaton apprivoisé).
   `/summon cat`.
+- Villageois (première étape) : les villages sont habités, près des lits, au costume du
+  biome et avec un métier (ou « nigaud ») ; ils se promènent sans quitter leur village,
+  regardent les joueurs, fuient sous les coups. Pas encore d'échange, de reproduction ni
+  de portes ouvertes. `/summon villager`.
 
 ### Corrigé
 
