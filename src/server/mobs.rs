@@ -857,14 +857,28 @@ impl Server {
         meta
     }
 
-    /// Inventaire porté par une monture, tel que le jeu le lit dans ses données d'entité :
-    /// type d'écran (44), nombre de cases (45), cases par point de force (46). Laissé à zéro,
-    /// le jeu affichait l'écran mais plantait dès qu'on y prenait un objet : il cherchait les
-    /// cases acceptant l'objet tenu dans un inventaire de taille nulle.
-    fn container_meta(m: &Mob) -> [(u32, bedrock::Meta); 3] {
-        let size = m.inventory_size() as i32;
-        let kind = if size > 0 { bedrock::SCREEN_HORSE } else { 0 };
-        [(44, bedrock::Meta::Byte(kind)), (45, bedrock::Meta::Int(size)), (46, bedrock::Meta::Int(0))]
+    /// Inventaire d'une monture, tel que le jeu officiel l'annonce dans ses données d'entité :
+    /// type d'écran (44, une fois apprivoisée), nombre de cases (45 : 2 pour le cheval, 16
+    /// pour l'âne, la mule et le lama), cases de coffre par point de force (46 : 3 pour le
+    /// lama), force (75) et force maximale (76). Laissé à zéro, le jeu plantait dès qu'on
+    /// prenait un objet dans l'écran.
+    fn container_meta(m: &Mob) -> [(u32, bedrock::Meta); 5] {
+        let mount = m.species.mount();
+        let llama = m.species == Species::Llama;
+        let kind = if mount && m.tamed { bedrock::SCREEN_HORSE } else { 0 };
+        let size = match m.species {
+            _ if !mount => 0,
+            Species::Horse => 2,
+            _ => 16,
+        };
+        let strength = if llama { m.strength.max(1) as i32 } else { 0 };
+        [
+            (44, bedrock::Meta::Byte(kind)),
+            (45, bedrock::Meta::Int(size)),
+            (46, bedrock::Meta::Int(if llama { 3 } else { 0 })),
+            (75, bedrock::Meta::Int(strength)),
+            (76, bedrock::Meta::Int(if llama { 5 } else { 0 })),
+        ]
     }
 
     /// Paquet d'apparition d'une créature.
@@ -2185,15 +2199,17 @@ impl Server {
             Some(Species::Llama) => equip.push((1, carpet_icon, carpets.iter().map(|s| s.as_str()).collect())),
             _ => {}
         }
-        let size = slots.len() as i32;
+        // Taille annoncée, comptée comme le jeu : l'équipement, puis le coffre à partir de 1
+        let size = if slots.len() > 2 { slots.len() as i32 - 1 } else { 2 };
         info!("{} : inventaire de monture, écriture {} (debug-mount-screen)", addr, variant);
-        // Envoyées avant l'ouverture, puis répétées après : à la première ouverture de la
-        // partie, l'écran met un moment à se construire et laissait passer celles reçues
-        // après lui (cases sans icône, selle et armure refusées)
-        let equip_packet = bedrock::update_equip(WINDOW, id, size, &equip);
-        self.send(addr, bedrock::ID_UPDATE_EQUIP, &equip_packet);
-        self.send(addr, bedrock::ID_CONTAINER_OPEN, &bedrock::container_open_entity(WINDOW, bedrock::SCREEN_HORSE, id));
-        self.send(addr, bedrock::ID_UPDATE_EQUIP, &equip_packet);
+        // Comme le jeu officiel : ce paquet seul ouvre l'écran de monture. Accompagné d'une
+        // ouverture de conteneur, le jeu recevait deux ouvertures : cases sans icône à la
+        // première, puis refus (« fermeture de la fenêtre -1 ») et écran figé.
+        // (`debug-mount-screen=1` : l'ancienne écriture, avec l'ouverture de conteneur)
+        if variant == 1 {
+            self.send(addr, bedrock::ID_CONTAINER_OPEN, &bedrock::container_open_entity(WINDOW, bedrock::SCREEN_HORSE, id));
+        }
+        self.send(addr, bedrock::ID_UPDATE_EQUIP, &bedrock::update_equip(WINDOW, id, size, &equip));
         self.send_block_content(addr, &slots);
         true
     }

@@ -107,6 +107,12 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   fermeture de l'écran et refusait ensuite tout geste dans le coffre de l'âne. Cette
   fermeture est maintenant ignorée. La selle de l'âne est envoyée avec les deux cases
   d'équipement, comme pour le cheval.
+- Inventaire des montures refait comme le jeu officiel : l'écran s'ouvre par le seul paquet
+  des cases d'équipement (plus d'ouverture de conteneur en double, qui donnait des cases
+  sans icône puis un écran figé) ; l'âne et la mule ont la selle seule et un coffre dont
+  les cases sont comptées à partir de 1 ; le lama a son tapis et 3 cases de coffre par
+  point de force ; les données d'entité annoncent 2 cases pour le cheval, 16 pour l'âne,
+  la mule et le lama, et la force du lama.
 - Crachat du lama : il part de la bouche et vole jusqu'à sa cible au lieu de rester immobile
   au-dessus du lama (données de projectile, position redessinée à chaque tick).
 - Un jeu qui refusait les animaux les supprimait pour tout le serveur (et de la sauvegarde) :

@@ -4106,7 +4106,15 @@ impl Server {
         let mut work = inv.clone();
         let mut thrown: Vec<(i16, u8)> = Vec::new();
         let mut touched: Vec<(Target, usize)> = Vec::new();
-        let at = |r: &bedrock::SlotRef| inventory::resolve(r.container, r.slot);
+        // Coffre d'une monture : le jeu compte ses cases à partir de 1 (la case 0 est la selle
+        // ou le tapis, tenue à part) ; dans l'inventaire de la monture, le coffre commence
+        // après les deux cases d'équipement
+        let mount = work.block_mob.is_some();
+        let at = |r: &bedrock::SlotRef| match (mount, r.container) {
+            (true, 7) if r.slot >= 1 => inventory::resolve(7, r.slot + 1),
+            (true, 7) => None,
+            _ => inventory::resolve(r.container, r.slot),
+        };
         for action in &request.actions {
             let step = match action {
                 bedrock::StackAction::Take { count, from, to } | bedrock::StackAction::Place { count, from, to } => {
@@ -4162,14 +4170,15 @@ impl Server {
             .filter(|(target, _)| *target != Target::Created)
             .map(|(target, slot)| {
                 let stack = work.get((*target, *slot)).unwrap_or(inventory::ItemStack::EMPTY);
-                let name = match (*target, work.block_is_furnace) {
+                let (name, shown) = match (*target, work.block_is_furnace) {
                     // four : ingrédient, combustible, résultat
-                    (Target::Block, true) => [25u8, 24, 26][(*slot).min(2)],
-                    // monture : selle et armure, puis le coffre
-                    (Target::Block, false) if work.block_mob.is_some() && *slot < 2 => 27,
-                    _ => inventory::protocol_name(*target, *slot),
+                    (Target::Block, true) => ([25u8, 24, 26][(*slot).min(2)], *slot),
+                    // monture : selle et armure (ou tapis), puis le coffre, compté à partir de 1
+                    (Target::Block, false) if work.block_mob.is_some() && *slot < 2 => (27, *slot),
+                    (Target::Block, false) if work.block_mob.is_some() => (7, *slot - 1),
+                    _ => (inventory::protocol_name(*target, *slot), *slot),
                 };
-                (name, *slot as u8, stack.count, stack.net_id)
+                (name, shown as u8, stack.count, stack.net_id)
             })
             .collect();
         *inv = work;
@@ -4317,25 +4326,22 @@ impl Server {
         let list: Vec<(i16, u8, i32, u32)> = slots.iter().map(|s| (s.id, s.count, s.net_id, self.block_for(s.id).unwrap_or(0))).collect();
         let features = crate::versions::features(protocol);
         let species = self.clients.get(addr).and_then(|c| c.inv.block_mob).and_then(|id| self.mobs.get(&id)).map(|m| m.species);
-        // Monture : chaque partie de l'écran a son conteneur nommé. Envoyée sous le nom 0
-        // (« entrée d'enclume », celui des coffres, où le jeu l'ignore), la liste allait dans un
-        // conteneur qui n'est pas celui de l'écran, et le jeu plantait au premier objet pris.
-        // Selle et armure (ou tapis) : « équipement de monture », autant de cases que l'écran en
-        // montre (la selle seule pour l'âne et la mule). Coffre : « conteneur du bloc ou de
-        // l'entité », mêmes numéros de case que l'inventaire de la monture.
+        // Monture, comme le jeu officiel : chaque partie de l'écran a son conteneur nommé.
+        // « Équipement de monture » : la selle (case 0), l'armure ou le tapis (case 1) ; l'âne
+        // et la mule n'ont que la selle. « Conteneur d'entité » : le coffre, dont le jeu
+        // compte les cases à partir de 1.
         // (`debug-mount-screen=1` : l'ancienne écriture, tout sous le nom 0)
         if let (Some(species), 0) = (species, self.cfg.mount_screen) {
-            // Toujours les deux cases (selle, armure ou tapis) : avec la selle seule,
-            // l'écran de l'âne ne la montrait pas
-            let _ = species;
-            let equip = 2.min(list.len());
+            let equip = match species {
+                mobs::Species::Donkey | mobs::Species::Mule => 1,
+                _ => 2,
+            }
+            .min(list.len());
             let pk = bedrock::container_items_named(window as u32, bedrock::CONTAINER_HORSE_EQUIP, &list[..equip], self.item_net_ids, features);
             self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
             if list.len() > 2 {
-                let mut chest = list.clone();
-                for cell in chest.iter_mut().take(2) {
-                    *cell = (0, 0, 0, 0);
-                }
+                let mut chest = vec![(0, 0, 0, 0)];
+                chest.extend_from_slice(&list[2..]);
                 let pk = bedrock::container_items_named(window as u32, bedrock::CONTAINER_LEVEL_ENTITY, &chest, self.item_net_ids, features);
                 self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
             }
