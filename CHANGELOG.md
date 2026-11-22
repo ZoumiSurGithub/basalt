@@ -25,6 +25,10 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   suivent leur maître ; le poisson les soigne et les rend amoureux (chaton apprivoisé).
   `/summon cat`.
 
+### Corrigé
+
+- Lapins et chats sauvages ne fuient plus un joueur en créatif ou spectateur.
+
 ## [0.0.2] — 2026-11-22
 
 ### Ajouté

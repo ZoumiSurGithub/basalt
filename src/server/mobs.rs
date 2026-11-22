@@ -1499,7 +1499,9 @@ impl Server {
         let near_player = |p: &(f32, f32, f32), r: f32| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2) < r * r && (p.1 - m.pos.1).abs() < 4.0;
         // Lapin : fuit le joueur qui ne lui tend pas sa nourriture (à moins de 8 blocs)
         let scary = if m.species == Species::Rabbit || (m.species == Species::Cat && !m.tamed) {
-            players.iter().filter(|(p, held)| near_player(p, 8.0) && !tempting.contains(&held.as_str())).map(|(p, _)| *p).min_by(|a, b| {
+            // (jamais un joueur en créatif ou spectateur, comme dans le jeu)
+            let harmless: Vec<(f32, f32, f32)> = self.clients.values().filter(|c| c.joined && !c.mode.takes_damage()).map(|c| (c.pos.0, c.pos.1 - EYE, c.pos.2)).collect();
+            players.iter().filter(|(p, held)| near_player(p, 8.0) && !tempting.contains(&held.as_str()) && !harmless.contains(p)).map(|(p, _)| *p).min_by(|a, b| {
                 let d = |p: &(f32, f32, f32)| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2);
                 d(a).total_cmp(&d(b))
             })
@@ -2556,9 +2558,7 @@ impl Server {
             }
             // Événement « minecraft:on_tame » du jeu : une monture déjà apprivoisée
             m.tamed = tamed && species.mount();
-            if species.pet() {
-                m.color = 14;
-            }
+
         }
         // Son chunk compte désormais parmi ceux qui sont en mémoire (sinon il serait rangé aussitôt)
         let chunk = mob_store::chunk_of(pos.0, pos.2);
