@@ -935,6 +935,8 @@ pub fn container_items(window: u32, slots: &[(i16, u8, i32, u32)], net_ids: bool
 
 /// Nom de conteneur « équipement de monture » (selle, armure ou tapis).
 pub const CONTAINER_HORSE_EQUIP: u8 = 27;
+/// Nom de conteneur « contenu d'un bloc ou d'une entité » (coffre, coffre d'une monture).
+pub const CONTAINER_LEVEL_ENTITY: u8 = 7;
 
 /// Idem, en nommant le conteneur visé : l'écran d'une monture montre sa selle et son armure
 /// d'après le conteneur « équipement de monture », à part du coffre.

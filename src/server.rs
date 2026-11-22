@@ -4306,30 +4306,35 @@ impl Server {
             None => return,
         };
         let list: Vec<(i16, u8, i32, u32)> = slots.iter().map(|s| (s.id, s.count, s.net_id, self.block_for(s.id).unwrap_or(0))).collect();
-        // Monture : selle et armure (ou tapis) vont dans le conteneur « équipement de monture »,
-        // d'où l'écran les affiche (autant de cases que l'écran en montre : deux pour le cheval
-        // et le lama, la selle seule pour l'âne et la mule). Dans le contenu de la fenêtre, ces
-        // cases sont alors laissées vides : une même pile annoncée deux fois (même numéro dans
-        // deux conteneurs) faisait planter le jeu au geste suivant.
-        // (écritures 0 et 3 de `debug-mount-screen` : tout dans la fenêtre, rien à part)
-        let separate = self.cfg.mount_screen == 1 || self.cfg.mount_screen == 2;
-        let equip = match self.clients.get(addr).and_then(|c| c.inv.block_mob).filter(|_| separate).and_then(|id| self.mobs.get(&id)).map(|m| m.species) {
-            Some(mobs::Species::Donkey | mobs::Species::Mule) => 1,
-            Some(_) => 2,
-            None => 0,
-        }
-        .min(list.len());
-        let mut window_list = list.clone();
-        for cell in window_list.iter_mut().take(equip) {
-            *cell = (0, 0, 0, 0);
-        }
         let features = crate::versions::features(protocol);
-        let pk = bedrock::container_items(window as u32, &window_list, self.item_net_ids, features);
-        self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
-        if equip > 0 {
+        let species = self.clients.get(addr).and_then(|c| c.inv.block_mob).and_then(|id| self.mobs.get(&id)).map(|m| m.species);
+        // Monture : chaque partie de l'écran a son conteneur nommé. Envoyée sous le nom 0
+        // (« entrée d'enclume », celui des coffres, où le jeu l'ignore), la liste allait dans un
+        // conteneur qui n'est pas celui de l'écran, et le jeu plantait au premier objet pris.
+        // Selle et armure (ou tapis) : « équipement de monture », autant de cases que l'écran en
+        // montre (la selle seule pour l'âne et la mule). Coffre : « conteneur du bloc ou de
+        // l'entité », mêmes numéros de case que l'inventaire de la monture.
+        // (`debug-mount-screen=1` : l'ancienne écriture, tout sous le nom 0)
+        if let (Some(species), 0) = (species, self.cfg.mount_screen) {
+            let equip = match species {
+                mobs::Species::Donkey | mobs::Species::Mule => 1,
+                _ => 2,
+            }
+            .min(list.len());
             let pk = bedrock::container_items_named(window as u32, bedrock::CONTAINER_HORSE_EQUIP, &list[..equip], self.item_net_ids, features);
             self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
+            if list.len() > 2 {
+                let mut chest = list.clone();
+                for cell in chest.iter_mut().take(2) {
+                    *cell = (0, 0, 0, 0);
+                }
+                let pk = bedrock::container_items_named(window as u32, bedrock::CONTAINER_LEVEL_ENTITY, &chest, self.item_net_ids, features);
+                self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
+            }
+            return;
         }
+        let pk = bedrock::container_items(window as u32, &list, self.item_net_ids, features);
+        self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
     }
 
     /// Recopie le contenu réel du bloc ouvert dans la vue du joueur. Faux si le bloc a
