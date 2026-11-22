@@ -3,7 +3,7 @@
 Ce guide explique, pas à pas, comment installer un serveur Basalt sur **Windows** ou sur
 **Linux**, le démarrer, s'y connecter depuis Minecraft et le mettre à jour.
 
-Il faut le jeu **Minecraft Bedrock** (Windows, mobile, console) en version **1.26.40 ou
+Il faut le jeu **Minecraft Bedrock** (Windows, mobile, console) en version **1.26.60 ou
 plus**. Le serveur, lui, fonctionne sur n'importe quel PC ou serveur récent : 1 Go de
 mémoire libre et une connexion Internet suffisent pour commencer.
 
@@ -222,7 +222,7 @@ op VotrePseudo
 ## En cas de problème
 
 - **Le serveur n'apparaît pas ou la connexion échoue** : vérifiez les ports ci-dessus, et
-  que le jeu est en version 1.26.40 ou plus. Le journal de la console dit souvent pourquoi
+  que le jeu est en version 1.26.60 ou plus. Le journal de la console dit souvent pourquoi
   un joueur est refusé.
 - **« Structures : plans officiels… illisibles » ou structures simplifiées** : les plans de
   Mojang n'ont pas pu être téléchargés (pas d'Internet, `unzip` absent sous Linux).

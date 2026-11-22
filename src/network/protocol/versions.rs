@@ -5,16 +5,16 @@
 //! tirées du journal officiel du protocole (mojang.github.io/bedrock-protocol-docs).
 
 /// Versions stables connues : (protocole, nom affiché).
+/// Les versions d'avant la 1.26.60 (2168 = 1.26.40, 2169 = 1.26.45, 2193 = 1.26.50) ne sont
+/// plus acceptées : la 1.26.60 a changé l'écriture des objets, des données d'entité et de
+/// plusieurs paquets, et seuls les formats 1.26.60 et plus ont été relevés.
 pub const KNOWN: &[(i32, &str)] = &[
-    (2168, "1.26.40"),
-    (2169, "1.26.45"),
-    (2193, "1.26.50"),
-    (2225, "1.26.65"),
+    (2225, "1.26.60"),
     (2259, "1.26.70 (préversion)"),
 ];
 
 /// Plus ancien et plus récent protocole dont l'encodage est connu.
-pub const MIN_PROTOCOL: i32 = 2168;
+pub const MIN_PROTOCOL: i32 = 2225;
 pub const MAX_PROTOCOL: i32 = 2259;
 
 /// Nom de la version correspondant à un protocole (la plus proche en dessous).
@@ -58,9 +58,9 @@ mod tests {
 
     #[test]
     fn names_and_features() {
-        assert_eq!(name(2168), "1.26.40");
-        assert_eq!(name(2200), "1.26.50");
-        assert_eq!(name(2225), "1.26.65");
+        assert_eq!(name(2168), "inconnue");
+        assert_eq!(name(2230), "1.26.60");
+        assert_eq!(name(2225), "1.26.60");
         assert_eq!(name(100), "inconnue");
         assert!(!features(2169).jigsaw_before_start);
         assert!(features(2193).jigsaw_before_start && !features(2193).editor_migration_version);

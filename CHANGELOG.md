@@ -65,6 +65,9 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Modifié
 
+- **Versions d'avant la 1.26.60 refusées** (1.26.40 à 1.26.51) : le jeu indique qu'il doit
+  être mis à jour. Elles écrivent les objets et plusieurs paquets autrement, et n'étaient en
+  pratique pas jouables (inventaire, déplacements). Un `min-protocol` plus bas est relevé à 2225.
 - Publication sur GitHub : la version Windows attend que les tests passent (les deux
   versions publiées restent identiques) ; sur une branche, les tests de bout en bout (une
   minute, sensibles à la lenteur de la machine) ne sont plus lancés, seulement pour une
@@ -82,11 +85,6 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Corrigé
 
-- Connexion en 1.26.40 / 1.26.45 : le jeu ne pouvait lire ni la liste des packs de ressources
-  (paquet 6), ni les chunks (paquet 58), ni les animaux et les autres joueurs (paquets 13 et 12,
-  qui ont un octet de moins avant la 1.26.60). Ces versions reçoivent aussi désormais les
-  attributs (sans eux le joueur ne pouvait ni marcher, ni sauter, ni voler), l'inventaire, le
-  chat et les paquets envoyés à tous, qui étaient réservés à la 1.26.60 et plus.
 - Un jeu qui refusait les animaux les supprimait pour tout le serveur (et de la sauvegarde) :
   le refus est maintenant seulement signalé.
 - Les animaux qui se promenaient renonçaient en plein saut devant une marche d'un bloc

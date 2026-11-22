@@ -226,10 +226,7 @@ peuvent être connectés en même temps.
 
 | Protocole | Versions de Bedrock | Particularités gérées |
 |---|---|---|
-| 2168 | 1.26.40 à 1.26.44 | format de base |
-| 2169 | 1.26.45 | — |
-| 2193 | 1.26.50, 1.26.51 | `JigsawStructureData` exigé avant `StartGame` |
-| 2225 | 1.26.60 à 1.26.65 | champ ajouté dans `LevelSettings`, drapeau ajouté dans `LevelChunk` |
+| 2225 | 1.26.60 à 1.26.66 | formats de base (relevés en 1.26.65) |
 | 2259 | préversion 1.26.70 | octet ajouté à la fin de `NetworkSettings` |
 
 Les préversions intermédiaires (protocoles entre ces numéros) sont aussi acceptées.
@@ -238,8 +235,10 @@ Dans `server.properties` :
 - `min-protocol` et `max-protocol` bornent les versions acceptées ;
 - `game-version` et `protocol` indiquent la version annoncée dans la liste des serveurs.
 
-Les versions antérieures à 1.26.40 sont refusées avec le message « client trop
-ancien » : leurs formats de paquets n'ont pas encore été relevés. Pour en ajouter
+Les versions antérieures à 1.26.60 sont refusées : le jeu affiche qu'il doit être mis à
+jour. La 1.26.60 a changé l'écriture des objets, des données d'entité et de plusieurs
+paquets, et seuls les formats 1.26.60 et plus ont été relevés. Un `min-protocol` plus
+bas dans `server.properties` est relevé à 2225 au démarrage. Pour en ajouter
 une, il faut décrire ses différences dans `src/network/protocol/versions.rs` et les appliquer dans
 `src/network/protocol/bedrock/`. À chaque nouvelle version du jeu, la même opération est nécessaire.
 

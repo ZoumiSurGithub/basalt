@@ -630,8 +630,15 @@ fn full_connection_flow() {
     d.login(2225, "steve", false);
     assert_eq!(d.expect_disconnect(), "Un joueur porte déjà ce pseudo.");
 
-    // 5 bis. Autres versions : la suite de paquets s'adapte au protocole du client
-    for (proto, jigsaw, chunk_flag) in [(2168, false, false), (2193, true, false), (2259, true, true)] {
+    // 5 bis. Versions d'avant la 1.26.60 : refusées (« jeu trop ancien »)
+    for proto in [2168, 2193] {
+        let mut v = Client::new(addr);
+        v.handshake();
+        v.game(0xc1, &(proto as i32).to_be_bytes(), None);
+        assert_eq!(v.recv_game(false), (2, 1i32.to_be_bytes().to_vec()), "protocole {}", proto);
+    }
+    // Autres versions : la suite de paquets s'adapte au protocole du client
+    for (proto, jigsaw, chunk_flag) in [(2259, true, true)] {
         let mut v = Client::new(addr);
         v.handshake();
         v.game(0xc1, &(proto as i32).to_be_bytes(), None);

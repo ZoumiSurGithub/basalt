@@ -142,9 +142,9 @@ max-players=20
 game-version=1.26.65
 protocol=2225
 # Versions acceptées à la connexion, par numéro de protocole :
-#   2168 = 1.26.40 à 1.26.44    2169 = 1.26.45    2193 = 1.26.50 et 1.26.51
-#   2225 = 1.26.60 à 1.26.65    2259 = préversion 1.26.70
-min-protocol=2168
+#   2225 = 1.26.60 à 1.26.66    2259 = préversion 1.26.70
+# (les versions d'avant la 1.26.60 ne sont pas prises en charge)
+min-protocol=2225
 max-protocol=2259
 # Mode de jeu des nouveaux joueurs : Survival, Creative, Adventure ou Spectator
 gamemode=Survival
@@ -333,6 +333,15 @@ impl Config {
         num!("protocol", protocol);
         num!("min-protocol", min_protocol);
         num!("max-protocol", max_protocol);
+        if c.min_protocol < crate::versions::MIN_PROTOCOL {
+            warn!(
+                "server.properties : min-protocol={} n'est plus pris en charge, {} ({}) est utilisé",
+                c.min_protocol,
+                crate::versions::MIN_PROTOCOL,
+                crate::versions::name(crate::versions::MIN_PROTOCOL)
+            );
+            c.min_protocol = crate::versions::MIN_PROTOCOL;
+        }
         if c.min_protocol > c.max_protocol {
             warn!("server.properties : min-protocol est supérieur à max-protocol");
             c.max_protocol = c.min_protocol;
