@@ -103,6 +103,10 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 - Montures : à la première ouverture de leur inventaire, les cases de selle et d'armure
   n'avaient pas d'icône et refusaient les objets. Leur description est maintenant envoyée
   avant l'ouverture de l'écran, puis répétée après.
+- Écran de monture : le jeu ferme en passant une fenêtre « -1 » ; Basalt prenait ça pour la
+  fermeture de l'écran et refusait ensuite tout geste dans le coffre de l'âne. Cette
+  fermeture est maintenant ignorée. La selle de l'âne est envoyée avec les deux cases
+  d'équipement, comme pour le cheval.
 - Crachat du lama : il part de la bouche et vole jusqu'à sa cible au lieu de rester immobile
   au-dessus du lama (données de projectile, position redessinée à chaque tick).
 - Un jeu qui refusait les animaux les supprimait pour tout le serveur (et de la sauvegarde) :

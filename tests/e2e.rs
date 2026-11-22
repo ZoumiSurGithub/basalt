@@ -2580,10 +2580,10 @@ fn donkey_chest_and_dyed_sheep() {
     let equip = wait(&mut steve, 81).expect("cases d'équipement envoyées");
     assert_eq!((equip[0], equip[1]), (2, 12));
     assert!(equip.windows(16).any(|w| w == b"minecraft:saddle"), "la selle parmi les objets acceptés");
-    // La selle seule (âne) dans « équipement de monture », puis le coffre (15 cases, après les
-    // deux cases d'équipement) dans « conteneur d'entité »
+    // Selle et case d'armure dans « équipement de monture », puis le coffre (15 cases, après
+    // les deux cases d'équipement) dans « conteneur d'entité »
     let equip = wait(&mut steve, 49).expect("équipement envoyé");
-    assert_eq!((equip[0], equip[1]), (2, 1), "la selle seule : {:?}", &equip[..4]);
+    assert_eq!((equip[0], equip[1]), (2, 2), "les deux cases d'équipement : {:?}", &equip[..4]);
     let content = wait(&mut steve, 49).expect("coffre envoyé");
     assert_eq!((content[0], content[1]), (2, 17), "deux cases vides et 15 cases de coffre : {:?}", &content[..4]);
     stop.store(true, std::sync::atomic::Ordering::SeqCst);

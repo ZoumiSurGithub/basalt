@@ -3885,6 +3885,15 @@ impl Server {
             Some(v) => v,
             None => return,
         };
+        // Fermeture d'une autre fenêtre que celle ouverte (le jeu ferme la fenêtre -1 en
+        // préparant l'écran de monture) : l'écran ouvert reste ouvert. La répondre comme une
+        // fermeture ordinaire vidait l'écran côté serveur (objets du coffre de l'âne refusés)
+        // et le jeu signalait une réponse du mauvais type.
+        let open = self.clients.get(addr).map(|c| c.inv.open_window).unwrap_or(0);
+        if open != 0 && window as u8 != open as u8 {
+            self.send(addr, bedrock::ID_CONTAINER_CLOSE, &bedrock::container_close(window, kind, true));
+            return;
+        }
         let mut resend = false;
         if let Some(c) = self.clients.get_mut(addr) {
             c.inv.open_window = 0;
@@ -4316,11 +4325,10 @@ impl Server {
         // l'entité », mêmes numéros de case que l'inventaire de la monture.
         // (`debug-mount-screen=1` : l'ancienne écriture, tout sous le nom 0)
         if let (Some(species), 0) = (species, self.cfg.mount_screen) {
-            let equip = match species {
-                mobs::Species::Donkey | mobs::Species::Mule => 1,
-                _ => 2,
-            }
-            .min(list.len());
+            // Toujours les deux cases (selle, armure ou tapis) : avec la selle seule,
+            // l'écran de l'âne ne la montrait pas
+            let _ = species;
+            let equip = 2.min(list.len());
             let pk = bedrock::container_items_named(window as u32, bedrock::CONTAINER_HORSE_EQUIP, &list[..equip], self.item_net_ids, features);
             self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
             if list.len() > 2 {
