@@ -16,6 +16,9 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   prend au joueur qui frappe un villageois ou un golem (jamais en créatif), l'envoie en l'air
   d'un coup de bras, ne recule pas sous les coups et laisse du fer et des coquelicots.
   `/summon iron_golem` fonctionne aussi.
+- Golem de fer à bâtir : une citrouille sculptée (ou une citrouille-lanterne) posée au sommet
+  d'un T de quatre blocs de fer ; celui-là ne s'en prend jamais aux joueurs. Un lingot de fer
+  répare un golem blessé (25 points de vie), et ses fissures suivent sa vie.
 - Cloches : un clic les fait sonner et se balancer, pour tous les joueurs des environs.
 - Loups : meutes de quatre dans les taïgas, les bosquets enneigés et (plus rarement) les
   forêts ; sauvages, ils chassent moutons et lapins et se retournent en meute contre le

@@ -318,6 +318,8 @@ impl Species {
             Species::Llama => &[("wheat", 2.0), ("hay_block", 10.0)],
             Species::Wolf => &WOLF_FOOD,
             Species::Cat => &[("cod", 2.0), ("salmon", 2.0)],
+            // (un lingot répare le golem d'un quart de sa vie)
+            Species::IronGolem => &[("iron_ingot", 25.0)],
             _ => &[],
         }
     }
@@ -467,7 +469,8 @@ impl Mob {
         if self.sheared {
             f |= bedrock::FLAG_SHEARED;
         }
-        if self.tamed {
+        // (golem « apprivoisé » : bâti par un joueur, rien à montrer)
+        if self.tamed && self.species != Species::IronGolem {
             f |= bedrock::FLAG_TAMED;
         }
         if self.rearing > 0 {
@@ -2008,6 +2011,39 @@ impl Server {
         None
     }
 
+    /// Citrouille sculptée (ou citrouille-lanterne) posée au sommet d'un T de quatre blocs de
+    /// fer : les cinq blocs disparaissent et un golem de fer prend leur place. Bâti par un
+    /// joueur, il ne s'en prend jamais aux joueurs. Vrai si un golem est né.
+    pub(super) fn try_build_golem(&mut self, (x, y, z): (i32, i32, i32)) -> bool {
+        let name = |s: &Self, p: (i32, i32, i32)| s.data.as_ref().and_then(|d| d.block_name(s.world.get(p.0, p.1, p.2))).unwrap_or("").to_string();
+        let head = name(self, (x, y, z));
+        if head != "minecraft:carved_pumpkin" && head != "minecraft:lit_pumpkin" {
+            return false;
+        }
+        let iron = |s: &Self, p: (i32, i32, i32)| name(s, p) == "minecraft:iron_block";
+        if !iron(self, (x, y - 1, z)) || !iron(self, (x, y - 2, z)) {
+            return false;
+        }
+        // Les bras : d'est en ouest ou du nord au sud
+        let arms = [[(x - 1, y - 1, z), (x + 1, y - 1, z)], [(x, y - 1, z - 1), (x, y - 1, z + 1)]].into_iter().find(|a| iron(self, a[0]) && iron(self, a[1]));
+        let Some(arms) = arms else { return false };
+        if self.mobs.len() >= MAX_MOBS {
+            return false;
+        }
+        let air = self.world.generator().blocks.air;
+        for p in [(x, y, z), (x, y - 1, z), (x, y - 2, z), arms[0], arms[1]] {
+            self.change_block(p, air);
+        }
+        let id = self.add_mob(Species::IronGolem, (x as f32 + 0.5, (y - 2) as f32, z as f32 + 0.5));
+        if let Some(m) = self.mobs.get_mut(&id) {
+            m.age = 0;
+            m.tamed = true;
+            m.home = None;
+        }
+        self.mobs_dirty = true;
+        true
+    }
+
     /// Les golems de fer des environs prennent ce joueur pour cible (il a frappé un
     /// villageois ou l'un d'eux). Jamais un joueur en créatif.
     fn rally_golems(&mut self, culprit: SocketAddr, near: (f32, f32, f32)) {
@@ -2015,7 +2051,8 @@ impl Server {
             return;
         }
         for g in self.mobs.values_mut() {
-            if g.species == Species::IronGolem && g.dead.is_none() && (g.pos.0 - near.0).powi(2) + (g.pos.2 - near.2).powi(2) < 24.0 * 24.0 {
+            // (un golem bâti par un joueur ne s'en prend jamais aux joueurs)
+            if g.species == Species::IronGolem && !g.tamed && g.dead.is_none() && (g.pos.0 - near.0).powi(2) + (g.pos.2 - near.2).powi(2) < 24.0 * 24.0 {
                 g.attack = Some(Prey::Player(culprit));
                 g.panic = 0;
             }
@@ -2624,6 +2661,10 @@ impl Server {
         if let Some(name) = attacker_name {
             self.rally_wolves(&name, Prey::Mob(id), from);
         }
+        // Golem blessé : ses fissures apparaissent chez les joueurs
+        if species == Species::IronGolem && !dead {
+            self.send_to_viewers(id, bedrock::ID_UPDATE_ATTRIBUTES, &bedrock::health_attribute(id, health, max_health));
+        }
         // Villageois ou golem frappé par un joueur : les golems du village s'en mêlent
         if let (Attacker::Player(a), Species::Villager | Species::IronGolem) = (by, species) {
             self.rally_golems(a, from);
@@ -2883,6 +2924,12 @@ impl Server {
             if let Some(s) = self.mobs.get_mut(&id) {
                 s.health = (s.health + heal.unwrap_or(0.0)).min(s.max_health);
                 s.temper = (s.temper + temper.unwrap_or(0)).min(s.species.max_temper());
+            }
+            // Golem réparé : ses fissures se referment chez les joueurs
+            if m.species == Species::IronGolem {
+                if let Some((h, max)) = self.mobs.get(&id).map(|s| (s.health, s.max_health)) {
+                    self.send_to_viewers(id, bedrock::ID_UPDATE_ATTRIBUTES, &bedrock::health_attribute(id, h, max));
+                }
             }
             used = true;
         } else if let (Some(g), true) = (grow, m.baby()) {

@@ -4604,6 +4604,8 @@ impl Server {
                 self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y + 1, z, upper), None);
             }
         }
+        // Citrouille posée sur un T de blocs de fer : un golem
+        self.try_build_golem((x, y, z));
     }
 
     /// Montre aux joueurs qui le voient l'objet qu'un joueur tient en main, s'il a changé.
