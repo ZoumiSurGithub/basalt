@@ -290,6 +290,19 @@ pub fn toggled(data: &GameData, state: u32) -> Option<(u32, Toggle)> {
     None
 }
 
+/// Portillon qu'on ouvre : il pivote toujours en s'éloignant du joueur. S'il est tourné
+/// vers lui, il se retourne (même axe, sens opposé) avant de s'ouvrir.
+pub fn gate_away(data: &GameData, state: u32, looks: u8) -> u32 {
+    let gate = data.block_name(state).map(|n| n.ends_with("fence_gate")).unwrap_or(false);
+    if !gate || data.prop(state, "open_bit") != Some(Prop::Int(1)) {
+        return state;
+    }
+    match data.prop(state, "minecraft:cardinal_direction") {
+        Some(Prop::Str(dir)) if dir == word(opposite(looks)) => data.with_props(state, &[("minecraft:cardinal_direction", Prop::Str(word(looks).to_string()))]).unwrap_or(state),
+        _ => state,
+    }
+}
+
 /// Vrai pour un bloc en deux moitiés superposées (porte).
 pub fn is_door(data: &GameData, state: u32) -> bool {
     data.prop(state, "upper_block_bit").is_some()
@@ -298,6 +311,23 @@ pub fn is_door(data: &GameData, state: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gate_opens_away_from_the_player() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
+        let data = GameData::load(&dir).unwrap();
+        let gate = data.default_state("minecraft:fence_gate").unwrap();
+        let north = data.with_props(gate, &[("minecraft:cardinal_direction", Prop::Str("north".into())), ("open_bit", Prop::Int(1))]).unwrap();
+        // Joueur qui regarde vers le sud, portillon tourné vers le nord : il se retourne
+        let turned = gate_away(&data, north, SOUTH);
+        assert_eq!(data.prop(turned, "minecraft:cardinal_direction"), Some(Prop::Str("south".into())));
+        assert_eq!(data.prop(turned, "open_bit"), Some(Prop::Int(1)));
+        // Même sens, ou de côté : inchangé ; portillon fermé : inchangé
+        assert_eq!(gate_away(&data, north, NORTH), north);
+        assert_eq!(gate_away(&data, north, EAST), north);
+        let closed = data.with_props(north, &[("open_bit", Prop::Int(0))]).unwrap();
+        assert_eq!(gate_away(&data, closed, SOUTH), closed);
+    }
 
     #[test]
     fn stairs_form_corners_with_their_neighbours() {

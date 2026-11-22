@@ -38,6 +38,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Corrigé
 
+- Portillons : ils s'ouvrent toujours en s'éloignant du joueur, quel que soit le côté d'où
+  on clique.
 - Lapins et chats sauvages ne fuient plus un joueur en créatif ou spectateur.
 - Villageois et chats des villages : ils apparaissent dans la maison, au pied du lit, et
   plus sur le toit.

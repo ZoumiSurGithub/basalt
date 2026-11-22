@@ -4913,9 +4913,11 @@ impl Server {
             None => return,
         }
         let state = self.world.get(pos.0, pos.1, pos.2);
+        let looks = self.clients.get(addr).map(|c| placement::facing(c.yaw)).unwrap_or(placement::NORTH);
         let (next, kind, other_half) = match &self.data {
             Some(d) => match placement::toggled(d, state) {
                 Some((next, kind)) => {
+                    let next = placement::gate_away(d, next, looks);
                     // Une porte : l'autre moitié suit
                     let other = match d.prop(state, "upper_block_bit") {
                         Some(Prop::Int(1)) => Some((pos.0, pos.1 - 1, pos.2)),
