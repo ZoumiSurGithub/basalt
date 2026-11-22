@@ -304,6 +304,8 @@ pub(super) struct Mob {
     rearing: u32,
     /// En l'air (saut d'une monture dirigée)
     airborne: bool,
+    /// Plus haute position depuis que la monture dirigée a quitté le sol (dégâts de chute)
+    fall_peak: Option<f32>,
     /// Tenue en laisse
     pub leash: Option<Leash>,
     /// Porte un coffre (âne, mule, lama)
@@ -813,6 +815,7 @@ impl Server {
             ride_offset: None,
             rearing: 0,
             airborne: false,
+            fall_peak: None,
             leash: None,
             chested: false,
             boost: 0,
@@ -1780,6 +1783,31 @@ impl Server {
     }
 
     /// Coup porté par un joueur à une créature. Vrai si la cible est une créature.
+    /// Dégâts de chute d'une monture : vie retirée, sans recul ni fuite (son cavalier la mène).
+    fn fall_hurt_mob(&mut self, id: i64, damage: f32) {
+        let tick = self.tick;
+        let Some(m) = self.mobs.get_mut(&id) else { return };
+        if m.dead.is_some() {
+            return;
+        }
+        m.hurt_tick = tick;
+        m.health -= damage;
+        let dead = m.health <= 0.0;
+        let rider = m.rider;
+        if dead {
+            m.dead = Some(tick);
+        }
+        self.mobs_dirty = true;
+        self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_HURT, 0));
+        if dead {
+            if let Some(r) = rider {
+                self.dismount(&r);
+            }
+            self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_DEATH, 0));
+            self.mob_loot(id);
+        }
+    }
+
     pub(super) fn hit_mob(&mut self, id: i64, from: (f32, f32, f32), damage: f32) -> bool {
         let tick = self.tick;
         let Some(m) = self.mobs.get_mut(&id) else { return false };
@@ -2489,8 +2517,26 @@ impl Server {
         let (bx, bz) = (pos.0.floor() as i32, pos.2.floor() as i32);
         // (au moins un demi-bloc de vide dessous : une marche descendue n'est pas un saut)
         let airborne = self.mob_free(bx, (pos.1 - 0.05).floor() as i32, bz) && self.mob_free(bx, (pos.1 - 0.6).floor() as i32, bz);
+        // Chute : la plus haute position en l'air ; à l'atterrissage, des dégâts comme dans le
+        // jeu (au-delà de 3 blocs, moins 5 pour les chevaux, ânes et mules ; aucun dans l'eau)
+        let mut landed_from = None;
+        let in_water = self.mob_water(pos.0, pos.1 + 0.1, pos.2) || self.mob_water(pos.0, pos.1 - 0.5, pos.2);
         if let Some(m) = self.mobs.get_mut(&id) {
             m.airborne = airborne;
+            if in_water {
+                m.fall_peak = None;
+            } else if airborne {
+                m.fall_peak = Some(m.fall_peak.map(|p| p.max(pos.1)).unwrap_or(pos.1));
+            } else if let Some(peak) = m.fall_peak.take() {
+                landed_from = Some(peak - pos.1);
+            }
+        }
+        if let Some(distance) = landed_from {
+            let horse_like = self.mobs.get(&id).map(|m| matches!(m.species, Species::Horse | Species::Donkey | Species::Mule)).unwrap_or(false);
+            let damage = if horse_like { mount_fall_damage(distance) } else { ((distance - 3.0).ceil()).max(0.0) };
+            if damage > 0.0 && !in_water {
+                self.fall_hurt_mob(id, damage);
+            }
         }
         if airborne != was_airborne {
             // Saut et atterrissage : son jeu les joue pour lui, pas pour les autres
@@ -2834,6 +2880,12 @@ pub(super) fn mob_rng() -> Rng {
     Rng::new(seed)
 }
 
+/// Dégâts de chute d'une monture (cheval, âne, mule) : comme un joueur (un demi-cœur par bloc
+/// au-delà de 3), moins 5 comme dans les fichiers du jeu.
+pub(crate) fn mount_fall_damage(distance: f32) -> f32 {
+    ((distance - 3.0).ceil() - 5.0).max(0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2870,6 +2922,13 @@ mod tests {
         assert_eq!((dye_color("ink_sac"), dye_color("bone_meal")), (Some(15), Some(0)));
         assert_eq!(dye_color("wheat"), None);
         assert!(FLOWERS.contains(&"cornflower"));
+    }
+
+    #[test]
+    fn mount_fall_damage_follows_the_game() {
+        assert_eq!(mount_fall_damage(7.0), 0.0);
+        assert_eq!(mount_fall_damage(8.5), 1.0);
+        assert_eq!(mount_fall_damage(20.0), 12.0);
     }
 
     #[test]

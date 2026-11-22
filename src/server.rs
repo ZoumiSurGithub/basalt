@@ -4310,8 +4310,15 @@ impl Server {
         self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
         // Monture : selle et armure (ou tapis) aussi dans le conteneur « équipement », d'où
         // l'écran de la monture les affiche (sinon la selle posée n'y apparaissait pas)
-        if self.clients.get(addr).and_then(|c| c.inv.block_mob).is_some() && list.len() >= 2 {
-            let pk = bedrock::container_items_named(window as u32, bedrock::CONTAINER_HORSE_EQUIP, &list[..2], self.item_net_ids, crate::versions::features(protocol));
+        // (autant de cases que l'écran en montre : selle et armure du cheval, tapis du lama ;
+        // la selle seule pour l'âne et la mule, sinon le jeu ignore le paquet)
+        let equip = match self.clients.get(addr).and_then(|c| c.inv.block_mob).and_then(|id| self.mobs.get(&id)).map(|m| m.species) {
+            Some(mobs::Species::Donkey | mobs::Species::Mule) => 1,
+            Some(_) => 2,
+            None => 0,
+        };
+        if equip > 0 && list.len() >= equip {
+            let pk = bedrock::container_items_named(window as u32, bedrock::CONTAINER_HORSE_EQUIP, &list[..equip], self.item_net_ids, crate::versions::features(protocol));
             self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
         }
     }
@@ -4322,8 +4329,17 @@ impl Server {
         // Inventaire d'une monture : recopié depuis elle (fermé si elle a disparu)
         if let Some(mob) = self.clients.get(addr).and_then(|c| c.inv.block_mob) {
             return match self.mob_inventory_view(mob) {
-                Some(slots) => {
+                Some(mut slots) => {
                     if let Some(c) = self.clients.get_mut(addr) {
+                        // Les piles inchangées gardent le numéro que le jeu connaît : sinon
+                        // chacune de ses demandes (retirer la selle…) visait une pile inconnue
+                        for (i, s) in slots.iter_mut().enumerate() {
+                            if let Some(old) = c.inv.block.slots.get(i) {
+                                if !s.is_empty() && old.id == s.id && old.count == s.count {
+                                    s.net_id = old.net_id;
+                                }
+                            }
+                        }
                         c.inv.block.slots = slots;
                     }
                     true

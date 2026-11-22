@@ -86,6 +86,11 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Corrigé
 
+- Monture dirigée : dégâts de chute à l'atterrissage, comme dans le jeu (au-delà de 3 blocs,
+  moins 5 pour le cheval, l'âne et la mule ; rien dans l'eau).
+- Inventaire d'une monture : la selle de l'âne et de la mule apparaît dans sa case, et les
+  objets gardent leur numéro de pile d'une demande à l'autre (retirer la selle ou l'armure
+  était refusé).
 - Inventaire d'une monture : la selle et l'armure (ou le tapis) posées apparaissent dans
   leurs cases (elles sont aussi envoyées dans le conteneur « équipement de monture »).
 - Crachat du lama : il part de la bouche et vole jusqu'à sa cible au lieu de rester immobile
