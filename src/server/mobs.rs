@@ -2167,7 +2167,6 @@ impl Server {
             c.inv.block_is_furnace = false;
             c.inv.block.slots = slots.clone();
         }
-        self.send(addr, bedrock::ID_CONTAINER_OPEN, &bedrock::container_open_entity(WINDOW, bedrock::SCREEN_HORSE, id));
         // Les cases d'équipement et ce qu'elles acceptent (selle ; armure du cheval, tapis du lama)
         let species = self.mobs.get(&id).map(|m| m.species);
         const COLORS: [&str; 16] = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black"];
@@ -2188,7 +2187,13 @@ impl Server {
         }
         let size = slots.len() as i32;
         info!("{} : inventaire de monture, écriture {} (debug-mount-screen)", addr, variant);
-        self.send(addr, bedrock::ID_UPDATE_EQUIP, &bedrock::update_equip(WINDOW, id, size, &equip));
+        // Envoyées avant l'ouverture, puis répétées après : à la première ouverture de la
+        // partie, l'écran met un moment à se construire et laissait passer celles reçues
+        // après lui (cases sans icône, selle et armure refusées)
+        let equip_packet = bedrock::update_equip(WINDOW, id, size, &equip);
+        self.send(addr, bedrock::ID_UPDATE_EQUIP, &equip_packet);
+        self.send(addr, bedrock::ID_CONTAINER_OPEN, &bedrock::container_open_entity(WINDOW, bedrock::SCREEN_HORSE, id));
+        self.send(addr, bedrock::ID_UPDATE_EQUIP, &equip_packet);
         self.send_block_content(addr, &slots);
         true
     }

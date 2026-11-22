@@ -100,6 +100,9 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   point `debug-mount-screen` (1 : ancienne écriture).
 - Montures : leurs données d'entité annoncent maintenant leur inventaire (écran de monture,
   nombre de cases). À zéro, le jeu plantait dès qu'on prenait un objet dans l'écran.
+- Montures : à la première ouverture de leur inventaire, les cases de selle et d'armure
+  n'avaient pas d'icône et refusaient les objets. Leur description est maintenant envoyée
+  avant l'ouverture de l'écran, puis répétée après.
 - Crachat du lama : il part de la bouche et vole jusqu'à sa cible au lieu de rester immobile
   au-dessus du lama (données de projectile, position redessinée à chaque tick).
 - Un jeu qui refusait les animaux les supprimait pour tout le serveur (et de la sauvegarde) :
