@@ -10,6 +10,16 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ## [Non publié]
 
+### Ajouté
+
+- Loups : meutes de quatre dans les taïgas, les bosquets enneigés et (plus rarement) les
+  forêts ; sauvages, ils chassent moutons et lapins et se retournent en meute contre le
+  joueur qui en frappe un. Un os les apprivoise une fois sur trois : collier rouge (à
+  teindre), 40 points de vie, assis ou debout d'un clic, ils suivent leur maître (et
+  réapparaissent près de lui s'ils sont distancés), attaquent ce qu'il frappe et le loup
+  qui le mord ; la viande les soigne, puis les rend amoureux (louveteau apprivoisé, au
+  même maître). `/summon wolf`.
+
 ## [0.0.2] — 2026-11-22
 
 ### Ajouté

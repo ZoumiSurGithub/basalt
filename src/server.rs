@@ -3216,7 +3216,7 @@ impl Server {
             return;
         }
         // Une créature, un nœud de laisse ?
-        if self.knot_clicked(target as i64) || self.hit_mob(target as i64, (eye.0, eye.1 - EYE, eye.2), damage) {
+        if self.knot_clicked(target as i64) || self.hit_mob(target as i64, (eye.0, eye.1 - EYE, eye.2), damage, mobs::Attacker::Player(*addr)) {
             return;
         }
         let victim = self.clients.iter().find(|(_, c)| c.id as u64 == target && c.id != from && c.joined).map(|(a, c)| (*a, c.pos, !c.mode.takes_damage(), c.id));

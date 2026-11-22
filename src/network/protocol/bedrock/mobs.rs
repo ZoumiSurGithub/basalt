@@ -178,6 +178,11 @@ pub const FLAG_SHEARED: i64 = 1 << 31;
 /// Montures : sellée, apprivoisée, dirigée au clavier par son cavalier, saut chargé
 pub const FLAG_SADDLED: i64 = 1 << 8;
 pub const FLAG_TAMED: i64 = 1 << 28;
+/// Loup : assis, en colère
+pub const FLAG_SITTING: i64 = 1 << 24;
+pub const FLAG_ANGRY: i64 = 1 << 25;
+/// Donnée d'entité : le maître d'un animal apprivoisé (identifiant unique, -1 personne)
+pub const META_OWNER: u32 = 5;
 /// Porte un coffre (âne, mule, lama)
 pub const FLAG_CHESTED: i64 = 1 << 36;
 /// Tenue en laisse
@@ -219,6 +224,22 @@ pub fn mount_attributes(runtime_id: i64, movement: f32, jump: f32) -> Vec<u8> {
         w.varu32(0); // aucun modificateur
     }
     w.varu64(0); // tick
+    w.0
+}
+/// UpdateAttributes d'une créature : sa vie (la queue du loup apprivoisé la montre).
+pub fn health_attribute(runtime_id: i64, health: f32, max: f32) -> Vec<u8> {
+    let mut w = W::default();
+    w.varu64(runtime_id as u64);
+    w.varu32(1);
+    w.f32(0.0);
+    w.f32(max);
+    w.f32(health.clamp(0.0, max));
+    w.f32(0.0);
+    w.f32(max);
+    w.f32(max);
+    w.string("minecraft:health");
+    w.varu32(0);
+    w.varu64(0);
     w.0
 }
 /// SetActorLink : un cavalier monte (1) ou descend (0) d'une monture.

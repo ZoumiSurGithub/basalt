@@ -53,11 +53,58 @@ pub(super) enum Species {
     Horse,
     Donkey,
     Mule,
+    Wolf,
 }
+
+/// Ce qu'un loup attaque.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum Prey {
+    Mob(i64),
+    Player(SocketAddr),
+}
+
+/// Qui a porté un coup à une créature.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum Attacker {
+    Player(SocketAddr),
+    Mob(i64),
+}
+
+/// Viandes que mange un loup apprivoisé : (objet, points de vie rendus)
+const WOLF_FOOD: [(&str, f32); 11] = [
+    ("beef", 3.0),
+    ("cooked_beef", 8.0),
+    ("porkchop", 3.0),
+    ("cooked_porkchop", 8.0),
+    ("chicken", 2.0),
+    ("cooked_chicken", 6.0),
+    ("mutton", 2.0),
+    ("cooked_mutton", 6.0),
+    ("rabbit", 3.0),
+    ("cooked_rabbit", 5.0),
+    ("rotten_flesh", 4.0),
+];
+const WOLF_MEATS: [&str; 11] = ["beef", "cooked_beef", "porkchop", "cooked_porkchop", "chicken", "cooked_chicken", "mutton", "cooked_mutton", "rabbit", "cooked_rabbit", "rotten_flesh"];
+const WOLF_GROW: [(&str, f32); 11] = [
+    ("beef", 0.1),
+    ("cooked_beef", 0.1),
+    ("porkchop", 0.1),
+    ("cooked_porkchop", 0.1),
+    ("chicken", 0.1),
+    ("cooked_chicken", 0.1),
+    ("mutton", 0.1),
+    ("cooked_mutton", 0.1),
+    ("rabbit", 0.1),
+    ("cooked_rabbit", 0.1),
+    ("rotten_flesh", 0.1),
+];
+/// Vie d'un loup sauvage, puis apprivoisé (celles du jeu)
+const WOLF_WILD_HEALTH: f32 = 8.0;
+const WOLF_TAMED_HEALTH: f32 = 40.0;
 
 impl Species {
     const FARM: [Species; 4] = [Species::Cow, Species::Pig, Species::Sheep, Species::Chicken];
-    const ALL: [Species; 11] = [
+    const ALL: [Species; 12] = [
         Species::Cow,
         Species::Pig,
         Species::Sheep,
@@ -69,6 +116,7 @@ impl Species {
         Species::Horse,
         Species::Donkey,
         Species::Mule,
+        Species::Wolf,
     ];
 
     fn id(self) -> &'static str {
@@ -84,6 +132,7 @@ impl Species {
             Species::Horse => "minecraft:horse",
             Species::Donkey => "minecraft:donkey",
             Species::Mule => "minecraft:mule",
+            Species::Wolf => "minecraft:wolf",
         }
     }
     fn from_id(s: &str) -> Option<Species> {
@@ -92,6 +141,10 @@ impl Species {
     /// Équidés et lamas : vie tirée au sort, apprivoisés avant de se reproduire
     fn mount(self) -> bool {
         matches!(self, Species::Llama | Species::Horse | Species::Donkey | Species::Mule)
+    }
+    /// S'apprivoise avant de se reproduire (montures, loup)
+    fn tameable(self) -> bool {
+        self.mount() || self == Species::Wolf
     }
     /// Se dirige au clavier une fois apprivoisée et sellée (pas le lama)
     fn steerable(self) -> bool {
@@ -132,6 +185,8 @@ impl Species {
             Species::Chicken => 4.0,
             Species::Rabbit => 3.0,
             Species::Llama | Species::Horse | Species::Donkey | Species::Mule => 30.0,
+            // (apprivoisé ; sauvage : 8)
+            Species::Wolf => WOLF_TAMED_HEALTH,
         }
     }
     /// Largeur et hauteur de la boîte de collision d'un adulte (celles du jeu)
@@ -144,6 +199,7 @@ impl Species {
             Species::Rabbit => (0.4, 0.5),
             Species::Llama => (0.9, 1.87),
             Species::Horse | Species::Donkey | Species::Mule => (1.4, 1.6),
+            Species::Wolf => (0.6, 0.8),
         }
     }
     /// Taille d'affichage (« minecraft:scale » des fichiers du jeu) : le lapin est un petit
@@ -159,7 +215,7 @@ impl Species {
     /// Vitesse du jeu (« minecraft:movement ») ; celle du cheval est tirée à sa naissance
     fn movement(self) -> f32 {
         match self {
-            Species::Rabbit => 0.3,
+            Species::Rabbit | Species::Wolf => 0.3,
             Species::Goat => 0.4,
             Species::Donkey | Species::Mule => 0.175,
             _ => 0.25,
@@ -175,6 +231,7 @@ impl Species {
             Species::Rabbit => (0.6, 2.2, 1.0, 1.1),
             Species::Goat => (0.6, 1.0, 0.75, 1.0),
             Species::Llama | Species::Horse | Species::Donkey | Species::Mule => (0.7, 1.2, 1.2, 1.0),
+            Species::Wolf => (0.8, 1.0, 1.0, 1.0),
         }
     }
     /// Ce qui l'attire : il suit le joueur qui le tient
@@ -187,6 +244,7 @@ impl Species {
             // Le lama ne suit personne ; les équidés seulement une fois apprivoisés
             Species::Llama => &[],
             Species::Horse | Species::Donkey | Species::Mule => &["golden_apple", "enchanted_golden_apple", "golden_carrot"],
+            Species::Wolf => &[],
         }
     }
     /// Ce qui le rend amoureux (les montures doivent d'abord être apprivoisées ; la mule
@@ -196,6 +254,7 @@ impl Species {
             Species::Llama => &["hay_block"],
             Species::Horse | Species::Donkey => &["golden_carrot", "golden_apple", "enchanted_golden_apple"],
             Species::Mule => &[],
+            Species::Wolf => &WOLF_MEATS,
             other => other.tempt(),
         }
     }
@@ -209,6 +268,7 @@ impl Species {
             Species::Pig => &[("carrot", 0.1), ("potato", 0.1), ("beetroot", 0.1)],
             Species::Chicken => &[("wheat_seeds", 0.1), ("pumpkin_seeds", 0.1), ("melon_seeds", 0.1), ("beetroot_seeds", 0.1), ("torchflower_seeds", 0.1), ("pitcher_pod", 0.1)],
             Species::Rabbit => &[("carrot", 0.1), ("golden_carrot", 0.1), ("dandelion", 0.1)],
+            Species::Wolf => &WOLF_GROW,
         }
     }
     /// Ce qui le soigne : (objet, points de vie rendus)
@@ -217,6 +277,7 @@ impl Species {
         match self {
             Species::Horse | Species::Donkey | Species::Mule => &EQUINE,
             Species::Llama => &[("wheat", 2.0), ("hay_block", 10.0)],
+            Species::Wolf => &WOLF_FOOD,
             _ => &[],
         }
     }
@@ -229,7 +290,7 @@ impl Species {
             Species::Chicken => &[("minecraft:chicken", 1, 1), ("minecraft:feather", 0, 2)],
             Species::Rabbit => &[("minecraft:rabbit", 0, 1), ("minecraft:rabbit_hide", 0, 1)],
             Species::Llama | Species::Horse | Species::Donkey | Species::Mule => &[("minecraft:leather", 0, 2)],
-            Species::Goat => &[],
+            Species::Goat | Species::Wolf => &[],
         }
     }
 }
@@ -328,6 +389,17 @@ pub(super) struct Mob {
     /// Inventaire d'une monture : 0 selle, 1 armure (cheval) ou tapis (lama), puis le coffre ;
     /// chaque case : (nom de l'objet, quantité)
     items: Vec<Option<(String, u8)>>,
+    /// Loup apprivoisé : nom de son maître, son identifiant s'il est connecté (-1 sinon),
+    /// assis, en train de le rejoindre
+    owner: Option<String>,
+    owner_id: i64,
+    sitting: bool,
+    following: bool,
+    /// Loup : sa cible, ticks avant la prochaine morsure
+    attack: Option<Prey>,
+    bite_in: u32,
+    /// État à renvoyer aux joueurs (changé pendant qu'il réfléchissait)
+    refresh: bool,
 }
 
 impl Mob {
@@ -356,6 +428,13 @@ impl Mob {
         }
         if self.chested {
             f |= bedrock::FLAG_CHESTED;
+        }
+        if self.sitting {
+            f |= bedrock::FLAG_SITTING;
+        }
+        // Loup en colère : il s'en prend à un joueur, ou sauvage il se bat
+        if self.species == Species::Wolf && matches!(self.attack, Some(Prey::Player(_))) {
+            f |= bedrock::FLAG_ANGRY;
         }
         if self.saddled {
             f |= bedrock::FLAG_SADDLED;
@@ -453,6 +532,9 @@ pub(super) struct MobRecord {
     pub horns: u8,
     /// Inventaire d'une monture : (case, objet, quantité)
     pub items: Vec<(u8, String, u8)>,
+    /// Loup apprivoisé : son maître, assis
+    pub owner: Option<String>,
+    pub sitting: bool,
 }
 
 impl MobRecord {
@@ -483,6 +565,11 @@ impl MobRecord {
             }),
             ("chested".into(), Json::Bool(self.chested)),
             ("horns".into(), Json::Num(self.horns as f64)),
+            ("owner".into(), match &self.owner {
+                Some(o) => Json::Str(o.clone()),
+                None => Json::Null,
+            }),
+            ("sitting".into(), Json::Bool(self.sitting)),
             ("items".into(), Json::Arr(self.items.iter().map(|(slot, name, count)| Json::Arr(vec![Json::Num(*slot as f64), Json::Str(name.clone()), Json::Num(*count as f64)])).collect())),
         ])
     }
@@ -510,6 +597,8 @@ impl MobRecord {
             }),
             chested: v.get("chested").and_then(|s| s.as_bool()).unwrap_or(false),
             horns: num("horns").unwrap_or(2.0).clamp(0.0, 2.0) as u8,
+            owner: v.get("owner").and_then(|o| o.as_str()).filter(|o| !o.is_empty() && o.len() <= 64).map(|o| o.to_string()),
+            sitting: v.get("sitting").and_then(|s| s.as_bool()).unwrap_or(false),
             items: v
                 .get("items")
                 .and_then(|i| i.as_arr())
@@ -553,6 +642,8 @@ impl Mob {
             },
             chested: self.chested,
             horns: self.horns,
+            owner: self.owner.clone(),
+            sitting: self.sitting,
             items: self.items.iter().enumerate().filter_map(|(i, it)| it.as_ref().map(|(n, c)| (i as u8, n.clone(), *c))).collect(),
         }
     }
@@ -615,7 +706,14 @@ impl Server {
                         Species::Rabbit
                     }
                 }
-                B::Desert | B::SnowyPlains | B::IceSpikes | B::Grove => Species::Rabbit,
+                B::Grove => {
+                    if roll < 3 {
+                        Species::Wolf
+                    } else {
+                        Species::Rabbit
+                    }
+                }
+                B::Desert | B::SnowyPlains | B::IceSpikes => Species::Rabbit,
                 B::Plains | B::SunflowerPlains => match roll {
                     0 | 1 => Species::Horse,
                     2 => Species::Donkey,
@@ -640,6 +738,9 @@ impl Server {
                         farm
                     }
                 }
+                // Meutes de loups : forêts (rares), taïgas
+                B::Forest if roll == 0 => Species::Wolf,
+                B::Taiga | B::SnowyTaiga | B::OldGrowthPineTaiga | B::OldGrowthSpruceTaiga if roll < 2 => Species::Wolf,
                 B::Forest | B::BirchForest | B::OldGrowthBirchForest | B::DarkForest | B::WindsweptSavanna | B::Jungle | B::SparseJungle | B::BambooJungle | B::CherryGrove => farm,
                 B::FlowerForest | B::Taiga | B::SnowyTaiga | B::OldGrowthPineTaiga | B::OldGrowthSpruceTaiga => {
                     if self.mob_rng.below(4) == 0 {
@@ -659,6 +760,7 @@ impl Server {
             Species::Llama => (4, 6, 10),
             Species::Horse => (2, 6, 20),
             Species::Donkey => (1, 3, 20),
+            Species::Wolf => (4, 4, 10),
             _ => (2, 4, 0),
         };
         let herd_variant = match species {
@@ -689,7 +791,7 @@ impl Server {
             let ok = match species {
                 Species::Rabbit => below == grass || below == sand || below == snow || below == snow_layer,
                 // Sommets, collines et champs de champignons : tout sol solide
-                Species::Goat | Species::Llama | Species::Mooshroom => true,
+                Species::Goat | Species::Llama | Species::Mooshroom | Species::Wolf => true,
                 _ => below == grass,
             };
             if !ok {
@@ -773,7 +875,11 @@ impl Server {
         let egg = 6000 + self.mob_rng.below(6000);
         // Montures : vie, vitesse, saut et force tirés au sort comme dans le jeu
         let r = |rng: &mut Rng, lo: f32, hi: f32| lo + rng.unit() as f32 * (hi - lo);
-        let max_health = if species.mount() { (15 + self.mob_rng.below(16)) as f32 } else { species.health() };
+        let max_health = match species {
+            s if s.mount() => (15 + self.mob_rng.below(16)) as f32,
+            Species::Wolf => WOLF_WILD_HEALTH,
+            s => s.health(),
+        };
         let (move_speed, jump, strength) = match species {
             Species::Horse => (r(&mut self.mob_rng, 0.1125, 0.3375), r(&mut self.mob_rng, 0.4, 1.0), 0),
             Species::Donkey | Species::Mule => (0.175, 0.5, 0),
@@ -828,6 +934,13 @@ impl Server {
             angry: None,
             stew: false,
             items: Vec::new(),
+            owner: None,
+            owner_id: -1,
+            sitting: false,
+            following: false,
+            attack: None,
+            bite_in: 0,
+            refresh: false,
         };
         self.mobs.insert(id, mob);
         self.mobs_dirty = true;
@@ -846,6 +959,8 @@ impl Server {
                 43 => *v = bedrock::Meta::Int(m.mark),
                 // Qui tient sa laisse
                 37 => *v = bedrock::Meta::Long(holder),
+                // Son maître (loup apprivoisé)
+                bedrock::META_OWNER => *v = bedrock::Meta::Long(m.owner_id),
                 _ => {}
             }
         }
@@ -909,6 +1024,7 @@ impl Server {
                 (2, bedrock::Meta::Int(m.variant)),
                 (3, bedrock::Meta::Byte(m.color)),
                 (bedrock::META_LEAD_HOLDER, bedrock::Meta::Long(holder)),
+                (bedrock::META_OWNER, bedrock::Meta::Long(m.owner_id)),
                 (38, bedrock::Meta::Float(scale)),
                 (53, bedrock::Meta::Float(w)),
                 (54, bedrock::Meta::Float(h)),
@@ -1161,9 +1277,10 @@ impl Server {
                 m.airborne = false;
                 m.fall_peak = None;
             }
+            let refresh = std::mem::take(&mut m.refresh);
             let love = m.love;
             self.mobs.insert(id, m);
-            if grew || landed {
+            if grew || landed || refresh {
                 self.mob_changed(id);
             }
             if landed {
@@ -1333,6 +1450,8 @@ impl Server {
         let mut speed = ground_speed(attr * stroll);
         let mut stop_at = 0.4;
         let tempting: &[&str] = if m.species.mount() && !m.tamed { &[] } else { m.species.tempt() };
+        // Loup : assis, à la poursuite d'une proie, ou sur les talons de son maître
+        let wolf = if m.species == Species::Wolf { self.wolf_think(m) } else { None };
         let near_player = |p: &(f32, f32, f32), r: f32| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2) < r * r && (p.1 - m.pos.1).abs() < 4.0;
         // Lapin : fuit le joueur qui ne lui tend pas sa nourriture (à moins de 8 blocs)
         let scary = if m.species == Species::Rabbit {
@@ -1350,6 +1469,9 @@ impl Server {
             m.target = Some((h.0, h.2));
             stop_at = LEASH_SOFT - 1.0;
             speed = if d > LEASH_HARD { (ground_speed(attr * panic) + (d - LEASH_HARD) * 0.1).min(0.6) } else { ground_speed(attr * tempt) };
+        } else if let Some((s, stop)) = wolf {
+            speed = s;
+            stop_at = stop;
         } else if m.panic > 0 {
             m.panic -= 1;
             speed = ground_speed(attr * panic);
@@ -1466,6 +1588,131 @@ impl Server {
                 m.vel.0 = 0.0;
                 m.vel.2 = 0.0;
             }
+        }
+    }
+
+    /// Ce que fait un loup avant tout le reste : (vitesse, distance d'arrêt) s'il a mieux à
+    /// faire que se promener. Assis, il ne bouge pas ; avec une cible, il la poursuit et la
+    /// mord ; sauvage, il chasse moutons et lapins ; apprivoisé, il rejoint son maître.
+    fn wolf_think(&mut self, m: &mut Mob) -> Option<(f32, f32)> {
+        m.bite_in = m.bite_in.saturating_sub(1);
+        if m.sitting {
+            m.target = None;
+            if m.attack.take().is_some() {
+                m.refresh = true;
+            }
+            return Some((0.0, f32::MAX));
+        }
+        let attr = m.movement();
+        let flat2 = |p: (f32, f32, f32)| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2);
+        // Sa cible existe-t-elle encore, à portée ?
+        let prey_pos = match m.attack {
+            Some(Prey::Mob(id)) => self.mobs.get(&id).filter(|t| t.dead.is_none()).map(|t| t.pos),
+            Some(Prey::Player(a)) => self.clients.get(&a).filter(|c| c.joined && c.dead.is_none() && c.mode.takes_damage()).map(|c| (c.pos.0, c.pos.1 - EYE, c.pos.2)),
+            None => None,
+        }
+        .filter(|p| flat2(*p) < 24.0 * 24.0);
+        if m.attack.is_some() && prey_pos.is_none() {
+            m.attack = None;
+            m.target = None;
+            m.refresh = true;
+        }
+        if let (Some(prey), Some(p)) = (m.attack, prey_pos) {
+            m.target = Some((p.0, p.2));
+            if flat2(p) < 1.7 * 1.7 && (p.1 - m.pos.1).abs() < 1.8 && m.bite_in == 0 {
+                m.bite_in = 20;
+                let damage = if m.tamed { 4.0 } else { 3.0 };
+                match prey {
+                    Prey::Mob(id) => {
+                        self.hit_mob(id, m.pos, damage, Attacker::Mob(m.id));
+                    }
+                    Prey::Player(a) => {
+                        self.hurt(&a, damage, Cause::Mob("un loup"));
+                        // Les loups de la victime la défendent
+                        if let Some(name) = self.clients.get(&a).and_then(|c| c.name.clone()) {
+                            self.rally_wolves(&name, Prey::Mob(m.id), m.pos);
+                        }
+                    }
+                }
+            }
+            return Some((ground_speed(attr * 1.25), 1.2));
+        }
+        // Sauvage et adulte : il chasse les moutons et les lapins des environs
+        if !m.tamed && !m.baby() && self.mob_rng.below(60) == 0 {
+            let prey = self
+                .mobs
+                .values()
+                .filter(|t| matches!(t.species, Species::Sheep | Species::Rabbit) && t.dead.is_none() && flat2(t.pos) < 12.0 * 12.0 && (t.pos.1 - m.pos.1).abs() < 4.0)
+                .min_by(|a, b| flat2(a.pos).total_cmp(&flat2(b.pos)))
+                .map(|t| t.id);
+            if let Some(id) = prey {
+                m.attack = Some(Prey::Mob(id));
+                return Some((ground_speed(attr * 1.25), 1.2));
+            }
+        }
+        // Apprivoisé : il rejoint son maître au-delà de 10 blocs (jusqu'à 2), et réapparaît
+        // près de lui s'il est distancé
+        if let Some(owner) = m.owner.as_deref().filter(|_| m.tamed && m.leash.is_none()) {
+            let master = self.clients.values().find(|c| c.joined && c.dead.is_none() && c.name.as_deref() == Some(owner)).map(|c| (c.id, (c.pos.0, c.pos.1 - EYE, c.pos.2)));
+            let known = master.map(|(id, _)| id).unwrap_or(-1);
+            if known != m.owner_id {
+                m.owner_id = known;
+                m.refresh = true;
+            }
+            if let Some((_, p)) = master {
+                let d2 = flat2(p);
+                if d2 > 10.0 * 10.0 {
+                    m.following = true;
+                } else if d2 < 2.5 * 2.5 && m.following {
+                    m.following = false;
+                    m.target = None;
+                }
+                if m.following && (d2 > 20.0 * 20.0 || (p.1 - m.pos.1).abs() > 8.0) && d2 < 96.0 * 96.0 {
+                    // Distancé : il réapparaît à côté de lui, sur un sol ferme
+                    let (bx, bz) = (p.0.floor() as i32 + 1, p.2.floor() as i32 + 1);
+                    if let Some(y) = self.surface_y(bx, bz, p.1.floor() as i32).filter(|y| (*y as f32 - p.1).abs() < 4.0) {
+                        m.pos = (bx as f32 + 0.5, y as f32, bz as f32 + 0.5);
+                        m.vel = (0.0, 0.0, 0.0);
+                        m.sent = (f32::MAX, 0.0, 0.0);
+                        m.target = None;
+                        m.following = false;
+                        return Some((0.0, f32::MAX));
+                    }
+                }
+                if m.following {
+                    m.target = Some((p.0, p.2));
+                    return Some((ground_speed(attr * 1.0), 2.5));
+                }
+            } else {
+                m.following = false;
+            }
+        }
+        None
+    }
+
+    /// Les loups apprivoisés de ce joueur, debout et à moins de 20 blocs de `near`, prennent
+    /// cette cible (jamais un autre de ses loups, ni lui-même).
+    fn rally_wolves(&mut self, owner: &str, prey: Prey, near: (f32, f32, f32)) {
+        if let Prey::Mob(id) = prey {
+            if self.mobs.get(&id).map(|t| t.species == Species::Wolf && t.owner.as_deref() == Some(owner)).unwrap_or(false) {
+                return;
+            }
+        }
+        if let Prey::Player(a) = prey {
+            if self.clients.get(&a).and_then(|c| c.name.as_deref()) == Some(owner) {
+                return;
+            }
+        }
+        let mut changed = Vec::new();
+        for w in self.mobs.values_mut() {
+            let close = (w.pos.0 - near.0).powi(2) + (w.pos.2 - near.2).powi(2) < 20.0 * 20.0;
+            if w.species == Species::Wolf && w.tamed && !w.sitting && !w.baby() && w.dead.is_none() && close && w.owner.as_deref() == Some(owner) && Prey::Mob(w.id) != prey && w.attack != Some(prey) {
+                w.attack = Some(prey);
+                changed.push(w.id);
+            }
+        }
+        for id in changed {
+            self.mob_changed(id);
         }
     }
 
@@ -1709,12 +1956,20 @@ impl Server {
                 // Qualités des parents (montures) : le petit tient de leur moyenne et d'un tirage
                 let stats = |s: &Self, id: i64| s.mobs.get(&id).map(|m| (m.max_health, m.move_speed, m.jump)).unwrap_or((0.0, 0.0, 0.0));
                 let (pa, pb) = (stats(self, a.0), stats(self, b.0));
+                let wolf_owner = self.mobs.get(&a.0).and_then(|m| m.owner.clone());
                 let baby = self.add_mob(kind, at);
                 if let Some(m) = self.mobs.get_mut(&baby) {
                     m.age = -GROW_TICKS;
                     m.color = color;
                     m.variant = variant;
                     m.mark = if kind == Species::Horse { mark } else { 0 };
+                    if kind == Species::Wolf {
+                        // Louveteau de loups apprivoisés : apprivoisé, au même maître
+                        m.tamed = true;
+                        m.owner = wolf_owner.clone();
+                        m.max_health = WOLF_TAMED_HEALTH;
+                        m.health = m.max_health;
+                    }
                     if kind.mount() {
                         // Né de parents apprivoisés : apprivoisé lui aussi, comme dans le jeu
                         m.tamed = true;
@@ -1854,7 +2109,7 @@ impl Server {
         }
     }
 
-    pub(super) fn hit_mob(&mut self, id: i64, from: (f32, f32, f32), damage: f32) -> bool {
+    pub(super) fn hit_mob(&mut self, id: i64, from: (f32, f32, f32), damage: f32, by: Attacker) -> bool {
         let tick = self.tick;
         let Some(m) = self.mobs.get_mut(&id) else { return false };
         if m.dead.is_some() || tick.saturating_sub(m.hurt_tick) < 10 {
@@ -1870,10 +2125,13 @@ impl Server {
         m.vel = (dx / flat * 0.4, 0.36, dz / flat * 0.4);
         m.knock = 8;
         m.on_ground = false;
-        m.panic = 100;
+        m.panic = if m.species == Species::Wolf { 0 } else { 100 };
+        // Un loup assis qu'on frappe se relève
+        m.sitting = false;
         m.target = None;
         m.love = 0;
         let dead = m.health <= 0.0;
+        let (species, wolf_owner, health, max_health) = (m.species, m.owner.clone(), m.health, m.max_health);
         let rider = m.rider;
         if dead {
             m.dead = Some(tick);
@@ -1891,6 +2149,42 @@ impl Server {
                 m.angry = Some((a, 10));
                 m.panic = 0;
             }
+        }
+        // Loups : celui qu'on frappe se retourne contre l'agresseur (pas contre son maître),
+        // les loups sauvages voisins avec lui ; et les loups d'un joueur attaquent ce qu'il frappe
+        let attacker_name = match by {
+            Attacker::Player(a) => self.clients.get(&a).and_then(|c| c.name.clone()),
+            _ => None,
+        };
+        if species == Species::Wolf && !dead {
+            let own = attacker_name.is_some() && attacker_name == wolf_owner;
+            let prey = match by {
+                Attacker::Player(a) if !own && self.clients.get(&a).map(|c| c.mode.takes_damage()).unwrap_or(false) => Some(Prey::Player(a)),
+                Attacker::Mob(other) if other != id => Some(Prey::Mob(other)),
+                _ => None,
+            };
+            if let Some(prey) = prey {
+                let wild = wolf_owner.is_none();
+                let at = self.mobs.get(&id).map(|m| m.pos).unwrap_or(from);
+                let mut angry = Vec::new();
+                for w in self.mobs.values_mut() {
+                    let pack = wild && w.species == Species::Wolf && !w.tamed && !w.baby() && w.dead.is_none() && (w.pos.0 - at.0).powi(2) + (w.pos.2 - at.2).powi(2) < 10.0 * 10.0;
+                    if (w.id == id && !w.sitting) || (pack && w.id != id) {
+                        if Prey::Mob(w.id) != prey && w.attack != Some(prey) {
+                            w.attack = Some(prey);
+                            angry.push(w.id);
+                        }
+                    }
+                }
+                for w in angry {
+                    self.mob_changed(w);
+                }
+            }
+            self.send_to_viewers(id, bedrock::ID_UPDATE_ATTRIBUTES, &bedrock::health_attribute(id, health, max_health));
+            self.mob_changed(id);
+        }
+        if let Some(name) = attacker_name {
+            self.rally_wolves(&name, Prey::Mob(id), from);
         }
         self.mobs_dirty = true;
         self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_HURT, 0));
@@ -1967,7 +2261,78 @@ impl Server {
         };
         let grow = m.species.grow_items().iter().find(|(name, _)| *name == held).map(|(_, g)| *g);
         let heal = m.species.heal_items().iter().find(|(name, _)| *name == held).map(|(_, h)| *h);
-        let breeds = m.species.breed_items().contains(&held.as_str()) && (!m.species.mount() || m.tamed);
+        let breeds = m.species.breed_items().contains(&held.as_str()) && (!m.species.tameable() || m.tamed) && (m.species != Species::Wolf || m.health >= m.max_health);
+        if m.species == Species::Wolf {
+            let name = self.clients.get(addr).and_then(|c| c.name.clone());
+            let mine = m.tamed && name.is_some() && m.owner == name;
+            if !m.tamed && held == "bone" && !matches!(m.attack, Some(Prey::Player(_))) {
+                // Un os : une chance sur trois de l'apprivoiser ; il s'assoit, collier rouge
+                let tamed = self.mob_rng.below(3) == 0;
+                let player = self.clients.get(addr).map(|c| c.id).unwrap_or(-1);
+                if tamed {
+                    if let Some(w) = self.mobs.get_mut(&id) {
+                        w.tamed = true;
+                        w.owner = name;
+                        w.owner_id = player;
+                        w.sitting = true;
+                        w.attack = None;
+                        w.target = None;
+                        w.color = 14;
+                        w.max_health = WOLF_TAMED_HEALTH;
+                        w.health = WOLF_TAMED_HEALTH;
+                    }
+                    self.send_to_viewers(id, bedrock::ID_UPDATE_ATTRIBUTES, &bedrock::health_attribute(id, WOLF_TAMED_HEALTH, WOLF_TAMED_HEALTH));
+                    self.mob_changed(id);
+                }
+                self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, if tamed { bedrock::EVENT_TAME_SUCCESS } else { bedrock::EVENT_TAME_FAIL }, 0));
+                if !creative {
+                    if let Some(c) = self.clients.get_mut(addr) {
+                        c.inv.consume_held();
+                    }
+                    self.send_inventory(addr);
+                    self.show_held(addr);
+                }
+                return true;
+            }
+            if mine {
+                if let Some(color) = dye_color(&held) {
+                    // Teinture : la couleur du collier
+                    if color != m.color {
+                        if let Some(w) = self.mobs.get_mut(&id) {
+                            w.color = color;
+                        }
+                        self.mob_changed(id);
+                        if !creative {
+                            if let Some(c) = self.clients.get_mut(addr) {
+                                c.inv.consume_held();
+                            }
+                            self.send_inventory(addr);
+                            self.show_held(addr);
+                        }
+                    }
+                    return true;
+                }
+                let meal = heal.is_some() && (m.health < m.max_health || m.baby() || (breeds && m.age == 0 && m.love == 0));
+                if !meal {
+                    // Main vide ou autre objet : assis, debout
+                    if let Some(w) = self.mobs.get_mut(&id) {
+                        w.sitting = !w.sitting;
+                        w.attack = None;
+                        w.target = None;
+                        w.following = false;
+                        w.vel.0 = 0.0;
+                        w.vel.2 = 0.0;
+                    }
+                    self.mob_changed(id);
+                    return true;
+                }
+            } else if !m.tamed || !mine {
+                // Loup sauvage ou celui d'un autre : rien d'autre à faire qu'un os
+                if held != "lead" {
+                    return true;
+                }
+            }
+        }
         let temper = if m.tamed { None } else { m.species.temper_items().iter().find(|(name, _)| *name == held).map(|(_, t)| *t) };
         if held == "shears" && m.species == Species::Sheep && !m.baby() && !m.sheared {
             // Tonte : 1 à 3 laines de sa couleur
@@ -2095,6 +2460,11 @@ impl Server {
         let food = grow.is_some() || heal.is_some() || breeds || temper.is_some() || FLOWERS.contains(&held.as_str());
         if used && food {
             self.mob_sound(id, bedrock::SOUND_EAT, None);
+            // La queue du loup remonte avec sa vie
+            if let Some(w) = self.mobs.get(&id).filter(|w| w.species == Species::Wolf) {
+                let packet = bedrock::health_attribute(id, w.health, w.max_health);
+                self.send_to_viewers(id, bedrock::ID_UPDATE_ATTRIBUTES, &packet);
+            }
         }
         if used && !creative {
             if let Some(c) = self.clients.get_mut(addr) {
@@ -2135,6 +2505,9 @@ impl Server {
             }
             // Événement « minecraft:on_tame » du jeu : une monture déjà apprivoisée
             m.tamed = tamed && species.mount();
+            if species == Species::Wolf {
+                m.color = 14;
+            }
         }
         // Son chunk compte désormais parmi ceux qui sont en mémoire (sinon il serait rangé aussitôt)
         let chunk = mob_store::chunk_of(pos.0, pos.2);
@@ -2791,6 +3164,8 @@ impl Server {
             m.temper = r.temper;
             m.chested = r.chested;
             m.horns = r.horns;
+            m.owner = r.owner;
+            m.sitting = r.sitting;
             m.items = vec![None; m.inventory_size()];
             for (slot, name, count) in r.items {
                 if let Some(cell) = m.items.get_mut(slot as usize) {
@@ -3018,8 +3393,15 @@ mod tests {
             chested: true,
             horns: 1,
             items: vec![(0, "saddle".into(), 1), (5, "diamond".into(), 3)],
+            owner: None,
+            sitting: false,
         };
-        assert_eq!(MobRecord::from_json(&r.to_json()), Some(r));
+        assert_eq!(MobRecord::from_json(&r.to_json()), Some(r.clone()));
+        // Loup apprivoisé : son maître, assis, collier, vie d'un loup apprivoisé
+        let wolf = MobRecord { species: Species::Wolf, health: 33.0, max_health: 40.0, color: 14, variant: 0, mark: 0, saddled: false, chested: false, knot: None, items: Vec::new(), owner: Some("Steve".into()), sitting: true, ..r };
+        assert_eq!(MobRecord::from_json(&wolf.to_json()), Some(wolf));
+        assert_eq!(Species::from_id("minecraft:wolf"), Some(Species::Wolf));
+        assert!(Species::Wolf.breed_items().contains(&"cooked_beef") && Species::Wolf.tameable() && !Species::Wolf.mount());
         // Ancien enregistrement (sans les nouveaux champs) : valeurs du jeu par défaut
         let old = crate::json::parse(r#"{"kind":"minecraft:cow","x":0,"y":0,"z":0}"#).unwrap();
         let cow = MobRecord::from_json(&old).unwrap();
