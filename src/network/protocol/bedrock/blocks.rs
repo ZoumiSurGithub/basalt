@@ -1,6 +1,5 @@
 //! Interactions avec les blocs lues dans PlayerAuthInput.
 
-#[allow(unused_imports)]
 use super::*;
 
 // -------------------------------------------------- Actions sur les blocs ----
@@ -112,8 +111,6 @@ mod chat_tests {
 
     #[test]
     fn chat_roundtrip_and_limits() {
-        let pk = text_chat("Alex", "bonjour");
-        assert_eq!(read_chat(&pk).as_deref(), Some("bonjour"));
         assert_eq!(read_chat(&text_raw("x")), None);
         assert_eq!(read_chat(&[0, 1, 1, 200]), None);
         assert_eq!(read_chat(&[]), None);

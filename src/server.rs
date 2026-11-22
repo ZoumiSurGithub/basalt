@@ -415,8 +415,6 @@ pub struct Server {
     plugin_blocks: Option<Arc<crate::data::BlockNames>>,
     /// Le jeu refuse les objets au sol : le butin retourne directement dans l'inventaire
     drops_refused: bool,
-    #[allow(dead_code)]
-    chunk_no_biomes: Vec<u8>,
     /// Écriture de LevelChunk en cours d'essai (mise au point avec le vrai jeu)
     chunk_variant: u8,
     /// Paquets d'état du joueur que le jeu a refusés : ils ne sont plus envoyés
@@ -728,7 +726,6 @@ impl Server {
             drops_refused: false,
             global_window: Instant::now(),
             global_bytes: 0,
-            chunk_no_biomes: bedrock::flat_chunk_payload_with(false),
             chunk_variant: 1, // la variante 0 a déjà été refusée par le jeu 1.26.65
             refused_extras: HashSet::new(),
             captured: HashMap::new(),
@@ -3865,6 +3862,24 @@ impl Server {
         if self.clients.get(addr).map(|c| c.inv.open_window != 0 && c.inv.block_mob.is_some()).unwrap_or(false) {
             self.force_close(addr);
         }
+        // Écran d'échange resté ouvert chez nous alors que le jeu demande l'inventaire : il est
+        // fermé de son côté. On l'oublie, et ce qui restait devant le villageois revient au sac.
+        let mut resend = false;
+        if let Some(c) = self.clients.get_mut(addr).filter(|c| c.inv.trade_mob.is_some()) {
+            c.inv.open_window = 0;
+            c.inv.trade_mob = None;
+            for i in [4usize, 5] {
+                let left = c.inv.craft.slots[i];
+                if !left.is_empty() {
+                    c.inv.craft.slots[i] = inventory::ItemStack::EMPTY;
+                    c.inv.add(left.id, left.count as u32);
+                    resend = true;
+                }
+            }
+        }
+        if resend {
+            self.send_inventory(addr);
+        }
         // En selle sur une monture apprivoisée : c'est son inventaire qui s'ouvre
         if let Some(mob) = self.clients.get(addr).and_then(|c| c.riding) {
             if self.open_mob_inventory(addr, mob) {
@@ -3892,16 +3907,27 @@ impl Server {
         // préparant l'écran de monture) : l'écran ouvert reste ouvert. La répondre comme une
         // fermeture ordinaire vidait l'écran côté serveur (objets du coffre de l'âne refusés)
         // et le jeu signalait une réponse du mauvais type.
+        // (l'écran d'échange, lui, se ferme quel que soit le numéro que le jeu annonce : sans
+        // réponse à sa fermeture, le jeu n'ouvre plus aucun écran, pas même l'inventaire)
         let open = self.clients.get(addr).map(|c| c.inv.open_window).unwrap_or(0);
-        if open != 0 && window as u8 != open as u8 {
+        let trading = self.clients.get(addr).map(|c| c.inv.trade_mob.is_some()).unwrap_or(false);
+        if self.cfg.debug {
+            info!("{} : fermeture de la fenêtre {} (type {}), fenêtre ouverte {}, échange {}", addr, window, kind, open, trading);
+        }
+        if open != 0 && window as u8 != open as u8 && !trading {
             self.send(addr, bedrock::ID_CONTAINER_CLOSE, &bedrock::container_close(window, kind, true));
             return;
+        }
+        // Fin d'un échange : le villageois n'échange plus avec personne
+        if let Some(mob) = self.clients.get(addr).and_then(|c| c.inv.trade_mob) {
+            self.send(addr, bedrock::ID_SET_ACTOR_DATA, &bedrock::set_actor_data(mob, &[(68, bedrock::Meta::Long(0))]));
         }
         let mut resend = false;
         if let Some(c) = self.clients.get_mut(addr) {
             c.inv.open_window = 0;
             c.inv.block_pos = None;
             c.inv.block_mob = None;
+            c.inv.trade_mob = None;
             c.inv.block.slots.clear();
             c.inv.block_is_furnace = false;
             let held = c.inv.cursor.slots[0];
@@ -3965,13 +3991,16 @@ impl Server {
             // Fabrication : le résultat annoncé doit venir d'une vraie recette qui correspond à la
             // grille ; le serveur en déduit ce que chaque case doit perdre
             let crafting = request.actions.iter().any(|a| matches!(a, bedrock::StackAction::CraftRecipe { .. }));
-            let craft = if crafting { self.check_craft(addr, &request) } else { None };
-            if crafting && craft.is_none() && self.cfg.debug {
+            // (devant un villageois, c'est un échange : l'offre qui porte ce numéro)
+            let trade = if crafting { self.check_trade(addr, &request) } else { None };
+            let created = trade.as_ref().map(|t| t.sell.0).or(created);
+            let craft = if crafting && trade.is_none() { self.check_craft(addr, &request) } else { None };
+            if crafting && craft.is_none() && trade.is_none() && self.cfg.debug {
                 info!("{} : fabrication refusée ({:?} ×{} ne correspond à aucune recette pour cette grille)", addr, request.created, request.created_count);
             }
             let mut dropped: Vec<(i16, u8)> = Vec::new();
             let outcome = match self.clients.get_mut(addr) {
-                Some(c) if c.stage == Stage::InGame => Self::run_stack_request(&mut c.inv, &request, created, craft.as_ref(), &mut dropped),
+                Some(c) if c.stage == Stage::InGame => Self::run_stack_request(&mut c.inv, &request, created, craft.as_ref(), trade.as_ref(), &mut dropped),
                 _ => return,
             };
             if !dropped.is_empty() {
@@ -3989,6 +4018,9 @@ impl Server {
                         self.drop_item(at, vel, id, count, 40);
                     }
                 }
+            }
+            if let (Some(_), Some(deal)) = (&outcome, &trade) {
+                self.trade_done(deal);
             }
             if outcome.is_some() {
                 self.store_block_view(addr);
@@ -4105,7 +4137,7 @@ impl Server {
 
     /// Applique une demande d'inventaire sur une copie ; le joueur n'est modifié que si
     /// tout est valide.
-    fn run_stack_request(inv: &mut PlayerWindows, request: &bedrock::StackRequest, created: Option<i16>, craft: Option<&crate::data::Craft>, dropped: &mut Vec<(i16, u8)>) -> Option<Vec<(u8, u8, u8, i32)>> {
+    fn run_stack_request(inv: &mut PlayerWindows, request: &bedrock::StackRequest, created: Option<i16>, craft: Option<&crate::data::Craft>, trade: Option<&mobs::TradeDeal>, dropped: &mut Vec<(i16, u8)>) -> Option<Vec<(u8, u8, u8, i32)>> {
         let mut work = inv.clone();
         let mut thrown: Vec<(i16, u8)> = Vec::new();
         let mut touched: Vec<(Target, usize)> = Vec::new();
@@ -4142,6 +4174,11 @@ impl Server {
                     work.create(created?, inventory::MAX_STACK);
                     continue;
                 }
+                bedrock::StackAction::CraftRecipe { .. } if trade.is_some() => {
+                    // Échange : ce que donne le villageois, pour tous les échanges d'affilée
+                    work.create(created?, trade?.sell.1);
+                    continue;
+                }
                 bedrock::StackAction::CraftRecipe { .. } => {
                     // Vérifiée avant (`check_craft`) : sans recette correspondante, refus
                     craft?;
@@ -4167,6 +4204,17 @@ impl Server {
                 let lose = craft.consumed.iter().find(|(s, _)| *s == slot).map(|(_, n)| *n).unwrap_or(0);
                 let expected = before.count.saturating_sub(lose);
                 if after.count != expected || (expected > 0 && after.id != before.id) {
+                    return None;
+                }
+            }
+        }
+        // Après un échange, les deux cases du villageois doivent avoir perdu exactement le prix
+        if let Some(deal) = trade {
+            for (slot, price) in [(4usize, Some(deal.a)), (5, deal.b)] {
+                let before = inv.craft.slots.get(slot).copied().unwrap_or(inventory::ItemStack::EMPTY);
+                let after = work.craft.slots.get(slot).copied().unwrap_or(inventory::ItemStack::EMPTY);
+                let (id, lose) = price.unwrap_or((before.id, 0));
+                if before.count < lose || (lose > 0 && before.id != id) || after.count != before.count - lose || (after.count > 0 && after.id != before.id) {
                     return None;
                 }
             }
@@ -5018,23 +5066,18 @@ impl Server {
         }
     }
 
-    /// Repère un jeu figé (plus aucun mouvement alors que la liaison tient) et passe à
-    /// l'expérience suivante ; repère aussi une expérience qui tient et la conserve.
+    /// Repère un jeu figé (plus aucun mouvement alors que la liaison tient).
     fn watch_freezes(&mut self) {
         let now = Instant::now();
         let mut frozen = Vec::new();
-        let mut steady = false;
         for (addr, c) in self.clients.iter() {
             if c.protocol < 2225 || c.inputs == 0 || !(c.stage == Stage::Spawning || c.stage == Stage::InGame) {
                 continue;
             }
             if now.duration_since(c.last_input) > Duration::from_secs(15) {
                 frozen.push((*addr, c.inputs));
-            } else if c.inputs == 400 {
-                steady = true;
             }
         }
-        let _ = steady;
         for (addr, inputs) in frozen {
             warn!(
                 "{} : le jeu s'est figé après {} mouvements — expérience {} ({})",
@@ -5593,11 +5636,9 @@ impl Server {
                     let asked = bedrock::read_vari32(&body, &mut pos).unwrap_or(4);
                     let radius = asked.max(1).min(self.cfg.view_distance);
                     self.send(&addr, bedrock::ID_CHUNK_RADIUS_UPDATED, &bedrock::chunk_radius_updated(radius));
-                    let features = self.clients.get(&addr).map(|c| crate::versions::features(c.protocol));
-                    let features = match features {
-                        Some(f) => f,
-                        None => return,
-                    };
+                    if !self.clients.contains_key(&addr) {
+                        return;
+                    }
                     let first = match self.clients.get_mut(&addr) {
                         Some(c) => !std::mem::replace(&mut c.chunks_sent, true),
                         None => return,
@@ -5617,7 +5658,6 @@ impl Server {
                         for (x, z) in &coords {
                             self.world.prepare(*x, *z);
                         }
-                        let _ = features;
                         if let Some(c) = self.clients.get_mut(&addr) {
                             c.radius = radius;
                             c.center = center;
@@ -6929,6 +6969,42 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Échange avec un villageois : le prix quitte la case du villageois, le produit arrive ;
+    /// payer moins que le prix, ou une autre monnaie, est refusé.
+    #[test]
+    fn a_trade_takes_the_price_and_gives_the_goods() {
+        use bedrock::{SlotRef, StackAction, StackRequest};
+        let at = |container: u8, slot: u8| SlotRef { container, slot, net_id: 0 };
+        let deal = mobs::TradeDeal { mob: 7, index: 0, times: 1, xp: 2, a: (500, 3), b: None, sell: (600, 1) };
+        let request = |pay: u8| StackRequest {
+            id: -1,
+            actions: vec![
+                StackAction::CraftRecipe { recipe: 1_000_000, times: 1 },
+                StackAction::Results,
+                StackAction::Destroy { count: pay, from: at(47, 4) },
+                StackAction::Take { count: 1, from: at(60, 50), to: at(59, 0) },
+            ],
+            created: None,
+            created_count: 0,
+        };
+        let mut inv = PlayerWindows::new();
+        inv.add(500, 5);
+        // Le joueur dépose ses émeraudes dans la case du villageois
+        assert!(inv.apply(inventory::Action::Move { count: 5, from: (Target::Player, 0), to: inventory::resolve(47, 4).unwrap() }).is_some());
+        let mut dropped = Vec::new();
+        // Payer deux quand il en faut trois : refusé, rien ne bouge
+        assert!(Server::run_stack_request(&mut inv, &request(2), Some(600), None, Some(&deal), &mut dropped).is_none());
+        assert_eq!(inv.craft.slots[4].count, 5);
+        // Le juste prix : trois émeraudes en moins, l'objet au bout du curseur
+        let changed = Server::run_stack_request(&mut inv, &request(3), Some(600), None, Some(&deal), &mut dropped).unwrap();
+        assert_eq!((inv.craft.slots[4].count, inv.cursor.slots[0].id, inv.cursor.slots[0].count), (2, 600, 1));
+        // La case du villageois est annoncée au jeu sous son nom (47, case 4)
+        assert!(changed.iter().any(|c| (c.0, c.1, c.2) == (47, 4, 2)));
+        // Une autre monnaie dans la case : refusé
+        let wrong = mobs::TradeDeal { a: (501, 2), ..deal.clone() };
+        assert!(Server::run_stack_request(&mut inv, &request(2), Some(600), None, Some(&wrong), &mut dropped).is_none());
+    }
 
     #[test]
     fn falls_hurt_like_in_the_game() {

@@ -33,25 +33,6 @@ pub fn facing(yaw: f32) -> u8 {
     }
 }
 
-/// Face vers laquelle va un regard dont on connaît le déplacement horizontal (x vers
-/// l'est, z vers le sud). None s'il est vertical.
-pub fn facing_of(dx: f32, dz: f32) -> Option<u8> {
-    if dx.abs() < 0.05 && dz.abs() < 0.05 {
-        return None;
-    }
-    Some(if dx.abs() > dz.abs() {
-        if dx > 0.0 {
-            EAST
-        } else {
-            WEST
-        }
-    } else if dz > 0.0 {
-        SOUTH
-    } else {
-        NORTH
-    })
-}
-
 /// Face à gauche d'un joueur qui regarde vers `face`.
 pub fn left_of(face: u8) -> u8 {
     match face {
@@ -367,9 +348,6 @@ mod tests {
         assert_eq!(facing(-44.0), SOUTH);
         assert_eq!(opposite(NORTH), SOUTH);
         assert_eq!(opposite(EAST), WEST);
-        assert_eq!(facing_of(3.0, 0.5), Some(EAST));
-        assert_eq!(facing_of(-0.2, -2.0), Some(NORTH));
-        assert_eq!(facing_of(0.0, 0.01), None);
         assert_eq!(left_of(SOUTH), EAST);
         assert_eq!(right_of(SOUTH), WEST);
         assert_eq!(right_of(WEST), NORTH);

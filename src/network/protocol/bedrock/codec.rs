@@ -1,7 +1,5 @@
 //! Encodage de base : entiers à taille variable, écrivain binaire, lots de paquets (0xfe).
 
-#[allow(unused_imports)]
-use super::*;
 use crate::inflate::inflate;
 
 /// Entier variable non signé (7 bits par octet), comme dans tout le protocole Bedrock.

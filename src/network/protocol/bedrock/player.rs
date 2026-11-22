@@ -1,6 +1,5 @@
 //! Joueurs : lecture des mouvements, déplacement, apparition et disparition des autres joueurs.
 
-#[allow(unused_imports)]
 use super::*;
 
 /// Ce que le serveur lit d'un paquet PlayerAuthInput.

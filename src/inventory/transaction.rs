@@ -37,6 +37,9 @@ pub fn resolve(container_name: u8, slot: u8) -> Option<(Target, usize)> {
         26 => Some((Target::Block, 2)),
         60 => Some((Target::Created, 0)),
         13 if (28..=40).contains(&slot) => Some((Target::Craft, slot)),
+        // Échange avec un villageois : les deux lots demandés (cases 4 et 5 de l'écran)
+        47 if slot == 4 => Some((Target::Craft, 4)),
+        48 if slot == 5 => Some((Target::Craft, 5)),
         _ => None,
     }
 }
@@ -51,6 +54,8 @@ pub fn protocol_name(target: Target, slot: usize) -> u8 {
         Target::Offhand => 34,
         Target::Block => 7,
         Target::Created => 60,
+        Target::Craft if slot == 4 => 47,
+        Target::Craft if slot == 5 => 48,
         Target::Craft => 13,
     }
 }

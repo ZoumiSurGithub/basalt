@@ -1,6 +1,5 @@
 //! Entrée dans le monde : packs de ressources, StartGame, registres, zone de chunks.
 
-#[allow(unused_imports)]
 use super::*;
 
 /// Liste des packs de ressources : aucun.

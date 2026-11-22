@@ -1,6 +1,5 @@
 //! Début de connexion : réglages réseau, état de connexion, lecture du login.
 
-#[allow(unused_imports)]
 use super::*;
 use crate::json::{self, Value};
 

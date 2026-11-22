@@ -340,6 +340,226 @@ impl Species {
     }
 }
 
+/// Premier numéro des offres d'échange : au-dessus de tous les numéros de recettes
+const TRADE_NET_BASE: i32 = 1_000_000;
+
+/// Un échange vérifié : le villageois, l'offre, le nombre d'échanges d'affilée, et les
+/// quantités totales (objet, nombre) demandées et données.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct TradeDeal {
+    pub mob: i64,
+    pub index: usize,
+    pub times: i32,
+    /// Expérience que le villageois y gagne
+    pub xp: i32,
+    pub a: (i16, u8),
+    pub b: Option<(i16, u8)>,
+    pub sell: (i16, u8),
+}
+
+/// Expérience demandée pour chaque niveau (novice, apprenti, compagnon, expert, maître)
+const TIER_XP: [i32; 5] = [0, 10, 70, 150, 250];
+
+/// Niveau d'un villageois d'après son expérience : 0 novice … 4 maître.
+fn trade_tier(xp: i32) -> i32 {
+    TIER_XP.iter().rposition(|need| xp >= *need).unwrap_or(0) as i32
+}
+
+/// Nombre de réassorts survenus avant ce moment : deux par jour, aux heures de travail
+/// (2000 et 8000). Un villageois dont le compte a augmenté retrouve toutes ses offres.
+fn restocks_before(time: i64) -> i64 {
+    let (day, hour) = (time.div_euclid(24_000), time.rem_euclid(24_000));
+    day * 2 + (hour >= 2_000) as i64 + (hour >= 8_000) as i64
+}
+
+/// Une offre telle que le jeu la définit : (objet, quantité) demandés, second lot éventuel,
+/// (objet, quantité) donnés, nombre d'échanges avant épuisement, niveau qui la débloque.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Offer {
+    buy_a: (&'static str, u8),
+    buy_b: Option<(&'static str, u8)>,
+    sell: (&'static str, u8),
+    max_uses: i32,
+    tier: i32,
+}
+
+impl Offer {
+    /// Expérience gagnée par le villageois (celle du jeu) : plus au fil des niveaux, et le
+    /// double quand c'est lui qui achète.
+    fn xp(&self) -> i32 {
+        let buying = self.sell.0 == "emerald";
+        match (self.tier, buying) {
+            (0, true) => 2,
+            (0, false) => 1,
+            (1, true) => 10,
+            (1, false) => 5,
+            (2, true) => 20,
+            (2, false) => 10,
+            (_, true) => 30,
+            (_, false) => 15,
+        }
+    }
+}
+
+/// Métier que donne un poste de travail (d'après le nom du bloc).
+fn station_job(block: &str) -> Option<i32> {
+    Some(match block.trim_start_matches("minecraft:") {
+        "composter" => 1,
+        "barrel" => 2,
+        "loom" => 3,
+        "fletching_table" => 4,
+        "lectern" => 5,
+        "cartography_table" => 6,
+        "brewing_stand" => 7,
+        "blast_furnace" | "lit_blast_furnace" => 8,
+        "grindstone" => 9,
+        "smithing_table" => 10,
+        "smoker" | "lit_smoker" => 11,
+        "cauldron" => 12,
+        "stonecutter_block" | "stonecutter" => 13,
+        _ => return None,
+    })
+}
+
+/// Titre de l'écran d'échange selon le métier (clé de traduction du jeu). None : sans
+/// métier, ou simplet — il n'échange rien.
+fn villager_title(job: i32) -> Option<&'static str> {
+    Some(match job {
+        1 => "entity.villager.farmer",
+        2 => "entity.villager.fisherman",
+        3 => "entity.villager.shepherd",
+        4 => "entity.villager.fletcher",
+        5 => "entity.villager.librarian",
+        6 => "entity.villager.cartographer",
+        7 => "entity.villager.cleric",
+        8 => "entity.villager.armor",
+        9 => "entity.villager.weapon",
+        10 => "entity.villager.tool",
+        11 => "entity.villager.butcher",
+        12 => "entity.villager.leather",
+        13 => "entity.villager.mason",
+        _ => return None,
+    })
+}
+
+/// Offres d'un métier, niveau par niveau : deux par niveau, comme dans le jeu — en général
+/// il achète une matière première contre une émeraude et vend un produit contre des
+/// émeraudes. Quand le jeu tire au sort entre plusieurs offres, `seed` choisit. Les objets
+/// enchantés du jeu (livres, outils en diamant enchantés) sont vendus ici sans enchantement.
+fn job_offers(job: i32, seed: u64) -> Vec<Offer> {
+    const E: &str = "emerald";
+    type Pool = Vec<Offer>;
+    let buys = |item: &'static str, count: u8| Offer { buy_a: (item, count), buy_b: None, sell: (E, 1), max_uses: 16, tier: 0 };
+    let sells = |price: u8, item: &'static str, count: u8| Offer { buy_a: (E, price), buy_b: None, sell: (item, count), max_uses: 12, tier: 0 };
+    let with = |price: u8, extra: (&'static str, u8), item: &'static str, count: u8| Offer { buy_a: (E, price), buy_b: Some(extra), sell: (item, count), max_uses: 12, tier: 0 };
+    // Par niveau : deux réserves, une offre tirée dans chacune (une réserve vide : rien)
+    let tiers: Vec<(Pool, Pool)> = match job {
+        1 => vec![
+            (vec![buys("wheat", 20), buys("potato", 26), buys("carrot", 22), buys("beetroot", 15)], vec![sells(1, "bread", 6)]),
+            (vec![buys("pumpkin", 6)], vec![sells(1, "pumpkin_pie", 4), sells(1, "apple", 4)]),
+            (vec![buys("melon_block", 4)], vec![sells(3, "cookie", 18)]),
+            (vec![sells(1, "cake", 1)], vec![buys("egg", 16)]),
+            (vec![sells(3, "golden_carrot", 3)], vec![sells(4, "glistering_melon_slice", 3)]),
+        ],
+        2 => vec![
+            (vec![buys("string", 20), buys("coal", 10)], vec![with(1, ("cod", 6), "cooked_cod", 6), sells(3, "cod_bucket", 1)]),
+            (vec![buys("cod", 15)], vec![with(1, ("salmon", 6), "cooked_salmon", 6), sells(2, "campfire", 1)]),
+            (vec![buys("salmon", 13)], vec![sells(3, "fishing_rod", 1)]),
+            (vec![buys("tropical_fish", 6)], vec![]),
+            (vec![buys("pufferfish", 4)], vec![buys("oak_boat", 1)]),
+        ],
+        3 => vec![
+            (vec![buys("white_wool", 18), buys("brown_wool", 18), buys("black_wool", 18), buys("gray_wool", 18)], vec![sells(2, "shears", 1)]),
+            (vec![buys("white_dye", 12), buys("gray_dye", 12), buys("black_dye", 12), buys("light_blue_dye", 12), buys("lime_dye", 12)], vec![sells(1, "white_wool", 1), sells(1, "white_carpet", 4)]),
+            (vec![buys("yellow_dye", 12), buys("light_gray_dye", 12), buys("orange_dye", 12), buys("red_dye", 12), buys("pink_dye", 12)], vec![sells(1, "red_carpet", 4), sells(1, "blue_wool", 1)]),
+            (vec![buys("brown_dye", 12), buys("purple_dye", 12), buys("blue_dye", 12), buys("green_dye", 12), buys("magenta_dye", 12), buys("cyan_dye", 12)], vec![]),
+            (vec![sells(2, "painting", 3)], vec![]),
+        ],
+        4 => vec![
+            (vec![buys("stick", 32)], vec![sells(1, "arrow", 16), with(1, ("gravel", 10), "flint", 10)]),
+            (vec![buys("flint", 26)], vec![sells(2, "bow", 1)]),
+            (vec![buys("string", 14)], vec![sells(3, "crossbow", 1)]),
+            (vec![buys("feather", 24)], vec![sells(7, "bow", 1)]),
+            (vec![buys("tripwire_hook", 8)], vec![sells(8, "crossbow", 1)]),
+        ],
+        5 => vec![
+            (vec![buys("paper", 24)], vec![sells(9, "bookshelf", 1)]),
+            (vec![buys("book", 4)], vec![sells(1, "lantern", 1)]),
+            (vec![buys("ink_sac", 5)], vec![sells(1, "glass", 4)]),
+            (vec![buys("writable_book", 2)], vec![sells(5, "clock", 1), sells(4, "compass", 1)]),
+            (vec![sells(20, "name_tag", 1)], vec![]),
+        ],
+        6 => vec![
+            (vec![buys("paper", 24)], vec![sells(7, "empty_map", 1)]),
+            (vec![buys("glass_pane", 11)], vec![]),
+            (vec![buys("compass", 1)], vec![]),
+            (vec![sells(7, "frame", 1)], vec![]),
+            (vec![sells(8, "globe_banner_pattern", 1)], vec![]),
+        ],
+        7 => vec![
+            (vec![buys("rotten_flesh", 32)], vec![sells(1, "redstone", 2)]),
+            (vec![buys("gold_ingot", 3)], vec![sells(1, "lapis_lazuli", 1)]),
+            (vec![buys("rabbit_foot", 2)], vec![sells(4, "glowstone", 1)]),
+            (vec![buys("turtle_scute", 4), buys("glass_bottle", 9)], vec![sells(5, "ender_pearl", 1)]),
+            (vec![buys("nether_wart", 22)], vec![sells(3, "experience_bottle", 1)]),
+        ],
+        8 => vec![
+            (vec![buys("coal", 15)], vec![sells(5, "iron_helmet", 1), sells(9, "iron_chestplate", 1), sells(7, "iron_leggings", 1), sells(4, "iron_boots", 1)]),
+            (vec![buys("iron_ingot", 4)], vec![sells(36, "bell", 1), sells(3, "chainmail_leggings", 1), sells(1, "chainmail_boots", 1)]),
+            (vec![buys("lava_bucket", 1), buys("diamond", 1)], vec![sells(1, "chainmail_helmet", 1), sells(4, "chainmail_chestplate", 1), sells(5, "shield", 1)]),
+            (vec![sells(19, "diamond_leggings", 1)], vec![sells(13, "diamond_boots", 1)]),
+            (vec![sells(13, "diamond_helmet", 1)], vec![sells(21, "diamond_chestplate", 1)]),
+        ],
+        9 => vec![
+            (vec![buys("coal", 15)], vec![sells(3, "iron_axe", 1)]),
+            (vec![buys("iron_ingot", 4)], vec![sells(36, "bell", 1)]),
+            (vec![buys("flint", 24)], vec![sells(2, "iron_sword", 1)]),
+            (vec![buys("diamond", 1)], vec![sells(12, "diamond_axe", 1)]),
+            (vec![sells(8, "diamond_sword", 1)], vec![]),
+        ],
+        10 => vec![
+            (vec![buys("coal", 15)], vec![sells(1, "stone_axe", 1), sells(1, "stone_shovel", 1), sells(1, "stone_pickaxe", 1), sells(1, "stone_hoe", 1)]),
+            (vec![buys("iron_ingot", 4)], vec![sells(36, "bell", 1)]),
+            (vec![buys("flint", 30)], vec![sells(1, "iron_axe", 1), sells(2, "iron_shovel", 1), sells(3, "iron_pickaxe", 1), sells(4, "diamond_hoe", 1)]),
+            (vec![buys("diamond", 1)], vec![sells(12, "diamond_axe", 1), sells(5, "diamond_shovel", 1)]),
+            (vec![sells(13, "diamond_pickaxe", 1)], vec![]),
+        ],
+        11 => vec![
+            (vec![buys("chicken", 14), buys("porkchop", 7), buys("rabbit", 4)], vec![sells(1, "rabbit_stew", 1)]),
+            (vec![buys("coal", 15)], vec![sells(1, "cooked_porkchop", 5), sells(1, "cooked_chicken", 8)]),
+            (vec![buys("mutton", 7)], vec![buys("beef", 10)]),
+            (vec![buys("dried_kelp_block", 10)], vec![]),
+            (vec![buys("sweet_berries", 10)], vec![]),
+        ],
+        12 => vec![
+            (vec![buys("leather", 6)], vec![sells(7, "leather_chestplate", 1), sells(3, "leather_leggings", 1)]),
+            (vec![buys("flint", 26)], vec![sells(5, "leather_helmet", 1), sells(4, "leather_boots", 1)]),
+            (vec![buys("rabbit_hide", 9)], vec![sells(7, "leather_chestplate", 1)]),
+            (vec![buys("turtle_scute", 4)], vec![sells(6, "leather_horse_armor", 1)]),
+            (vec![sells(6, "saddle", 1)], vec![sells(5, "leather_helmet", 1)]),
+        ],
+        13 => vec![
+            (vec![buys("clay_ball", 10)], vec![sells(1, "brick", 10)]),
+            (vec![buys("stone", 20)], vec![sells(1, "chiseled_stone_bricks", 4)]),
+            (vec![buys("granite", 16), buys("andesite", 16), buys("diorite", 16)], vec![sells(1, "polished_andesite", 4), sells(1, "polished_granite", 4), sells(1, "polished_diorite", 4)]),
+            (vec![buys("quartz", 12)], vec![sells(1, "hardened_clay", 1)]),
+            (vec![sells(1, "quartz_block", 1)], vec![sells(1, "quartz_pillar", 1)]),
+        ],
+        _ => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for (tier, (first, second)) in tiers.into_iter().enumerate() {
+        let mixed = (seed ^ (tier as u64).wrapping_mul(0x9E37_79B9)).wrapping_mul(0x2545_F491_4F6C_DD1D);
+        let mixed = mixed ^ (mixed >> 29);
+        for (pool, pick) in [(first, mixed), (second, mixed >> 20)] {
+            if !pool.is_empty() {
+                out.push(Offer { tier: tier as i32, ..pool[(pick % pool.len() as u64) as usize] });
+            }
+        }
+    }
+    out
+}
+
 /// Un petit met 20 minutes à grandir ; un adulte attend 5 minutes avant un nouveau petit
 const GROW_TICKS: i64 = 24_000;
 const BREED_COOLDOWN: i64 = 6_000;
@@ -452,11 +672,33 @@ pub(super) struct Mob {
     meet: Option<(f32, f32)>,
     /// Villageois : où aller une fois la porte visée franchie
     errand: Option<(f32, f32)>,
+    /// Villageois : expérience gagnée en échangeant (elle fait son niveau)
+    trade_xp: i32,
+    /// Usure de ses offres : nombre d'échanges conclus, offre par offre
+    trade_uses: Vec<i32>,
+    /// Dernier réassort connu (voir `restocks_before`) ; -1 : pas encore regardé
+    trade_restock: i64,
+    /// Villageois endormi : là où il est couché (sur son lit)
+    asleep: Option<(f32, f32, f32)>,
+    /// Villageois : son poste de travail (le bloc qui fait son métier)
+    station: Option<(i32, i32, i32)>,
+    /// Pas de nouvelle recherche de poste avant ce tick
+    job_wait: u64,
 }
 
 impl Mob {
     fn baby(&self) -> bool {
         self.age < 0
+    }
+    /// Seconde série d'indicateurs (donnée 92) : ceux du serveur officiel, plus « endormi »
+    /// (indicateur 76) pour un villageois couché.
+    fn flags2(&self) -> i64 {
+        const BASE: i64 = -9_223_372_036_821_221_376;
+        if self.asleep.is_some() {
+            BASE | (1 << 12)
+        } else {
+            BASE
+        }
     }
     fn flags(&self) -> i64 {
         let mut f = bedrock::MOB_FLAGS;
@@ -590,6 +832,11 @@ pub(super) struct MobRecord {
     pub sitting: bool,
     /// Villageois : là où il vit
     pub home: Option<(f32, f32, f32)>,
+    /// Villageois : expérience d'échange et usure de ses offres
+    pub trade_xp: i32,
+    pub trade_uses: Vec<i32>,
+    /// Villageois : son poste de travail
+    pub station: Option<(i32, i32, i32)>,
 }
 
 impl MobRecord {
@@ -629,6 +876,12 @@ impl MobRecord {
                 Some((x, y, z)) => Json::Arr(vec![n(x), n(y), n(z)]),
                 None => Json::Null,
             }),
+            ("station".into(), match self.station {
+                Some((x, y, z)) => Json::Arr(vec![Json::Num(x as f64), Json::Num(y as f64), Json::Num(z as f64)]),
+                None => Json::Null,
+            }),
+            ("trade_xp".into(), Json::Num(self.trade_xp as f64)),
+            ("trade_uses".into(), Json::Arr(self.trade_uses.iter().map(|u| Json::Num(*u as f64)).collect())),
             ("items".into(), Json::Arr(self.items.iter().map(|(slot, name, count)| Json::Arr(vec![Json::Num(*slot as f64), Json::Str(name.clone()), Json::Num(*count as f64)])).collect())),
         ])
     }
@@ -662,6 +915,12 @@ impl MobRecord {
                 [x, y, z] => Some((x.as_f64()? as f32, y.as_f64()? as f32, z.as_f64()? as f32)),
                 _ => None,
             }),
+            station: v.get("station").and_then(|k| k.as_arr()).and_then(|k| match k {
+                [x, y, z] => Some((x.as_f64()? as i32, y.as_f64()? as i32, z.as_f64()? as i32)),
+                _ => None,
+            }),
+            trade_xp: num("trade_xp").unwrap_or(0.0).clamp(0.0, 100_000.0) as i32,
+            trade_uses: v.get("trade_uses").and_then(|k| k.as_arr()).map(|k| k.iter().take(16).map(|u| u.as_f64().unwrap_or(0.0).clamp(0.0, 64.0) as i32).collect()).unwrap_or_default(),
             items: v
                 .get("items")
                 .and_then(|i| i.as_arr())
@@ -708,6 +967,9 @@ impl Mob {
             owner: self.owner.clone(),
             sitting: self.sitting,
             home: self.home,
+            trade_xp: self.trade_xp,
+            trade_uses: self.trade_uses.clone(),
+            station: self.station,
             items: self.items.iter().enumerate().filter_map(|(i, it)| it.as_ref().map(|(n, c)| (i as u8, n.clone(), *c))).collect(),
         }
     }
@@ -764,7 +1026,9 @@ impl Server {
                             Some(B::Taiga | B::OldGrowthPineTaiga | B::OldGrowthSpruceTaiga) => 6,
                             _ => 0,
                         };
-                        let job = self.villager_job();
+                        // Sans métier au départ, sauf le simplet : le poste de travail le plus
+                        // proche de chez lui lui en donne un dans les secondes qui suivent
+                        let job = if self.mob_rng.below(10) == 0 { 14 } else { 0 };
                         let baby = self.mob_rng.below(10) == 0;
                         let id = self.add_mob(Species::Villager, (bx as f32 + 0.5, y as f32, bz as f32 + 0.5));
                         if let Some(m) = self.mobs.get_mut(&id) {
@@ -1215,6 +1479,12 @@ impl Server {
             late: 0,
             meet: None,
             errand: None,
+            trade_xp: 0,
+            trade_uses: Vec::new(),
+            trade_restock: -1,
+            asleep: None,
+            station: None,
+            job_wait: 0,
         };
         self.mobs.insert(id, mob);
         self.mobs_dirty = true;
@@ -1235,12 +1505,22 @@ impl Server {
                 37 => *v = bedrock::Meta::Long(holder),
                 // Son maître (loup apprivoisé)
                 bedrock::META_OWNER => *v = bedrock::Meta::Long(m.owner_id),
+                92 => *v = bedrock::Meta::Long(m.flags2()),
                 _ => {}
             }
         }
         for (k, v) in Self::container_meta(m) {
             if let Some(cell) = meta.iter_mut().find(|(key, _)| *key == k) {
                 cell.1 = v;
+            }
+        }
+        // Villageois : son niveau (l'insigne à sa ceinture), le niveau le plus haut, son expérience
+        if m.species == Species::Villager {
+            for (k, v) in Self::trade_meta(m) {
+                match meta.iter_mut().find(|(key, _)| *key == k) {
+                    Some(cell) => cell.1 = v,
+                    None => meta.push((k, v)),
+                }
             }
         }
         meta
@@ -1302,6 +1582,7 @@ impl Server {
                 (38, bedrock::Meta::Float(scale)),
                 (53, bedrock::Meta::Float(w)),
                 (54, bedrock::Meta::Float(h)),
+                (92, bedrock::Meta::Long(m.flags2())),
             ]
             .into_iter()
             .chain(Self::container_meta(m))
@@ -1433,6 +1714,27 @@ impl Server {
             let near = players.iter().any(|(p, _)| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2) < active * active);
             if !near {
                 continue;
+            }
+            // Villageois endormi : il ne bouge pas de son lit jusqu'au matin
+            if let Some(bed) = m.asleep {
+                if self.world_time().rem_euclid(24_000) < 12_000 {
+                    // Le jour se lève : debout, au pied du lit
+                    m.asleep = None;
+                    m.pos = m.home.unwrap_or(m.pos);
+                    m.vel = (0.0, 0.0, 0.0);
+                    m.sent = (f32::MAX, 0.0, 0.0);
+                    m.refresh = true;
+                } else {
+                    self.mob_age(&mut m);
+                    if m.pos != bed {
+                        m.pos = bed;
+                        m.vel = (0.0, 0.0, 0.0);
+                        let packet = bedrock::move_actor_absolute(id, bed, 0.0, m.yaw, m.yaw, true);
+                        self.send_to_viewers(id, bedrock::ID_MOVE_ACTOR_ABSOLUTE, &packet);
+                    }
+                    self.mobs.insert(id, m);
+                    continue;
+                }
             }
             // Fin de la ruade : elle se remet sur ses quatre pattes
             if m.rearing > 0 {
@@ -1574,6 +1876,12 @@ impl Server {
             self.mob_habits(id);
         }
         self.breed();
+        if self.tick % 40 == 7 {
+            self.villager_jobs();
+        }
+        if self.tick % 1200 == 611 {
+            self.villager_births();
+        }
     }
 
     /// Le temps qui passe : un petit grandit, un parent se repose, l'envie s'éteint. Vrai si
@@ -1895,6 +2203,19 @@ impl Server {
     /// (12000 à 24000) chacun rentre chez lui et n'en bouge plus. Rend (vitesse, distance
     /// d'arrêt) quand l'heure lui dicte où aller.
     fn villager_think(&mut self, m: &mut Mob) -> Option<(f32, f32)> {
+        // Ses « hmm » : de temps en temps le jour (toutes les seize secondes en moyenne)
+        if self.mob_rng.below(320) == 0 && self.world_time().rem_euclid(24_000) < 12_500 && !self.refused_extras.contains(&bedrock::ID_LEVEL_SOUND_EVENT) {
+            let packet = bedrock::level_sound(bedrock::SOUND_AMBIENT, m.pos, m.species.id(), m.baby(), m.id);
+            let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.mobs_seen.contains(&m.id)).map(|(a, _)| *a).collect();
+            for v in viewers {
+                self.send(&v, bedrock::ID_LEVEL_SOUND_EVENT, &packet);
+            }
+        }
+        // En plein échange : il ne bouge pas
+        if self.clients.values().any(|c| c.inv.trade_mob == Some(m.id)) {
+            m.target = None;
+            return Some((0.0, f32::MAX));
+        }
         let home = m.home?;
         let time = self.world_time().rem_euclid(24_000);
         let attr = m.movement();
@@ -1906,6 +2227,17 @@ impl Server {
                 m.target = None;
                 m.errand = None;
                 m.late = 0;
+                // Un lit libre tout près : il s'y couche
+                if time >= 12_500 && self.mob_rng.below(20) == 0 {
+                    if let Some((bed, yaw)) = self.free_bed(home, m.id) {
+                        m.asleep = Some(bed);
+                        m.pos = bed;
+                        m.yaw = yaw;
+                        m.vel = (0.0, 0.0, 0.0);
+                        m.sent = (f32::MAX, 0.0, 0.0);
+                        m.refresh = true;
+                    }
+                }
                 return Some((0.0, f32::MAX));
             }
             m.late += 1;
@@ -1968,7 +2300,180 @@ impl Server {
             return None;
         }
         m.meet = None;
+        // Le matin et en début d'après-midi : de temps en temps, un tour à son poste de travail
+        if let Some(st) = m.station.filter(|_| (2_000..9_000).contains(&time) && !m.baby()) {
+            let at = (st.0 as f32 + 0.5, st.2 as f32 + 0.5);
+            if flat2(at) > 2.0 * 2.0 {
+                if m.target.is_none() && self.mob_rng.below(120) == 0 {
+                    match self.door_errand(m).filter(|_| self.mob_rng.below(2) == 0) {
+                        Some((door, beyond)) => {
+                            m.target = Some(door);
+                            m.errand = Some(beyond);
+                        }
+                        None => {
+                            m.target = Some(at);
+                            m.errand = None;
+                        }
+                    }
+                }
+                if m.target.is_some() {
+                    return Some((ground_speed(attr * 0.6), 1.4));
+                }
+            }
+        }
         None
+    }
+
+    /// Lit libre à moins de trois blocs de `home` : où s'y coucher (au milieu de l'oreiller,
+    /// sur le matelas) et dans quel sens. Un lit où dort déjà un autre villageois est pris.
+    fn free_bed(&self, home: (f32, f32, f32), me: i64) -> Option<((f32, f32, f32), f32)> {
+        let d = self.data.as_ref()?;
+        let (hx, hy, hz) = (home.0.floor() as i32, home.1.floor() as i32, home.2.floor() as i32);
+        let taken: Vec<(f32, f32, f32)> = self.mobs.values().filter(|v| v.id != me).filter_map(|v| v.asleep).collect();
+        let mut best: Option<(((f32, f32, f32), f32), i32)> = None;
+        for dx in -3..=3 {
+            for dz in -3..=3 {
+                for dy in -1..=1 {
+                    let (x, y, z) = (hx + dx, hy + dy, hz + dz);
+                    let s = self.world.get(x, y, z);
+                    if d.block_name(s) != Some("minecraft:bed") || d.prop(s, "head_piece_bit") != Some(Prop::Int(1)) {
+                        continue;
+                    }
+                    let at = (x as f32 + 0.5, y as f32 + 0.5625, z as f32 + 0.5);
+                    if taken.iter().any(|t| (t.0 - at.0).abs() < 0.6 && (t.2 - at.2).abs() < 0.6 && (t.1 - at.1).abs() < 1.0) {
+                        continue;
+                    }
+                    // Sens du lit dans la numérotation du jeu : sud, ouest, nord, est
+                    let yaw = match d.prop(s, "direction") {
+                        Some(Prop::Int(n)) => (n.rem_euclid(4) * 90) as f32,
+                        _ => 0.0,
+                    };
+                    let dist = dx * dx + dz * dz + dy * dy;
+                    if best.map(|b| dist < b.1).unwrap_or(true) {
+                        best = Some(((at, yaw), dist));
+                    }
+                }
+            }
+        }
+        best.map(|b| b.0)
+    }
+
+    /// Métiers et postes de travail. Un villageois sans métier prend le poste libre le plus
+    /// proche de chez lui (16 blocs) et le métier qui va avec ; celui dont le poste a disparu
+    /// perd son métier, sauf s'il a déjà échangé. Peu de recherches à la fois : elles coûtent.
+    fn villager_jobs(&mut self) {
+        let Some(d) = self.data.as_ref() else { return };
+        let tick = self.tick;
+        let mut claimed: HashSet<(i32, i32, i32)> = self.mobs.values().filter_map(|m| m.station).collect();
+        let ids: Vec<i64> = self.mobs.values().filter(|m| m.species == Species::Villager && !m.baby() && m.variant != 14 && m.dead.is_none() && m.home.is_some()).map(|m| m.id).collect();
+        let mut scans = 0;
+        let mut changes: Vec<(i64, Option<(i32, i32, i32)>, i32, u64)> = Vec::new();
+        for id in ids {
+            let Some(m) = self.mobs.get(&id) else { continue };
+            let Some(home) = m.home else { continue };
+            if let Some(st) = m.station {
+                if !self.world.is_ready(st.0 >> 4, st.2 >> 4) {
+                    continue;
+                }
+                let still = d.block_name(self.world.get(st.0, st.1, st.2)).and_then(station_job) == Some(m.variant);
+                if !still {
+                    // Poste cassé : plus de métier, à moins d'avoir déjà une clientèle
+                    changes.push((id, None, if m.trade_xp == 0 { 0 } else { m.variant }, tick + 100));
+                }
+                continue;
+            }
+            if m.job_wait > tick || scans >= 2 {
+                continue;
+            }
+            scans += 1;
+            let (hx, hy, hz) = (home.0.floor() as i32, home.1.floor() as i32, home.2.floor() as i32);
+            let mut best: Option<((i32, i32, i32), i32, i32)> = None;
+            for dx in -16..=16 {
+                for dz in -16..=16 {
+                    let (x, z) = (hx + dx, hz + dz);
+                    if !self.world.is_ready(x >> 4, z >> 4) {
+                        continue;
+                    }
+                    for dy in -4..=4 {
+                        let y = hy + dy;
+                        let Some(job) = d.block_name(self.world.get(x, y, z)).and_then(station_job) else { continue };
+                        // (un villageois qui a déjà un métier ne prend qu'un poste de ce métier)
+                        if (m.variant != 0 && job != m.variant) || claimed.contains(&(x, y, z)) {
+                            continue;
+                        }
+                        let dist = dx * dx + dz * dz + dy * dy * 4;
+                        if best.map(|b| dist < b.2).unwrap_or(true) {
+                            best = Some(((x, y, z), job, dist));
+                        }
+                    }
+                }
+            }
+            match best {
+                Some((at, job, _)) => {
+                    claimed.insert(at);
+                    changes.push((id, Some(at), job, tick));
+                }
+                None => changes.push((id, None, m.variant, tick + 600)),
+            }
+        }
+        for (id, station, job, wait) in changes {
+            let mut changed = false;
+            if let Some(m) = self.mobs.get_mut(&id) {
+                changed = m.variant != job;
+                m.station = station;
+                m.variant = job;
+                m.job_wait = wait;
+            }
+            if changed {
+                self.mob_changed(id);
+            }
+            self.mobs_dirty = true;
+        }
+    }
+
+    /// Naissances : deux villageois adultes côte à côte, de jour, font un petit s'il reste
+    /// un lit libre dans le village. Une naissance au plus par passage (une fois par minute).
+    fn villager_births(&mut self) {
+        if self.world_time().rem_euclid(24_000) >= 12_000 || self.mobs.len() >= MAX_MOBS {
+            return;
+        }
+        let adults: Vec<(i64, (f32, f32, f32), (f32, f32, f32), i32)> = self
+            .mobs
+            .values()
+            .filter(|m| m.species == Species::Villager && m.age == 0 && m.dead.is_none() && m.asleep.is_none())
+            .filter_map(|m| m.home.map(|h| (m.id, m.pos, h, m.mark)))
+            .collect();
+        for (i, a) in adults.iter().enumerate() {
+            let Some(b) = adults[i + 1..].iter().find(|b| (a.1 .0 - b.1 .0).powi(2) + (a.1 .2 - b.1 .2).powi(2) < 4.0 * 4.0 && (a.1 .1 - b.1 .1).abs() < 2.0) else { continue };
+            // Lits du village (deux blocs par lit) contre habitants des environs
+            let (cx, cz) = ((a.2 .0.floor() as i32) >> 4, (a.2 .2.floor() as i32) >> 4);
+            let mut beds = 0;
+            for x in cx - 3..=cx + 3 {
+                for z in cz - 3..=cz + 3 {
+                    beds += self.world.structure_beds(x, z).len();
+                }
+            }
+            let people = self.mobs.values().filter(|m| m.species == Species::Villager && m.dead.is_none()).filter_map(|m| m.home).filter(|h| (h.0 - a.2 .0).powi(2) + (h.2 - a.2 .2).powi(2) < 56.0 * 56.0).count();
+            if people >= beds / 2 {
+                continue;
+            }
+            let at = ((a.1 .0 + b.1 .0) / 2.0, a.1 .1.max(b.1 .1), (a.1 .2 + b.1 .2) / 2.0);
+            let baby = self.add_mob(Species::Villager, at);
+            if let Some(m) = self.mobs.get_mut(&baby) {
+                m.variant = 0;
+                m.mark = a.3;
+                m.age = -GROW_TICKS;
+                m.home = Some(a.2);
+            }
+            for parent in [a.0, b.0] {
+                if let Some(m) = self.mobs.get_mut(&parent) {
+                    m.age = BREED_COOLDOWN;
+                }
+                self.send_to_viewers(parent, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(parent, bedrock::EVENT_LOVE_PARTICLES, 0));
+            }
+            self.mobs_dirty = true;
+            return;
+        }
     }
 
     /// Golem de fer : il fonce sur le joueur qui l'a frappé, lui ou un villageois, et l'envoie
@@ -2601,8 +3106,11 @@ impl Server {
             m.on_ground = false;
         }
         m.panic = if matches!(m.species, Species::Wolf | Species::IronGolem) { 0 } else { 100 };
-        // Un loup assis qu'on frappe se relève
+        // Un loup assis qu'on frappe se relève, un villageois endormi se réveille
         m.sitting = false;
+        if m.asleep.take().is_some() {
+            m.refresh = true;
+        }
         m.target = None;
         m.love = 0;
         let dead = m.health <= 0.0;
@@ -2682,6 +3190,147 @@ impl Server {
         true
     }
 
+    /// Niveau (101), niveau le plus haut (102) et expérience (103) d'un villageois, tels que
+    /// le jeu les lit dans ses données d'entité : c'est d'eux qu'il tire le titre de l'écran,
+    /// la barre d'expérience et les offres encore verrouillées.
+    fn trade_meta(m: &Mob) -> [(u32, bedrock::Meta); 3] {
+        [(101, bedrock::Meta::Int(trade_tier(m.trade_xp))), (102, bedrock::Meta::Int(4)), (103, bedrock::Meta::Int(m.trade_xp))]
+    }
+
+    /// Toutes les offres d'un villageois (le jeu verrouille lui-même celles des niveaux qu'il
+    /// n'a pas encore), avec leur usure et l'expérience que chacune
+    /// lui rapporte. Tirées une fois pour toutes d'après sa maison et son métier : les mêmes
+    /// à chaque ouverture, et après un redémarrage.
+    fn villager_offers(&self, id: i64) -> Vec<(bedrock::TradeOffer, i32)> {
+        let Some(m) = self.mobs.get(&id) else { return Vec::new() };
+        let home = m.home.unwrap_or(m.pos);
+        let seed = (home.0.floor() as i64 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (home.2.floor() as i64 as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F) ^ (home.1.floor() as i64 as u64).rotate_left(17) ^ m.variant as u64;
+        job_offers(m.variant, seed)
+            .into_iter()
+            // (un objet inconnu de cette version du jeu : l'offre est laissée de côté)
+            .filter(|o| self.item_id(o.buy_a.0).is_some() && self.item_id(o.sell.0).is_some() && o.buy_b.map(|b| self.item_id(b.0).is_some()).unwrap_or(true))
+            .enumerate()
+            .map(|(i, o)| {
+                let offer = bedrock::TradeOffer {
+                    buy_a: (o.buy_a.0.to_string(), o.buy_a.1),
+                    buy_b: o.buy_b.map(|b| (b.0.to_string(), b.1)),
+                    sell: (o.sell.0.to_string(), o.sell.1),
+                    max_uses: o.max_uses,
+                    uses: m.trade_uses.get(i).copied().unwrap_or(0),
+                    net_id: TRADE_NET_BASE + i as i32,
+                    tier: o.tier,
+                    trader_exp: o.xp(),
+                };
+                (offer, o.xp())
+            })
+            .collect()
+    }
+
+    /// Ouvre l'écran d'échange d'un villageois qui a un métier. Vrai si l'écran s'ouvre.
+    fn open_trade(&mut self, addr: &SocketAddr, id: i64) -> bool {
+        let Some(title) = self.mobs.get(&id).filter(|m| m.species == Species::Villager && !m.baby() && m.dead.is_none() && m.asleep.is_none()).and_then(|m| villager_title(m.variant)) else { return false };
+        if self.refused_extras.contains(&bedrock::ID_UPDATE_TRADE) || self.clients.get(addr).map(|c| c.inv.open_window != 0).unwrap_or(true) {
+            return false;
+        }
+        // Un seul joueur à la fois devant un même villageois
+        if self.clients.values().any(|c| c.inv.trade_mob == Some(id)) {
+            return false;
+        }
+        // Avant d'ouvrir : le réassort s'il a eu lieu depuis la dernière fois (deux fois par
+        // jour, aux heures de travail)
+        let restocks = restocks_before(self.world_time());
+        if let Some(m) = self.mobs.get_mut(&id) {
+            if m.trade_restock >= 0 && restocks > m.trade_restock {
+                m.trade_uses.clear();
+            }
+            m.trade_restock = restocks;
+        }
+        let offers: Vec<bedrock::TradeOffer> = self.villager_offers(id).into_iter().map(|(o, _)| o).collect();
+        if offers.is_empty() {
+            return false;
+        }
+        const WINDOW: u8 = 3;
+        let player = match self.clients.get_mut(addr) {
+            Some(c) => {
+                c.inv.open_window = WINDOW;
+                c.inv.trade_mob = Some(id);
+                c.id
+            }
+            None => return false,
+        };
+        let (tier, meta) = match self.mobs.get_mut(&id) {
+            Some(m) => {
+                m.target = None;
+                (trade_tier(m.trade_xp), Self::trade_meta(m))
+            }
+            None => return false,
+        };
+        if self.cfg.debug {
+            if let Some(m) = self.mobs.get(&id) {
+                info!("{} : échange avec le villageois {} — métier {}, expérience {}, niveau {}, usure {:?}, {} offres", addr, id, m.variant, m.trade_xp, tier, m.trade_uses, offers.len());
+            }
+        }
+        // Niveau du villageois, niveau le plus haut, expérience : l'en-tête de l'écran, et
+        // l'insigne à sa ceinture pour tous ceux qui le voient
+        self.send_to_viewers(id, bedrock::ID_SET_ACTOR_DATA, &bedrock::set_actor_data(id, &meta));
+        // Avec qui il échange (donnée 68)
+        self.send(addr, bedrock::ID_SET_ACTOR_DATA, &bedrock::set_actor_data(id, &[(68, bedrock::Meta::Long(player))]));
+        self.send(addr, bedrock::ID_UPDATE_TRADE, &bedrock::update_trade(WINDOW, tier, id, player, title, &offers));
+        self.mob_sound(id, bedrock::SOUND_HAGGLE, None);
+        true
+    }
+
+    /// Échange demandé par le jeu : l'offre du villageois ouvert qui porte ce numéro, si
+    /// elle n'est pas épuisée. Les quantités sont celles de tous les échanges d'affilée.
+    pub(super) fn check_trade(&self, addr: &SocketAddr, request: &bedrock::StackRequest) -> Option<TradeDeal> {
+        let mob = self.clients.get(addr)?.inv.trade_mob?;
+        let (recipe, times) = request.actions.iter().find_map(|a| match a {
+            bedrock::StackAction::CraftRecipe { recipe, times } => Some((*recipe as i64, (*times).max(1) as i32)),
+            _ => None,
+        })?;
+        let index = usize::try_from(recipe - TRADE_NET_BASE as i64).ok()?;
+        let offers = self.villager_offers(mob);
+        let (o, xp) = offers.get(index)?;
+        // Épuisée, ou d'un niveau que le villageois n'a pas encore : refus
+        let tier = self.mobs.get(&mob).map(|m| trade_tier(m.trade_xp))?;
+        if o.uses + times > o.max_uses || o.tier > tier {
+            return None;
+        }
+        let total = |count: u8| u8::try_from(count as i32 * times).ok().filter(|t| *t <= 64);
+        Some(TradeDeal {
+            mob,
+            index,
+            times,
+            xp: xp * times,
+            a: (self.item_id(&o.buy_a.0)?, total(o.buy_a.1)?),
+            b: match &o.buy_b {
+                Some(b) => Some((self.item_id(&b.0)?, total(b.1)?)),
+                None => None,
+            },
+            sell: (self.item_id(&o.sell.0)?, total(o.sell.1)?),
+        })
+    }
+
+    /// Échange conclu : l'offre s'use, le villageois gagne de l'expérience. Sa barre avance
+    /// et, au niveau suivant, ses nouvelles offres se déverrouillent dans l'écran ouvert ;
+    /// son insigne change pour tous ceux qui le voient.
+    pub(super) fn trade_done(&mut self, deal: &TradeDeal) {
+        let meta = match self.mobs.get_mut(&deal.mob) {
+            Some(m) => {
+                if m.trade_uses.len() <= deal.index {
+                    m.trade_uses.resize(deal.index + 1, 0);
+                }
+                m.trade_uses[deal.index] += deal.times;
+                m.trade_xp = (m.trade_xp + deal.xp).min(TIER_XP[4]);
+                Self::trade_meta(m)
+            }
+            None => return,
+        };
+        self.mobs_dirty = true;
+        self.send_to_viewers(deal.mob, bedrock::ID_SET_ACTOR_DATA, &bedrock::set_actor_data(deal.mob, &meta));
+        self.mob_sound(deal.mob, bedrock::SOUND_HAGGLE_YES, None);
+    }
+
     /// Clic droit d'un joueur sur une créature : nourrir, tondre, traire. Vrai si la cible est
     /// une créature.
     pub(super) fn interact_mob(&mut self, addr: &SocketAddr, id: i64) -> bool {
@@ -2703,6 +3352,11 @@ impl Server {
             return true;
         }
         if !near {
+            return true;
+        }
+        // Villageois qui a un métier : l'écran d'échange
+        if m.species == Species::Villager && !riding {
+            self.open_trade(addr, id);
             return true;
         }
         // En laisse : main vide ou une laisse en main, on la détache (elle tombe)
@@ -3662,6 +4316,9 @@ impl Server {
             if r.home.is_some() {
                 m.home = r.home;
             }
+            m.station = r.station;
+            m.trade_xp = r.trade_xp;
+            m.trade_uses = r.trade_uses;
             m.items = vec![None; m.inventory_size()];
             for (slot, name, count) in r.items {
                 if let Some(cell) = m.items.get_mut(slot as usize) {
@@ -3867,6 +4524,27 @@ mod tests {
         assert_eq!(mount_fall_damage(20.0), 12.0);
     }
 
+    /// Tous les objets des offres existent dans les données du jeu (sinon l'offre est
+    /// laissée de côté sans rien dire).
+    #[test]
+    fn every_traded_item_exists() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
+        let data = crate::data::GameData::load(&dir).unwrap();
+        let mut missing = Vec::new();
+        for job in 1..=13 {
+            for seed in 0..200u64 {
+                for o in job_offers(job, seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)) {
+                    for name in [Some(o.buy_a.0), o.buy_b.map(|b| b.0), Some(o.sell.0)].into_iter().flatten() {
+                        if data.item(name).is_none() && !missing.contains(&name) {
+                            missing.push(name);
+                        }
+                    }
+                }
+            }
+        }
+        assert!(missing.is_empty(), "objets inconnus : {:?}", missing);
+    }
+
     #[test]
     fn mount_qualities_are_saved() {
         let r = MobRecord {
@@ -3893,12 +4571,41 @@ mod tests {
             owner: None,
             sitting: false,
             home: Some((10.5, 70.0, -3.5)),
+            trade_xp: 75,
+            trade_uses: vec![3, 0, 12],
+            station: Some((12, 70, -5)),
         };
         assert_eq!(MobRecord::from_json(&r.to_json()), Some(r.clone()));
         // Loup apprivoisé : son maître, assis, collier, vie d'un loup apprivoisé
         let wolf = MobRecord { species: Species::Wolf, health: 33.0, max_health: 40.0, color: 14, variant: 0, mark: 0, saddled: false, chested: false, knot: None, items: Vec::new(), owner: Some("Steve".into()), sitting: true, ..r };
         assert_eq!(MobRecord::from_json(&wolf.to_json()), Some(wolf));
         assert_eq!(Species::from_id("minecraft:wolf"), Some(Species::Wolf));
+        // Échanges : chaque métier a ses offres à tous les niveaux, toujours les mêmes pour un
+        // même villageois ; un novice en a deux, dont une qui achète contre une émeraude
+        for job in 1..=13 {
+            let offers = job_offers(job, 42);
+            assert_eq!(offers, job_offers(job, 42));
+            let novice: Vec<&Offer> = offers.iter().filter(|o| o.tier == 0).collect();
+            assert_eq!(novice.len(), 2, "métier {}", job);
+            assert!(novice[0].sell == ("emerald", 1) && novice[1].buy_a.0 == "emerald" && villager_title(job).is_some());
+            for tier in 0..5 {
+                assert!(offers.iter().any(|o| o.tier == tier), "métier {} : rien au niveau {}", job, tier);
+            }
+            // Les offres sont rangées par niveau : en monter n'en déplace aucune
+            assert!(offers.windows(2).all(|w| w[0].tier <= w[1].tier));
+        }
+        assert!(job_offers(0, 1).is_empty() && job_offers(14, 1).is_empty() && villager_title(14).is_none());
+        // Postes de travail : chaque métier a le sien, et un seul
+        for job in 1..=13 {
+            let blocks = ["composter", "barrel", "loom", "fletching_table", "lectern", "cartography_table", "brewing_stand", "blast_furnace", "grindstone", "smithing_table", "smoker", "cauldron", "stonecutter_block"];
+            assert_eq!(station_job(&format!("minecraft:{}", blocks[job as usize - 1])), Some(job));
+        }
+        assert_eq!(station_job("minecraft:chest"), None);
+        // Niveaux : 10, 70, 150 et 250 points d'expérience ; un achat de novice en rapporte 2
+        assert_eq!([trade_tier(0), trade_tier(9), trade_tier(10), trade_tier(69), trade_tier(150), trade_tier(9999)], [0, 0, 1, 1, 3, 4]);
+        assert_eq!(job_offers(1, 42)[0].xp(), 2);
+        // Réassort : deux par jour, à 2000 et 8000
+        assert_eq!([restocks_before(0), restocks_before(2_000), restocks_before(7_999), restocks_before(8_000), restocks_before(24_000 + 2_500)], [0, 1, 1, 2, 3]);
         // Le golem de fer : 100 points de vie, du fer et des coquelicots, ni élevage ni petit
         assert_eq!(Species::from_id("minecraft:iron_golem"), Some(Species::IronGolem));
         assert_eq!(Species::IronGolem.health(), 100.0);

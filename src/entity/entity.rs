@@ -20,17 +20,6 @@ impl Entity {
         self.pos.0.is_finite() && self.pos.1.is_finite() && self.pos.2.is_finite()
     }
 
-    /// Nom affiché au-dessus de la tête, nettoyé et limité à 64 caractères.
-    pub fn set_name_tag(&mut self, text: &str) {
-        self.name_tag = clean_text(text, 64);
-    }
-
-    /// Distance au carré (évite une racine quand on compare des distances).
-    pub fn distance_squared(&self, other: (f32, f32, f32)) -> f32 {
-        let (dx, dy, dz) = (self.pos.0 - other.0, self.pos.1 - other.1, self.pos.2 - other.2);
-        dx * dx + dy * dy + dz * dz
-    }
-
     /// Remet les valeurs dans leurs bornes.
     pub fn sanitize(&mut self) {
         self.name_tag = clean_text(&self.name_tag, 64);

@@ -1,6 +1,5 @@
 //! Outils de mise au point avec le vrai jeu : variantes d'envoi du terrain.
 
-#[allow(unused_imports)]
 use super::*;
 
 // ---------------------------------------------------------------- Sondes ----

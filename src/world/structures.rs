@@ -1113,7 +1113,6 @@ fn mansion(b: &mut Builder, t: &Templates, rng: &mut Rng, x: i32, y: i32, z: i32
     let mut placer = Placer { rng, start: (0, 0), pieces: Vec::new() };
     placer.create((x, y, z), rot, &grid);
     let pieces = std::mem::take(&mut placer.pieces);
-    let rng = placer.rng;
     let air = b.p.air;
     let mut lowest: HashMap<(i32, i32), i32> = HashMap::new();
     let (mut min, mut max) = ((i32::MAX, i32::MAX), (i32::MIN, i32::MIN));
@@ -1162,7 +1161,6 @@ fn mansion(b: &mut Builder, t: &Templates, rng: &mut Rng, x: i32, y: i32, z: i32
             }
         }
     }
-    let _ = rng;
     // Socle : sous le rez-de-chaussée, de la pierre jusqu'au sol (le jeu fait de même)
     let cobble = b.id("cobblestone");
     for ((cx, cz), low) in lowest {
@@ -2090,8 +2088,7 @@ pub fn block_specs() -> Vec<String> {
         out.push(format!("{}_slab[minecraft:vertical_half=bottom]", w));
         out.push(format!("{}_slab[minecraft:vertical_half=top]", w));
     }
-    for (pane, conn) in [("ew", "minecraft:connection_east=1,minecraft:connection_west=1"), ("ns", "minecraft:connection_north=1,minecraft:connection_south=1")] {
-        let _ = pane;
+    for conn in ["minecraft:connection_east=1,minecraft:connection_west=1", "minecraft:connection_north=1,minecraft:connection_south=1"] {
         out.push(format!("glass_pane[{}]", conn));
     }
     out.extend(

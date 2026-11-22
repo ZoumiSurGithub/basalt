@@ -4,7 +4,6 @@
 //! officiel 1.26 ; l'objet est écrit comme dans les inventaires (format vérifié avec le jeu).
 //! Si le jeu les refuse, le serveur revient à l'ancien comportement (butin dans l'inventaire).
 
-#[allow(unused_imports)]
 use super::*;
 
 pub const ID_ADD_ITEM_ACTOR: u32 = 15;

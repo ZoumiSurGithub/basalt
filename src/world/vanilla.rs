@@ -21,7 +21,7 @@
 //! Les constantes ne sont pas celles du jeu : le terrain a la même allure, mais une graine
 //! ne redonne pas le même monde que dans Minecraft.
 
-use super::generator::{lerp, mix, Column, Palette, Perlin, Rng, Section, SEA_LEVEL, SECTIONS};
+use super::generator::{lerp, mix, Column, Palette, Perlin, Rng, SEA_LEVEL, SECTIONS};
 use super::{MAX_Y, MIN_Y};
 
 // --- Bruits ----------------------------------------------------------------------------
@@ -1428,7 +1428,6 @@ impl Vanilla {
         column.beds = beds;
         column.bells = bells;
         column.wet = wet;
-        let _ = Section::Uniform(0);
         column
     }
 

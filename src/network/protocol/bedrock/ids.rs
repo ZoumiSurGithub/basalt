@@ -1,8 +1,5 @@
 //! Identifiants des paquets et codes d'état.
 
-#[allow(unused_imports)]
-use super::*;
-
 pub const ID_LOGIN: u32 = 0x01;
 /// Début du chiffrement : jeton signé par le serveur (clé éphémère et sel).
 pub const ID_SERVER_TO_CLIENT_HANDSHAKE: u32 = 0x03;

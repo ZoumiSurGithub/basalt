@@ -26,8 +26,4 @@ impl ItemStack {
         self.count == 0
     }
 
-    /// Même objet (la quantité et le numéro de pile ne comptent pas).
-    pub fn same_type(&self, other: &ItemStack) -> bool {
-        self.id == other.id
-    }
 }

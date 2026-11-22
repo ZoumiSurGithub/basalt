@@ -12,6 +12,22 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Ajouté
 
+- Villageois, la vie du village : la nuit ils se couchent dans un lit libre de leur maison
+  et se lèvent au matin (un coup les réveille) ; leur métier vient du poste de travail
+  libre le plus proche de chez eux (composteur, pupitre, tonneau…), un poste cassé le leur
+  retire tant qu'ils n'ont rien échangé, un poste posé en donne un à un villageois sans
+  métier ; ils passent à leur poste dans la journée ; deux adultes côte à côte font un
+  petit s'il reste un lit libre dans le village, et le petit prend un métier en grandissant.
+- Échanges avec les villageois : un clic sur un villageois qui a un métier ouvre l'écran
+  d'échange. Deux offres par niveau, celles de son métier : il achète des matières
+  premières contre une émeraude et vend ses produits. Le serveur vérifie le prix payé.
+  Chaque échange lui rapporte de l'expérience ; il monte de niveau (novice, apprenti,
+  compagnon, expert, maître), ce qui déverrouille ses offres suivantes dans l'écran et
+  change l'insigne à sa ceinture. Une offre s'épuise après 12 ou 16 échanges et se
+  recharge deux fois par jour, aux heures de travail. Niveau et usure sont enregistrés.
+  Le villageois ne bouge pas pendant l'échange et se fait entendre (« hmm » le jour, à
+  l'ouverture de l'échange, quand il est conclu). Les objets que le jeu vend enchantés
+  le sont ici sans enchantement ; pas de cartes au trésor ni d'expérience pour le joueur.
 - Golems de fer : un par village, au pied de la cloche. Il reste dans le village, s'en
   prend au joueur qui frappe un villageois ou un golem (jamais en créatif), l'envoie en l'air
   d'un coup de bras, ne recule pas sous les coups et laisse du fer et des coquelicots.
@@ -43,6 +59,19 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 - Emploi du temps des villageois : la journée ils vaquent dans le village, l'après-midi
   (9000 à 11000) les adultes se retrouvent au centre, la nuit (à partir de 12000) chacun
   rentre chez lui par sa porte et n'en bouge plus jusqu'au matin.
+
+### Modifié
+
+- Documentation : le README est refait (pourquoi choisir Basalt, fonctions, installation,
+  crédits, téléchargements et Discord). Ses longues sections partent dans `docs/` : le monde,
+  le réseau et la sécurité, les performances, la console, le développement, et une feuille
+  de route à cases cochées.
+
+### Retiré
+
+- Ménage du code : environ 310 lignes jamais appelées supprimées (anciens essais d'écriture
+  des chunks, chunk plat de test, fonctions de protocole remplacées depuis), ainsi que les
+  variables et imports devenus inutiles. Aucun changement de comportement.
 
 ### Corrigé
 

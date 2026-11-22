@@ -1,6 +1,5 @@
 //! État initial du joueur : attributs, capacités, données, heure, réglages.
 
-#[allow(unused_imports)]
 use super::*;
 
 // ------------------------------------------------- État initial du joueur ----
@@ -191,7 +190,8 @@ pub const ID_AVAILABLE_ACTOR_IDENTIFIERS: u32 = 119;
 pub const ID_UPDATE_ADVENTURE_SETTINGS: u32 = 188;
 
 /// Paquets d'état du joueur dont le format reste à confirmer avec le vrai jeu.
-pub const EXTRA_IDS: [u32; 18] = [
+pub const EXTRA_IDS: [u32; 19] = [
+    80, // UpdateTrade (écran d'échange)
     56, // BlockActorData (cloche qui sonne)
     25, // LevelEvent (bruit des portes)
     52,
@@ -211,14 +211,6 @@ pub const EXTRA_IDS: [u32; 18] = [
     ID_AVAILABLE_ACTOR_IDENTIFIERS,
     ID_UPDATE_ADVENTURE_SETTINGS,
 ];
-
-/// Liste d'entités connue du serveur : vide (NBT « réseau », clé `idlist`).
-pub fn available_actor_identifiers_empty() -> Vec<u8> {
-    let mut out = vec![0x0a, 0x00, 0x09, 6];
-    out.extend_from_slice(b"idlist");
-    out.extend_from_slice(&[0x0a, 0x00, 0x00]);
-    out
-}
 
 /// Réglages d'aventure (combat entre joueurs, monde modifiable).
 pub fn update_adventure_settings() -> Vec<u8> {

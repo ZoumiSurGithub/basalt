@@ -33,6 +33,8 @@ pub struct PlayerWindows {
     /// Monture ouverte sans selle (lama) : sa seule case d'équipement, le tapis, est la
     /// case 0 pour le jeu et la case 1 de son inventaire
     pub block_mob_carpet: bool,
+    /// Villageois avec qui le joueur est en train d'échanger
+    pub trade_mob: Option<i64>,
     /// Le bloc ouvert est un four (ingrédient, combustible, résultat)
     pub block_is_furnace: bool,
     next_net_id: i32,
@@ -61,6 +63,7 @@ impl PlayerWindows {
             block_pos: None,
             block_mob: None,
             block_mob_carpet: false,
+            trade_mob: None,
             block_is_furnace: false,
             next_net_id: 1,
         }

@@ -255,14 +255,6 @@ impl Tag {
         Tag::Str(text.to_string())
     }
 
-    /// Autres accès typés.
-    pub fn as_byte(&self) -> Option<i8> {
-        match self {
-            Tag::Byte(v) => Some(*v),
-            _ => None,
-        }
-    }
-
     /// Nombre entier, quel que soit sa taille dans le fichier.
     pub fn as_i64(&self) -> Option<i64> {
         match self {

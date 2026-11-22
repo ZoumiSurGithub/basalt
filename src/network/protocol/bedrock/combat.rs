@@ -4,7 +4,6 @@
 //! pas été relevées auprès du serveur officiel 1.26. Si le jeu signale un de ces paquets
 //! illisible, le serveur cesse de l'envoyer (voir la gestion du paquet 156).
 
-#[allow(unused_imports)]
 use super::*;
 
 pub const ID_ACTOR_EVENT: u32 = 27;
@@ -15,7 +14,6 @@ pub const ID_DEATH_INFO: u32 = 189;
 /// Événements d'une entité (ActorEvent)
 pub const EVENT_HURT: u8 = 2;
 pub const EVENT_DEATH: u8 = 3;
-pub const EVENT_RESPAWN: u8 = 18;
 /// Objet au sol dont la pile change de taille (fusion) ; donnée : nouvelle quantité.
 pub const EVENT_ITEM_STACK_SIZE: u8 = 69;
 

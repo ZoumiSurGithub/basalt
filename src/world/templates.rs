@@ -147,12 +147,6 @@ impl Template {
             Some((self.rotate((x as i32, y as i32, z as i32), r), s))
         })
     }
-    /// Blocs du plan non tourné, avec leur état pour la rotation `r` (pour tourner plusieurs
-    /// plans ensemble autour d'un même point).
-    pub fn blocks_unturned(&self, r: u8) -> impl Iterator<Item = ((i32, i32, i32), u32)> + '_ {
-        let r = (r & 3) as usize;
-        self.blocks.iter().filter_map(move |&(x, y, z, i)| Some(((x as i32, y as i32, z as i32), self.states[r].get(i as usize).copied().flatten()?)))
-    }
     /// Blocs du plan non tourné, avec leur état après le miroir puis la rotation donnés
     /// (pièces du manoir : le jeu les retourne parfois).
     pub fn blocks_mirrored(&self, mirror: u8, r: u8) -> impl Iterator<Item = ((i32, i32, i32), u32)> + '_ {

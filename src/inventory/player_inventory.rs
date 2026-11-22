@@ -37,8 +37,4 @@ impl PlayerInventory {
         self.set_item(slot, left)
     }
 
-    /// Les neuf cases de la barre d'objets.
-    pub fn hotbar(&self) -> &[ItemStack] {
-        &self.slots[..HOTBAR_SIZE]
-    }
 }

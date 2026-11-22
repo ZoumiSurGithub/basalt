@@ -4,7 +4,6 @@
 //! ambulant, outil de capture) : attributs, 69 données d'entité, et quatre octets nuls à la
 //! fin (propriétés entières, propriétés décimales, liens, puis un octet de plus).
 
-#[allow(unused_imports)]
 use super::*;
 
 pub const ID_ADD_ACTOR: u32 = 13;
@@ -313,14 +312,15 @@ pub fn block_actor_data(pos: (i32, i32, i32), tag: &crate::nbt::Tag) -> Vec<u8> 
     w.0.extend_from_slice(&crate::nbt::write_network(tag));
     w.0
 }
+/// Villageois : il marchande (écran d'échange ouvert), il accepte (échange conclu)
+pub const SOUND_HAGGLE: &str = "haggle";
+pub const SOUND_HAGGLE_YES: &str = "haggle.yes";
 /// Coup de cloche
 pub const SOUND_BELL: &str = "block.bell.hit";
 /// Le golem de fer lève les bras pour frapper
 pub const EVENT_ARM_SWING: u8 = 4;
 /// Sons d'une créature (LevelSoundEvent) : depuis la 1.26, le son est désigné par son nom
 pub const SOUND_AMBIENT: &str = "ambient";
-pub const SOUND_DEATH: &str = "death";
-pub const SOUND_HURT: &str = "hurt";
 pub const SOUND_EAT: &str = "eat";
 /// Sons que le serveur officiel envoie lui-même (le jeu ne les joue pas seul) : selle posée,
 /// tonte, traite, monture qui refuse son cavalier, saut et atterrissage d'une monture

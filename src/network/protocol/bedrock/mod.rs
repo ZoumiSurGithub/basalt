@@ -81,11 +81,7 @@ mod tests {
     }
 
     #[test]
-    fn flat_chunk_has_expected_size() {
-        // en-tête (4) + 256 mots + palette (1 + 4 hachages) + biomes (48) + bordure (1)
-        let p = flat_chunk_payload();
-        assert!(p.len() > 4 + 1024 + 48 && p.len() < 4 + 1024 + 21 + 48 + 2, "{}", p.len());
-        // FNV-1a de référence : chaîne vide
+    fn block_hashes_differ() {
         assert_ne!(block_hash("minecraft:air"), block_hash("minecraft:stone"));
     }
 

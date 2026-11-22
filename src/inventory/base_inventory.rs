@@ -41,7 +41,6 @@ macro_rules! inventory_type {
         }
 
         impl $name {
-            pub const SIZE: usize = $size;
 
             /// Inventaire vide, aux nom et taille donnés à la macro.
             pub fn new() -> $name {

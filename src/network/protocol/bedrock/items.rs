@@ -1,6 +1,5 @@
 //! Objets : registre, description d'une pile, inventaire, équipement.
 
-#[allow(unused_imports)]
 use super::*;
 
 // ---------------------------------------------------------------- Objets ----
@@ -52,32 +51,6 @@ pub fn block_item_net(w: &mut W, name: &str, id: i16, count: u16, net_id: i32) {
     }
     w.varu32(block_hash(name)); // bloc correspondant (entier non signé, comme l'envoie le jeu)
     w.varu32(0); // données supplémentaires : aucune
-}
-
-/// Inventaire complet du joueur : 36 emplacements (identifiant d'objet, quantité).
-pub fn inventory_content(slots: &[(i16, u16)], f: crate::versions::Features) -> Vec<u8> {
-    let mut w = W::default();
-    w.varu32(0); // inventaire du joueur
-    w.varu32(slots.len() as u32);
-    for (id, count) in slots {
-        match GIVABLE_BLOCKS.iter().find(|(_, i)| i == id) {
-            Some((name, _)) if *count > 0 => block_item(&mut w, &format!("minecraft:{}", name), *id, *count),
-            _ => w.0.extend_from_slice(&[0u8; 8]),
-        }
-    }
-    w.u8(0);
-    if f.editor_migration_version {
-        w.bool(false);
-    } else {
-        w.u32(0);
-    }
-    w.0.extend_from_slice(&[0u8; 8]);
-    w.0
-}
-
-/// Identifiant d'objet d'un bloc que le serveur sait donner, d'après son identifiant réseau.
-pub fn item_for_block(block: u32) -> Option<i16> {
-    GIVABLE_BLOCKS.iter().find(|(n, _)| block_hash(&format!("minecraft:{}", n)) == block).map(|(_, id)| *id)
 }
 
 /// Objet obtenu en cassant un bloc à la main, comme dans le jeu normal : l'herbe donne de la
@@ -136,23 +109,6 @@ pub fn read_selected_slot(body: &[u8]) -> Option<u8> {
     }
 }
 
-/// PlayerAction « début d'utilisation d'un objet sur un bloc » : renvoie la position où
-/// le bloc tenu en main doit être posé.
-pub fn read_place_target(body: &[u8]) -> Option<(i32, i32, i32)> {
-    let mut pos = 0;
-    read_varu64(body, &mut pos)?;
-    if read_vari32(body, &mut pos)? != 28 {
-        return None;
-    }
-    for _ in 0..3 {
-        read_vari32(body, &mut pos)?; // bloc cliqué
-    }
-    let x = read_vari32(body, &mut pos)?;
-    let y = read_vari32(body, &mut pos)?;
-    let z = read_vari32(body, &mut pos)?;
-    Some((x, y, z))
-}
-
 #[cfg(test)]
 mod item_tests {
     use super::*;
@@ -165,11 +121,6 @@ mod item_tests {
             0x00, 0x00, 0x00,
         ];
         assert_eq!(read_selected_slot(&equip), Some(0));
-        // PlayerAction : clic sur le bloc (5, -61, 4), pose en (5, -60, 4)
-        let action = [0x01, 0x38, 0x0a, 0x79, 0x08, 0x0a, 0x77, 0x08, 0x02];
-        assert_eq!(read_place_target(&action), Some((5, -60, 4)));
-        // fin d'utilisation : ignorée
-        assert_eq!(read_place_target(&[0x01, 0x3a, 0x0a, 0x77, 0x08, 0, 0, 0, 0]), None);
         assert_eq!(read_selected_slot(&[1, 2]), None);
     }
 
@@ -179,7 +130,6 @@ mod item_tests {
         let mut w = W::default();
         block_item(&mut w, "minecraft:stone", 1, 64);
         assert_eq!(&w.0[..11], &[0x01, 0x00, 0x40, 0x00, 0x00, 0x00, 0xa1, 0x9c, 0xc4, 0x81, 0x08]);
-        assert_eq!(item_for_block(block_hash("minecraft:stone")), Some(1));
         assert_eq!(block_for_item(3), Some(block_hash("minecraft:dirt")));
         assert_eq!(block_for_item(999), None);
         assert_eq!(drop_for_block(block_hash("minecraft:grass_block")), Some(3));
@@ -195,31 +145,6 @@ pub const ID_CONTAINER_OPEN: u32 = 46;
 pub const ID_CONTAINER_CLOSE: u32 = 47;
 pub const ID_ITEM_STACK_REQUEST: u32 = 147;
 pub const ID_ITEM_STACK_RESPONSE: u32 = 148;
-
-/// Contenu d'un conteneur : (identifiant d'objet, quantité, numéro de pile) par emplacement.
-/// `window` : 0 pour l'inventaire du joueur, 119 seconde main, 120 armure, 124 curseur.
-pub fn container_content(window: u32, slots: &[(i16, u8, i32)], net_ids: bool, f: crate::versions::Features) -> Vec<u8> {
-    let mut w = W::default();
-    w.varu32(window);
-    w.varu32(slots.len() as u32);
-    for (id, count, net_id) in slots {
-        match GIVABLE_BLOCKS.iter().find(|(_, i)| i == id) {
-            Some((name, _)) if *count > 0 => {
-                let net = if net_ids { *net_id } else { 0 };
-                block_item_net(&mut w, &format!("minecraft:{}", name), *id, *count as u16, net)
-            }
-            _ => w.0.extend_from_slice(&[0u8; 8]),
-        }
-    }
-    w.u8(0);
-    if f.editor_migration_version {
-        w.bool(false);
-    } else {
-        w.u32(0);
-    }
-    w.0.extend_from_slice(&[0u8; 8]);
-    w.0
-}
 
 /// Interact « ouvrir l'inventaire » (action 6).
 pub fn read_open_inventory(body: &[u8]) -> bool {
@@ -238,17 +163,6 @@ pub fn container_open_inventory(window: u8, unique_id: i64) -> Vec<u8> {
     w.0
 }
 
-/// Écran lié à une entité (inventaire d'une monture) : fenêtre, type d'écran, entité.
-pub fn container_open_entity(window: u8, kind: u8, unique_id: i64) -> Vec<u8> {
-    let mut w = W::default();
-    w.u8(window);
-    w.u8(kind);
-    w.vari32(0);
-    w.vari32(0);
-    w.vari32(0);
-    w.vari64(unique_id);
-    w.0
-}
 /// Type d'écran de l'inventaire d'une monture (cheval, âne, mule, lama)
 pub const SCREEN_HORSE: u8 = 12;
 
@@ -279,6 +193,76 @@ pub fn update_equip(window: u8, unique_id: i64, size: i32, slots: &[(i32, &str, 
     w.vari32(size);
     w.vari64(unique_id);
     w.0.extend_from_slice(&crate::nbt::write_network(&Tag::compound(vec![("slots", Tag::list_of(list))])));
+    w.0
+}
+
+/// Une offre d'un villageois : ce qu'il demande (un ou deux lots), ce qu'il donne, et combien
+/// de fois avant de s'épuiser. `net_id` : le numéro que le jeu renvoie pour conclure l'échange.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TradeOffer {
+    pub buy_a: (String, u8),
+    pub buy_b: Option<(String, u8)>,
+    pub sell: (String, u8),
+    pub max_uses: i32,
+    pub uses: i32,
+    pub net_id: i32,
+    /// Niveau qui la débloque (0 novice … 4 maître), expérience qu'elle rapporte au villageois
+    pub tier: i32,
+    pub trader_exp: i32,
+}
+
+/// UpdateTrade : ouvre l'écran d'échange d'un villageois avec ses offres. `tier` : son niveau
+/// (0 novice … 4 maître). Disposition des bibliothèques du protocole (non relevée auprès du
+/// serveur officiel) : fenêtre, type, taille, niveau, villageois, joueur, titre, deux
+/// drapeaux, puis les offres au format NBT réseau.
+pub const ID_UPDATE_TRADE: u32 = 80;
+pub const SCREEN_TRADE: u8 = 15;
+pub fn update_trade(window: u8, tier: i32, villager: i64, player: i64, title: &str, offers: &[TradeOffer]) -> Vec<u8> {
+    use crate::nbt::Tag;
+    let item = |(name, count): &(String, u8)| {
+        let full = if name.contains(':') { name.clone() } else { format!("minecraft:{}", name) };
+        Tag::compound(vec![("Count", Tag::Byte(*count as i8)), ("Damage", Tag::Short(0)), ("Name", Tag::string(&full)), ("WasPickedUp", Tag::Byte(0))])
+    };
+    let recipes: Vec<Tag> = offers
+        .iter()
+        .map(|o| {
+            let mut fields = vec![("buyA", item(&o.buy_a))];
+            if let Some(b) = &o.buy_b {
+                fields.push(("buyB", item(b)));
+            }
+            fields.extend([
+                ("sell", item(&o.sell)),
+                ("buyCountA", Tag::Int(o.buy_a.1 as i32)),
+                ("buyCountB", Tag::Int(o.buy_b.as_ref().map(|b| b.1 as i32).unwrap_or(0))),
+                ("demand", Tag::Int(0)),
+                ("maxUses", Tag::Int(o.max_uses)),
+                ("netId", Tag::Int(o.net_id)),
+                ("priceMultiplierA", Tag::Float(0.0)),
+                ("priceMultiplierB", Tag::Float(0.0)),
+                ("rewardExp", Tag::Byte(0)),
+                ("tier", Tag::Int(o.tier)),
+                ("traderExp", Tag::Int(o.trader_exp)),
+                ("uses", Tag::Int(o.uses)),
+            ]);
+            Tag::compound(fields)
+        })
+        .collect();
+    // Expérience demandée pour chaque niveau (celle du jeu)
+    let tiers: Vec<Tag> = [0, 10, 70, 150, 250].iter().enumerate().map(|(i, xp)| Tag::compound(vec![(["0", "1", "2", "3", "4"][i], Tag::Int(*xp))])).collect();
+    let mut w = W::default();
+    w.u8(window);
+    w.u8(SCREEN_TRADE);
+    w.vari32(0);
+    w.vari32(tier);
+    w.vari64(villager);
+    w.vari64(player);
+    w.string(title);
+    w.bool(true); // nouvel écran d'échange
+    // Échanges « d'économie » : ceux des villageois à métier (niveaux, expérience, réassort).
+    // À faux, le jeu les traite comme ceux d'un marchand sans niveau : barre d'expérience
+    // pleine et offres en rouge.
+    w.bool(true);
+    w.0.extend_from_slice(&crate::nbt::write_network(&Tag::compound(vec![("Recipes", Tag::list_of(recipes)), ("TierExpRequirements", Tag::list_of(tiers))])));
     w.0
 }
 

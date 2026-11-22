@@ -1,26 +1,11 @@
 //! Chat et mise à jour de blocs.
 
-#[allow(unused_imports)]
 use super::*;
 
 // ------------------------------------------------------------------ Chat ----
 
 pub const ID_TEXT: u32 = 9;
 pub const ID_UPDATE_BLOCK: u32 = 21;
-
-/// Message de chat d'un joueur (format 1.26.60 : variante « auteur et message », type 1).
-pub fn text_chat(author: &str, message: &str) -> Vec<u8> {
-    let mut w = W::default();
-    w.bool(false); // pas de traduction
-    w.varu32(1); // variante : auteur et message
-    w.u8(1); // type : chat
-    w.string(author);
-    w.string(message);
-    w.string(""); // XUID de l'auteur
-    w.string(""); // identifiant de plateforme
-    w.bool(false); // message filtré : absent
-    w.0
-}
 
 /// Message du serveur, sans auteur (variante « message seul », type 0).
 pub fn text_raw(message: &str) -> Vec<u8> {

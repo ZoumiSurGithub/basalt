@@ -63,9 +63,10 @@ impl Inventory for CraftingGrid {
     fn slots_mut(&mut self) -> &mut [ItemStack] {
         &mut self.base.slots
     }
-    /// Seules les cases de la grille (28 à 40) reçoivent des objets.
+    /// Seules les cases de la grille (28 à 40) reçoivent des objets, et les deux cases de
+    /// l'écran d'échange (4 et 5 : ce que le villageois demande).
     fn accepts(&self, slot: usize, _item: &ItemStack) -> bool {
-        (28..=40).contains(&slot)
+        (28..=40).contains(&slot) || slot == 4 || slot == 5
     }
 }
 
