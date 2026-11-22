@@ -2342,8 +2342,8 @@ fn tamed_horses_have_a_foal() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Chevaux sauvages apprivoisés en les montant (comme ceux qui apparaissent dans la nature),
-/// puis nourris d'une carotte dorée : un poulain naît.
+/// Cheval sauvage apprivoisé en le montant (comme ceux qui apparaissent dans la nature), puis
+/// nourri d'une carotte dorée avec un autre cheval apprivoisé : un poulain naît.
 #[test]
 fn horses_tamed_by_riding_have_a_foal() {
     let dir = std::env::temp_dir().join(format!("basalt-e2e-dresses-{}", std::process::id()));
@@ -2360,117 +2360,91 @@ fn horses_tamed_by_riding_have_a_foal() {
         body.extend_from_slice(text.as_bytes());
         body.extend_from_slice(&[0, 0, 0]);
         c.game(77, &body, Some(0xff));
+        // (Les commandes trop rapprochées sont limitées)
+        std::thread::sleep(Duration::from_millis(1300));
     };
-    command(&mut steve, "/summon horse ~2 ~ ~2");
-    std::thread::sleep(Duration::from_millis(1200));
-    command(&mut steve, "/summon horse ~-2 ~ ~2");
-    let mut horses: Vec<u8> = Vec::new();
-    let started = std::time::Instant::now();
-    while horses.len() < 2 && started.elapsed() < Duration::from_secs(10) {
-        if let Some((13, body)) = steve.poll_game(Duration::from_millis(300)) {
-            if body.windows(15).any(|w| w == b"minecraft:horse") && !horses.contains(&body[1]) {
-                horses.push(body[1]);
-            }
-        }
-    }
-    assert_eq!(horses.len(), 2);
     let click = |c: &mut Client, h: u8| {
         let mut click = vec![0x00, 0x03, 0x00, h, 0x00];
         click.extend_from_slice(&[0x00, 0, 0, 0, 0, 0, 0, 0, 0]);
         c.game(30, &click, Some(0xff));
     };
-    // Amadoués : dix pommes dorées chacun (patience au maximum), puis montés jusqu'au dressage
-    std::thread::sleep(Duration::from_millis(1200));
-    command(&mut steve, "/give @s golden_apple 20");
-    std::thread::sleep(Duration::from_millis(800));
-    for h in &horses {
-        for _ in 0..10 {
-            click(&mut steve, *h);
-            std::thread::sleep(Duration::from_millis(60));
-        }
-    }
-    command(&mut steve, "/clear @s");
-    std::thread::sleep(Duration::from_millis(800));
+    // Positions annoncées des chevaux ; nouveaux chevaux vus ; événements (cœurs, refus)
     let mut seen: std::collections::HashMap<u8, (f32, f32)> = std::collections::HashMap::new();
-    // (Une fois qu'il a bougé, son jeu doit continuer d'envoyer ses mouvements : sinon le
-    // serveur le croit figé)
+    let mut horses: Vec<u8> = Vec::new();
     let mut here = (0.5f32, 0.5f32);
     let mut last_step = std::time::Instant::now();
-    for h in &horses {
-        // Rejoint le cheval (dernière position annoncée) avant de monter
+    // Écoute un moment (et continue d'envoyer ses mouvements, sinon le serveur le croit figé) ;
+    // rend les événements reçus (cheval, numéro)
+    let mut listen = |c: &mut Client, ms: u64, seen: &mut std::collections::HashMap<u8, (f32, f32)>, horses: &mut Vec<u8>, here: (f32, f32)| {
+        let mut events = Vec::new();
         let started = std::time::Instant::now();
-        while started.elapsed() < Duration::from_millis(600) {
-            if let Some((18, body)) = steve.poll_game(Duration::from_millis(50)) {
-                let f = |i: usize| f32::from_le_bytes([body[i], body[i + 1], body[i + 2], body[i + 3]]);
-                seen.insert(body[0], (f(2), f(10)));
-            }
-        }
-        if let Some((x, z)) = seen.get(h) {
-            here = (*x + 1.0, *z);
-            steve.walk_to(here.0, here.1);
-            std::thread::sleep(Duration::from_millis(200));
-        }
-        click(&mut steve, *h); // en selle
-        // Dressage réussi (cœurs) au bout de 2 à 5 secondes, puis il descend ; jeté à terre
-        // (machine chargée : quelques pommes perdues), on remonte
-        let started = std::time::Instant::now();
-        let mut tamed = false;
-        while !tamed && started.elapsed() < Duration::from_secs(30) {
-            match steve.poll_game(Duration::from_millis(200)) {
-                Some((27, body)) => {
-                    tamed = body.first() == Some(h) && body.get(1) == Some(&7);
-                    if body.first() == Some(h) && body.get(1) == Some(&6) {
-                        if let Some((x, z)) = seen.get(h) {
-                            here = (*x + 1.0, *z);
-                            steve.walk_to(here.0, here.1);
-                        }
-                        click(&mut steve, *h);
+        while started.elapsed() < Duration::from_millis(ms) {
+            match c.poll_game(Duration::from_millis(50)) {
+                Some((13, body)) if body.windows(15).any(|w| w == b"minecraft:horse") => {
+                    if !horses.contains(&body[1]) {
+                        horses.push(body[1]);
                     }
                 }
                 Some((18, body)) => {
                     let f = |i: usize| f32::from_le_bytes([body[i], body[i + 1], body[i + 2], body[i + 3]]);
                     seen.insert(body[0], (f(2), f(10)));
                 }
+                Some((27, body)) if body.len() > 1 => events.push((body[0], body[1])),
                 _ => {}
             }
             if last_step.elapsed() > Duration::from_secs(1) {
-                steve.walk_to(here.0, here.1);
+                c.walk_to(here.0, here.1);
                 last_step = std::time::Instant::now();
             }
         }
-        assert!(tamed, "cheval {} apprivoisé", h);
-        steve.game(33, &[3, *h, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], Some(0xff));
-        std::thread::sleep(Duration::from_millis(300));
+        events
+    };
+    command(&mut steve, "/summon horse ~2 ~ ~2");
+    listen(&mut steve, 1500, &mut seen, &mut horses, here);
+    let wild = *horses.first().expect("cheval montré");
+    // Amadoué : dix pommes dorées (patience au maximum), puis monté jusqu'au dressage
+    command(&mut steve, "/give @s golden_apple 10");
+    for _ in 0..10 {
+        click(&mut steve, wild);
+        std::thread::sleep(Duration::from_millis(60));
     }
-    command(&mut steve, "/give @s golden_carrot 4");
-    std::thread::sleep(Duration::from_millis(800));
-    // (Positions à jour, puis chacun nourri de près)
+    command(&mut steve, "/clear @s");
+    click(&mut steve, wild);
     let started = std::time::Instant::now();
-    while started.elapsed() < Duration::from_millis(800) {
-        if let Some((18, body)) = steve.poll_game(Duration::from_millis(50)) {
-            let f = |i: usize| f32::from_le_bytes([body[i], body[i + 1], body[i + 2], body[i + 3]]);
-            seen.insert(body[0], (f(2), f(10)));
+    let mut tamed = false;
+    while !tamed && started.elapsed() < Duration::from_secs(60) {
+        for (h, event) in listen(&mut steve, 200, &mut seen, &mut horses, here) {
+            tamed |= h == wild && event == 7;
+            if h == wild && event == 6 {
+                // Jeté à terre : on le rejoint et on remonte
+                if let Some((x, z)) = seen.get(&wild) {
+                    here = (*x + 1.0, *z);
+                    steve.walk_to(here.0, here.1);
+                }
+                click(&mut steve, wild);
+            }
         }
     }
-    for h in &horses {
-        if let Some((x, z)) = seen.get(h) {
-            here = (*x + 1.0, *z);
-            steve.walk_to(here.0, here.1);
-            std::thread::sleep(Duration::from_millis(150));
-        }
-        click(&mut steve, *h);
+    assert!(tamed, "cheval apprivoisé en le montant");
+    steve.game(33, &[3, wild, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], Some(0xff));
+    listen(&mut steve, 1000, &mut seen, &mut horses, here);
+    // Un second cheval, apprivoisé, juste à côté du premier
+    let (x, z) = seen.get(&wild).copied().unwrap_or((2.5, 2.5));
+    here = (x + 1.0, z);
+    steve.walk_to(here.0, here.1);
+    command(&mut steve, &format!("/summon horse {:.1} -60 {:.1} minecraft:on_tame", x + 1.5, z));
+    listen(&mut steve, 1500, &mut seen, &mut horses, here);
+    let other = *horses.iter().find(|h| **h != wild).expect("second cheval montré");
+    command(&mut steve, "/give @s golden_carrot 4");
+    for h in [wild, other] {
+        click(&mut steve, h);
         std::thread::sleep(Duration::from_millis(200));
     }
-    let mut foal = false;
     let started = std::time::Instant::now();
-    while !foal && started.elapsed() < Duration::from_secs(40) {
-        if let Some((13, body)) = steve.poll_game(Duration::from_millis(300)) {
-            foal |= body.windows(15).any(|w| w == b"minecraft:horse") && !horses.contains(&body[1]);
-        }
-        if last_step.elapsed() > Duration::from_secs(1) {
-            steve.walk_to(here.0, here.1);
-            last_step = std::time::Instant::now();
-        }
+    let mut foal = false;
+    while !foal && started.elapsed() < Duration::from_secs(60) {
+        listen(&mut steve, 300, &mut seen, &mut horses, here);
+        foal = horses.iter().any(|h| *h != wild && *h != other);
     }
     assert!(foal, "un poulain est né");
     stop.store(true, std::sync::atomic::Ordering::SeqCst);

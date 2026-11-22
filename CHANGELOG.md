@@ -64,6 +64,10 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Modifié
 
+- Publication sur GitHub : la version Windows attend que les tests passent (les deux
+  versions publiées restent identiques) ; sur une branche, les tests de bout en bout (une
+  minute, sensibles à la lenteur de la machine) ne sont plus lancés, seulement pour une
+  version officielle (étiquette `v…`).
 - Animaux rangés comme dans le jeu : enregistrés avec leur région (`world/entities/`),
   ils ne restent en mémoire que près des joueurs et retournent dans leur région quand
   plus personne n'est proche ; plus de limite au nombre d'animaux du monde. L'ancien

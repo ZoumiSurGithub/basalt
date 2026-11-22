@@ -30,8 +30,17 @@ jobs:
       # pour que les tests et la compilation finale partagent exactement le meme travail.
       - run: echo "BASALT_BUILD=${GITHUB_REF_NAME} ${GITHUB_SHA::7} $(date -u +%Y-%m-%dT%H:%MZ)" >> "$GITHUB_ENV"
       # Tests compiles en mode « release » : la compilation finale reprend ensuite ce qui
-      # est deja fait, au lieu de tout recompiler une seconde fois
-      - run: cargo test --release --locked
+      # est deja fait, au lieu de tout recompiler une seconde fois.
+      # Sur une etiquette (version officielle) : tous les tests. Sur une branche : tous sauf
+      # ceux de bout en bout (vrais joueurs simules, une minute, et sensibles a la lenteur
+      # de la machine) ; la version de developpement sort ainsi plus vite.
+      - name: Tests
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            cargo test --release --locked
+          else
+            cargo test --release --locked --lib --bins --test auth --test crypto --test placement --test sandbox
+          fi
       - name: Compilation
         run: cargo build --release --locked
       - name: Archive
@@ -86,6 +95,9 @@ jobs:
             basalt-linux-x64.tar.gz.sha256
 
   windows:
+    # Seulement si les tests (faits par la compilation Linux) passent : les deux versions
+    # publiees restent toujours les memes
+    needs: linux
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

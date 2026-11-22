@@ -687,6 +687,10 @@ l'étiquette ne correspond pas au numéro de `Cargo.toml` ou si le journal n'a p
 section pour elle. La préversion de la branche `dev` affiche la section « Non publié ».
 `update.sh` montre les nouveautés de la version qu'il vient d'installer.
 
+Tests sur GitHub : à chaque envoi sur une branche, les tests rapides (sans connexion) ;
+pour une étiquette `v…`, tous les tests, y compris ceux de bout en bout avec de vrais
+joueurs simulés. Rien n'est publié, ni pour Linux ni pour Windows, si un test échoue.
+
 ## Licence
 
 MIT
