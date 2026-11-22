@@ -115,6 +115,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   la mule et le lama, et la force du lama.
 - Âne, mule ou lama portant un coffre : la selle (ou le tapis) est envoyée en tête de la
   liste du coffre ; envoyée à part, elle était effacée à l'écran.
+- Monture quittée en plein saut : le serveur la fait retomber et renvoie son état à tous,
+  à la descente puis à l'atterrissage (elle gardait la pose du saut).
 - Lama : il ne crache plus sur un joueur en créatif ou spectateur.
 - Lama : son tapis se pose et se retire par l'inventaire (le jeu désigne sa case par le
   numéro 0, Basalt attendait le numéro 1).

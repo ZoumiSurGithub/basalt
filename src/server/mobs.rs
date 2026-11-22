@@ -1154,10 +1154,24 @@ impl Server {
                 self.send_to_viewers(m.id, bedrock::ID_MOVE_ACTOR_ABSOLUTE, &packet);
                 self.mobs_dirty = true;
             }
+            // Monture quittée en plein saut, retombée : son état est renvoyé à tous (le jeu de
+            // l'ancien cavalier la laissait dans la pose du saut)
+            let landed = m.airborne && m.on_ground;
+            if landed {
+                m.airborne = false;
+                m.fall_peak = None;
+            }
             let love = m.love;
             self.mobs.insert(id, m);
-            if grew {
+            if grew || landed {
                 self.mob_changed(id);
+            }
+            if landed {
+                if let Some(m) = self.mobs.get(&id) {
+                    let packet = bedrock::move_actor_absolute(id, m.pos, 0.0, m.yaw, m.yaw, true);
+                    self.send_to_viewers(id, bedrock::ID_MOVE_ACTOR_ABSOLUTE, &packet);
+                }
+                self.send_to_viewers(id, bedrock::ID_SET_ACTOR_MOTION, &bedrock::set_actor_motion(id, (0.0, 0.0, 0.0)));
             }
             if love > 0 && love % 10 == 0 {
                 self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_LOVE_PARTICLES, 0));
@@ -2478,9 +2492,17 @@ impl Server {
             m.rider = None;
             m.tame_in = 0;
             m.sent = (f32::MAX, 0.0, 0.0); // position renvoyée à tous au prochain tick
+            // En l'air : c'est le serveur qui la fait retomber, à partir d'ici
+            if m.airborne {
+                m.on_ground = false;
+                m.vel = (0.0, 0.0, 0.0);
+            }
         }
         let link = bedrock::set_actor_link(mob, player, bedrock::LINK_REMOVE, false);
         self.send_to_viewers(mob, bedrock::ID_SET_ACTOR_LINK, &link);
+        // Son état est renvoyé à tous : le jeu du cavalier, qui la dirigeait, garde sinon la
+        // pose du saut
+        self.mob_changed(mob);
         let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.visible.contains(&player)).map(|(a, _)| *a).collect();
         for v in viewers {
             self.send(&v, bedrock::ID_SET_ACTOR_LINK, &link);
