@@ -23,9 +23,6 @@ pub struct Config {
     pub debug: bool,
     /// Mise au point : renvoie le terrain sous d'autres formes aux joueurs entrés (`debug-probes`)
     pub probes: bool,
-    /// Mise au point : écriture de l'écran d'inventaire des montures (`debug-mount-screen`,
-    /// 0 ou 1), pour trouver celle qui ne fait pas planter le jeu
-    pub mount_screen: u8,
     pub max_per_ip: usize,
     pub xbox_auth: bool,
     /// Joueurs simulés acceptés sans compte Xbox, depuis la machine du serveur seulement
@@ -90,7 +87,6 @@ impl Default for Config {
             tick_distance: 4,
             debug: false,
             probes: false,
-            mount_screen: 0,
             max_per_ip: 5,
             xbox_auth: true,
             local_bots: false,
@@ -197,9 +193,6 @@ max-visible-players=48
 max-connections-per-ip=5
 # true : journalise chaque paquet reçu et envoyé (pour le diagnostic)
 debug-packets=false
-# Mise au point de l'écran d'inventaire des montures (0 ou 1) : à changer seulement si on vous
-# le demande pour un signalement
-debug-mount-screen=0
 plugins-dir=plugins
 # true : chaque plugin est enfermé dans son dossier (plugins/<nom>/), sans accès au
 # système, avec un temps d'exécution et une mémoire plafonnés
@@ -314,7 +307,6 @@ impl Config {
         c.auth_keys_file = text_of("auth-keys-file", "");
         c.debug = map.get("debug-packets").map(|v| v == "true").unwrap_or(false);
         c.probes = map.get("debug-probes").map(|v| v == "true").unwrap_or(false);
-        c.mount_screen = map.get("debug-mount-screen").and_then(|v| v.trim().parse().ok()).unwrap_or(0).min(1);
         c.plugins_dir = text_of("plugins-dir", &c.plugins_dir);
         c.world_dir = text_of("world-dir", &c.world_dir);
         c.commands_in_game = map.get("commands-in-game").map(|v| v != "false").unwrap_or(true);

@@ -4335,8 +4335,7 @@ impl Server {
         // « Équipement de monture » : la selle (case 0), l'armure ou le tapis (case 1) ; l'âne
         // et la mule n'ont que la selle. « Conteneur d'entité » : le coffre, dont le jeu
         // compte les cases à partir de 1.
-        // (`debug-mount-screen=1` : l'ancienne écriture, tout sous le nom 0)
-        if let (Some(species), 0) = (species, self.cfg.mount_screen) {
+        if let Some(species) = species {
             let equip = match species {
                 mobs::Species::Horse => 2,
                 _ => 1,

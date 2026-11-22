@@ -96,8 +96,7 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 - Inventaire d'une monture : la selle et l'armure (ou le tapis) posées apparaissent dans
   leurs cases (envoyées dans le conteneur « équipement de monture », et plus en double dans
   la fenêtre). Le jeu plantait dès qu'on prenait un objet, l'écran ouvert : le contenu
-  était envoyé sous un nom de conteneur qui n'est pas celui de l'écran. Réglage de mise au
-  point `debug-mount-screen` (1 : ancienne écriture).
+  était envoyé sous un nom de conteneur qui n'est pas celui de l'écran.
 - Montures : leurs données d'entité annoncent maintenant leur inventaire (écran de monture,
   nombre de cases). À zéro, le jeu plantait dès qu'on prenait un objet dans l'écran.
 - Montures : à la première ouverture de leur inventaire, les cases de selle et d'armure

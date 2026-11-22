@@ -2203,9 +2203,7 @@ impl Server {
         let species = self.mobs.get(&id).map(|m| m.species);
         const COLORS: [&str; 16] = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black"];
         let carpets: Vec<String> = COLORS.iter().map(|c| format!("{}_carpet", c)).collect();
-        // Icônes des cases vides : la vraie selle, la vraie armure (les icônes « horsesaddle » /
-        // « horsearmor » d'autres serveurs n'ont rien changé au plantage)
-        let variant = self.cfg.mount_screen;
+        // Icônes des cases vides
         let (saddle_icon, armor_icon, carpet_icon) = ("saddle", "iron_horse_armor", "white_carpet");
         let mut equip: Vec<(i32, &str, Vec<&str>)> = Vec::new();
         match species {
@@ -2219,14 +2217,9 @@ impl Server {
         }
         // Taille annoncée, comptée comme le jeu : l'équipement, puis le coffre à partir de 1
         let size = if slots.len() > 2 { slots.len() as i32 - 1 } else { 2 };
-        info!("{} : inventaire de monture, écriture {} (debug-mount-screen)", addr, variant);
         // Comme le jeu officiel : ce paquet seul ouvre l'écran de monture. Accompagné d'une
         // ouverture de conteneur, le jeu recevait deux ouvertures : cases sans icône à la
         // première, puis refus (« fermeture de la fenêtre -1 ») et écran figé.
-        // (`debug-mount-screen=1` : l'ancienne écriture, avec l'ouverture de conteneur)
-        if variant == 1 {
-            self.send(addr, bedrock::ID_CONTAINER_OPEN, &bedrock::container_open_entity(WINDOW, bedrock::SCREEN_HORSE, id));
-        }
         self.send(addr, bedrock::ID_UPDATE_EQUIP, &bedrock::update_equip(WINDOW, id, size, &equip));
         self.send_block_content(addr, &slots);
         true
