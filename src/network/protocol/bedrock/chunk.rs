@@ -135,11 +135,27 @@ pub fn level_chunk_counted(x: i32, z: i32, count: u32, payload: &[u8], f: crate:
     w.vari32(z);
     w.vari32(0); // dimension
     w.varu32(count); // nombre de sous-chunks
+    // Même en-tête que celui accepté par le jeu 1.26.65 (voir `level_chunk_probe`) : la
+    // liste du cache est toujours écrite, même vide. Sans elle, le jeu 1.26.40 lisait la
+    // taille du contenu comme le nombre d'éléments du cache (« too many input elements »).
+    w.bool(false);
     w.bool(false); // cache désactivé
+    w.varu32(0); // liste du cache, vide
     w.varu32(payload.len() as u32);
     w.0.extend_from_slice(payload);
     if f.chunk_biome_update_flag {
-        w.bool(false);
+        w.bool(false); // ajouté en 1.26.60
     }
     w.0
+}
+
+#[cfg(test)]
+mod counted_tests {
+    #[test]
+    fn old_versions_get_the_same_header_without_the_biome_flag() {
+        let payload = [7u8; 100];
+        let old = super::level_chunk_counted(1, 2, 3, &payload, crate::versions::features(2168));
+        let new = crate::network::protocol::bedrock::level_chunk_probe(1, 2, 3, &payload, false);
+        assert_eq!(&new[..new.len() - 1], &old[..]);
+    }
 }

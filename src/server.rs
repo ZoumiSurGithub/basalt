@@ -419,8 +419,6 @@ pub struct Server {
     chunk_no_biomes: Vec<u8>,
     /// Écriture de LevelChunk en cours d'essai (mise au point avec le vrai jeu)
     chunk_variant: u8,
-    /// Dernière connexion ayant fait changer de variante (une seule fois par connexion)
-    chunk_variant_by: Option<SocketAddr>,
     /// Paquets d'état du joueur que le jeu a refusés : ils ne sont plus envoyés
     refused_extras: HashSet<u32>,
     /// Paquets relevés auprès du serveur officiel : protocole -> identifiant -> contenu
@@ -730,7 +728,6 @@ impl Server {
             global_bytes: 0,
             chunk_no_biomes: bedrock::flat_chunk_payload_with(false),
             chunk_variant: 1, // la variante 0 a déjà été refusée par le jeu 1.26.65
-            chunk_variant_by: None,
             refused_extras: HashSet::new(),
             captured: HashMap::new(),
             captured_ready: HashMap::new(),
@@ -5295,17 +5292,6 @@ impl Server {
                 if packet == 122 && self.cfg.debug && !self.experiment_locked {
                     self.experiment = 0;
                     warn!("Liste de biomes refusée. Prochaine connexion : expérience {} ({}).", self.experiment, experiment_name(self.experiment));
-                }
-                if packet == 58 && self.chunk_variant_by != Some(addr) {
-                    self.chunk_variant_by = Some(addr);
-                    warn!("Variante de chunks refusée : {} ({})", self.chunk_variant, bedrock::chunk_variant_name(self.chunk_variant));
-                    // Mise au point : on essaie l'écriture suivante à la prochaine connexion.
-                    self.chunk_variant = (self.chunk_variant + 1) % bedrock::CHUNK_VARIANTS;
-                    warn!(
-                        "Chunks refusés : la prochaine connexion essaiera la variante {} ({}). Reconnectez-vous.",
-                        self.chunk_variant,
-                        bedrock::chunk_variant_name(self.chunk_variant)
-                    );
                 }
                 continue;
             }

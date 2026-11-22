@@ -82,7 +82,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Corrigé
 
-- Connexion en 1.26.40 / 1.26.45 : le jeu ne pouvait pas lire la liste des packs de ressources (paquet 6).
+- Connexion en 1.26.40 / 1.26.45 : le jeu ne pouvait lire ni la liste des packs de ressources
+  (paquet 6) ni les chunks (paquet 58).
 - Les animaux qui se promenaient renonçaient en plein saut devant une marche d'un bloc
   (ils sautaient sur place) ; le lapin, qui avance par bonds, ne la franchissait jamais.
 - Boîte de collision des petits et des lapins trop petite (réduite deux fois : par
