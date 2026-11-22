@@ -4306,19 +4306,26 @@ impl Server {
             None => return,
         };
         let list: Vec<(i16, u8, i32, u32)> = slots.iter().map(|s| (s.id, s.count, s.net_id, self.block_for(s.id).unwrap_or(0))).collect();
-        let pk = bedrock::container_items(window as u32, &list, self.item_net_ids, crate::versions::features(protocol));
-        self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
-        // Monture : selle et armure (ou tapis) aussi dans le conteneur « équipement », d'où
-        // l'écran de la monture les affiche (sinon la selle posée n'y apparaissait pas)
-        // (autant de cases que l'écran en montre : selle et armure du cheval, tapis du lama ;
-        // la selle seule pour l'âne et la mule, sinon le jeu ignore le paquet)
+        // Monture : selle et armure (ou tapis) vont dans le conteneur « équipement de monture »,
+        // d'où l'écran les affiche (autant de cases que l'écran en montre : deux pour le cheval
+        // et le lama, la selle seule pour l'âne et la mule). Dans le contenu de la fenêtre, ces
+        // cases sont alors laissées vides : une même pile annoncée deux fois (même numéro dans
+        // deux conteneurs) faisait planter le jeu au geste suivant.
         let equip = match self.clients.get(addr).and_then(|c| c.inv.block_mob).and_then(|id| self.mobs.get(&id)).map(|m| m.species) {
             Some(mobs::Species::Donkey | mobs::Species::Mule) => 1,
             Some(_) => 2,
             None => 0,
-        };
-        if equip > 0 && list.len() >= equip {
-            let pk = bedrock::container_items_named(window as u32, bedrock::CONTAINER_HORSE_EQUIP, &list[..equip], self.item_net_ids, crate::versions::features(protocol));
+        }
+        .min(list.len());
+        let mut window_list = list.clone();
+        for cell in window_list.iter_mut().take(equip) {
+            *cell = (0, 0, 0, 0);
+        }
+        let features = crate::versions::features(protocol);
+        let pk = bedrock::container_items(window as u32, &window_list, self.item_net_ids, features);
+        self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
+        if equip > 0 {
+            let pk = bedrock::container_items_named(window as u32, bedrock::CONTAINER_HORSE_EQUIP, &list[..equip], self.item_net_ids, features);
             self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
         }
     }
