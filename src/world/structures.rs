@@ -1643,6 +1643,19 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
                 b.put((x, y - 1, z), cover);
             }
         }
+        // … et la terre que les plans posent eux-mêmes à l'air libre (sous un point d'attache,
+        // au pied d'un mur) : dans le jeu l'herbe la gagne vite ; ici elle ne pousse pas seule
+        let bare: Vec<(i32, i32, i32)> = b.blocks.iter().filter(|(_, s)| **s == dirt).map(|(p, _)| *p).collect();
+        for (x, y, z) in bare {
+            let open = match b.blocks.get(&(x, y + 1, z)) {
+                Some(s) => *s == air,
+                None => y + 1 > b.top(x, z),
+            };
+            if open && y >= SEA_LEVEL {
+                let cover = b.cover(x, z, grass);
+                b.put((x, y, z), cover);
+            }
+        }
     }
     if how.carve {
         sculk_patches(b, rng, layout, floors);

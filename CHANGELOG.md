@@ -45,7 +45,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   vient d'un point d'attache du plan, et ne tendent plus un bras vers les fleurs, les
   citrouilles ou les pastèques.
 - Villages : la terre mise à nu là où une maison entaille le terrain se couvre d'herbe
-  (plus de plaques de terre autour des maisons).
+  (plus de plaques de terre autour des maisons) ; de même la terre que les plans posent à
+  l'air libre, que l'herbe gagne vite dans le jeu.
 - Villages : plus d'herbes, de fleurs ni de feuilles mortes poussées sur les chemins.
 - Créatures : elles ne sautent plus sur les trappes, barrières, murets, portillons, vitres
   et barreaux (un villageois se retrouvait perché sur une trappe ; les animaux pouvaient

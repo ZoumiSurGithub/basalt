@@ -290,6 +290,19 @@ pub fn set_actor_data(id: i64, entries: &[(u32, Meta)]) -> Vec<u8> {
 }
 
 pub const ID_LEVEL_SOUND_EVENT: u32 = 123;
+/// LevelEvent : un effet du monde à une position (ici le bruit d'une porte).
+pub const ID_LEVEL_EVENT: u32 = 25;
+/// Bruit d'une porte, d'une trappe ou d'un portillon qu'on ouvre ou ferme
+pub const LEVEL_EVENT_SOUND_DOOR: i32 = 1003;
+pub fn level_event(event: i32, pos: (f32, f32, f32), data: i32) -> Vec<u8> {
+    let mut w = W::default();
+    w.vari32(event);
+    w.f32(pos.0);
+    w.f32(pos.1);
+    w.f32(pos.2);
+    w.vari32(data);
+    w.0
+}
 /// Sons d'une créature (LevelSoundEvent) : depuis la 1.26, le son est désigné par son nom
 pub const SOUND_AMBIENT: &str = "ambient";
 pub const SOUND_DEATH: &str = "death";

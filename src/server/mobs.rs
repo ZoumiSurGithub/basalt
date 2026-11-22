@@ -1018,12 +1018,12 @@ impl Server {
             }
         }
         // Le bruit de la porte, pour les joueurs proches
-        if changed && !self.refused_extras.contains(&bedrock::ID_LEVEL_SOUND_EVENT) {
+        if changed && !self.refused_extras.contains(&bedrock::ID_LEVEL_EVENT) {
             let at = (pos.0 as f32 + 0.5, pos.1 as f32 + 0.5, pos.2 as f32 + 0.5);
-            let packet = bedrock::level_sound(if open { "door.open" } else { "door.close" }, at, "", false, -1);
+            let packet = bedrock::level_event(bedrock::LEVEL_EVENT_SOUND_DOOR, at, 0);
             let near: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.joined && (c.pos.0 - at.0).powi(2) + (c.pos.2 - at.2).powi(2) < 16.0 * 16.0).map(|(a, _)| *a).collect();
             for a in near {
-                self.send(&a, bedrock::ID_LEVEL_SOUND_EVENT, &packet);
+                self.send(&a, bedrock::ID_LEVEL_EVENT, &packet);
             }
         }
         changed
