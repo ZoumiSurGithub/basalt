@@ -54,9 +54,15 @@ pub struct Plan {
     /// Zones (x min, z min, x max, z max) où aucun arbre ne pousse : un arbre dont le pied y
     /// tombe n'est pas dessiné du tout, plutôt que coupé
     no_trees: Vec<(i32, i32, i32, i32)>,
+    /// Pièces rigides dont le relief épouse la base
+    pads: Vec<super::vanilla::Pad>,
 }
 
 impl Plan {
+    /// Pièces dont le terrain doit épouser la base.
+    pub fn pads(&self) -> &[super::vanilla::Pad] {
+        &self.pads
+    }
     /// Blocs de la structure qui tombent dans ce chunk : (x, y, z locaux, état).
     pub fn blocks_in(&self, cx: i32, cz: i32) -> &[(u8, i16, u8, u32)] {
         self.blocks.get(&(cx, cz)).map(|v| v.as_slice()).unwrap_or(&[])
@@ -1491,7 +1497,7 @@ struct Placing {
     integrity: f64,
     /// Repères des plans : (décalage vertical du coffre, butin, coffre à poser) ou rien
     markers: fn(&str) -> Option<(i32, Loot, bool)>,
-    /// Raccorder le terrain en talus autour des pièces (avec `under`)
+    /// Le relief épouse la base des pièces rigides (avec `under`), comme dans le jeu
     slopes: bool,
 }
 
@@ -1539,6 +1545,15 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
                 }
             }
         }
+    }
+    // Comme dans le jeu : le relief s'adapte d'abord à la base des pièces rigides (maisons),
+    // puis les pièces qui suivent le sol (rues) sont posées sur ce relief adapté
+    if how.slopes && how.under.is_some() {
+        for piece in layout.pieces.iter().filter(|p| !p.follows_ground) {
+            let (lo, hi) = (piece.bbox.min, piece.bbox.max);
+            b.pads.push(super::vanilla::Pad { min: (lo.0, lo.2), max: (hi.0, hi.2), floor: lo.1 });
+        }
+        b.tops.clear();
     }
     for piece in &layout.pieces {
         let (ax, ay, az) = piece.at;
@@ -1590,11 +1605,6 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
                 }
             }
             columns.entry((x, z)).or_insert(ay);
-        }
-        // Pièce rigide sur une pente : le terrain est raccordé en talus (une pente de
-        // 2 blocs de haut par bloc d'écart) plutôt que coupé à la verticale
-        if let (Some(under), false, true) = (how.under, piece.follows_ground, how.slopes) {
-            earthworks(b, piece, under);
         }
         for ((rx, ry, rz), color) in piece.template.beds(piece.rot) {
             if !piece.follows_ground {
@@ -1659,69 +1669,6 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
     }
     if how.carve {
         sculk_patches(b, rng, layout, floors);
-    }
-}
-
-/// Talus autour d'une pièce rigide : le terrain plus haut qu'elle est entaillé en pente
-/// douce, le terrain plus bas est remblayé en pente jusqu'à son plancher. Les colonnes déjà
-/// occupées par la structure (rues, autres maisons) ne sont pas touchées.
-fn earthworks(b: &mut Builder, piece: &super::templates::Piece, under: &str) {
-    const M: i32 = 6;
-    let (lo, hi) = (piece.bbox.min, piece.bbox.max);
-    let floor = lo.1;
-    let fill = b.id(under);
-    let desert = under == "sandstone";
-    let top_block = if desert { b.p.sand } else { b.p.grass };
-    let air = b.p.air;
-    for x in lo.0 - M..=hi.0 + M {
-        for z in lo.2 - M..=hi.2 + M {
-            let dx = (lo.0 - x).max(x - hi.0).max(0);
-            let dz = (lo.2 - z).max(z - hi.2).max(0);
-            let d = dx.max(dz);
-            let g = b.top(x, z);
-            if d == 0 {
-                // Au-dessus de la pièce : dégagé
-                for y in hi.1 + 1..=g.min(hi.1 + 12) {
-                    b.air((x, y, z));
-                }
-                // Sous la pièce, là où son plan ne pose rien au niveau du sol et où le
-                // terrain est plus bas : comblé de plain-pied (sinon un trou le long du mur)
-                if g < floor && floor - g <= 8 && !b.blocks.contains_key(&(x, floor, z)) {
-                    let cover = b.cover(x, z, top_block);
-                    let fill = if cover == b.p.sand || cover == b.p.stone { cover } else { fill };
-                    for y in g + 1..floor {
-                        b.put((x, y, z), fill);
-                    }
-                    b.put((x, floor, z), cover);
-                }
-                continue;
-            }
-            let taken = |b: &Builder, y: i32| b.blocks.get(&(x, y, z)).map(|s| *s != air).unwrap_or(false);
-            // Entaille : de plain-pied au ras de la pièce, puis un bloc de plus par bloc d'écart
-            // (une pente douce ; un rebord dès le premier bloc laissait un fossé le long des murs)
-            let cut = floor + d - 1;
-            // (couvert comme le sol d'ici : du sable sur une plage, pas de l'herbe)
-            let top_block = b.cover(x, z, top_block);
-            let fill = if top_block == b.p.sand || top_block == b.p.stone { top_block } else { fill };
-            if g > cut && !(cut..=g).any(|y| taken(b, y)) {
-                for y in cut + 1..=g.min(cut + 14) {
-                    b.air((x, y, z));
-                }
-                b.put((x, cut, z), top_block);
-            }
-            // Remblai : de plain-pied au ras de la pièce, puis un bloc de moins par bloc d'écart
-            let bank = floor - (d - 1);
-            // (jamais par-dessus une rue ou une autre pièce posée au niveau du sol)
-            if g < bank && !(g..=bank).any(|y| taken(b, y)) {
-                if bank - g > 8 {
-                    continue; // trop haut : pas de talus, plutôt qu'un bloc de terre suspendu
-                }
-                for y in g + 1..bank {
-                    b.put((x, y, z), fill);
-                }
-                b.put((x, bank, z), top_block);
-            }
-        }
     }
 }
 
@@ -1911,6 +1858,8 @@ struct Builder<'a> {
     /// Zones sans arbres
     no_trees: Vec<(i32, i32, i32, i32)>,
     tops: HashMap<(i32, i32), i32>,
+    /// Pièces rigides déjà placées : le relief est compté adapté à leur base
+    pads: Vec<super::vanilla::Pad>,
     /// Barrières posées : reliées à leurs voisines à la fin
     fences: HashMap<(i32, i32, i32), &'static str>,
 }
@@ -1918,7 +1867,7 @@ struct Builder<'a> {
 impl<'a> Builder<'a> {
     /// Nouveau chantier vide.
     fn new(v: &'a Vanilla, p: &'a Palette) -> Builder<'a> {
-        Builder { v, p, blocks: HashMap::new(), chests: Vec::new(), clear: Vec::new(), beds: Vec::new(), no_trees: Vec::new(), tops: HashMap::new(), fences: HashMap::new() }
+        Builder { v, p, blocks: HashMap::new(), chests: Vec::new(), clear: Vec::new(), beds: Vec::new(), no_trees: Vec::new(), tops: HashMap::new(), pads: Vec::new(), fences: HashMap::new() }
     }
 
     /// État d'un bloc d'après son nom ; erreur en test si le nom est absent de block_specs().
@@ -1965,7 +1914,7 @@ impl<'a> Builder<'a> {
         if let Some(t) = self.tops.get(&(x, z)) {
             return *t;
         }
-        let t = self.v.surface(x, z).0;
+        let t = self.v.column_top_with(x, z, &self.pads);
         self.tops.insert((x, z), t);
         t
     }
@@ -2014,6 +1963,7 @@ impl<'a> Builder<'a> {
             plan.blocks.entry((x >> 4, z >> 4)).or_default().push(((x & 15) as u8, y as i16, (z & 15) as u8, s));
         }
         plan.no_trees = self.no_trees;
+        plan.pads = self.pads;
         for ((x, y, z), color) in self.beds {
             plan.beds.entry((x >> 4, z >> 4)).or_default().push(((x & 15) as u8, y as i16, (z & 15) as u8, color));
         }

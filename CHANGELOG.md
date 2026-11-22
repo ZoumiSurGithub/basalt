@@ -51,8 +51,9 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 - Créatures : elles ne sautent plus sur les trappes, barrières, murets, portillons, vitres
   et barreaux (un villageois se retrouvait perché sur une trappe ; les animaux pouvaient
   franchir une barrière d'un saut).
-- Villages : le terrain rejoint les maisons de plain-pied, en pente douce (un bloc par
-  bloc d'écart) ; il laissait un rebord et un fossé le long des murs.
+- Villages : le relief épouse la base des maisons comme dans le jeu (la densité du terrain
+  est modifiée autour de chaque pièce, sur 12 blocs : comblé dessous, dégagé dessus), au
+  lieu d'être taillé en talus après coup ; les rues sont posées sur ce relief adapté.
 - Villages au bord d'une plage ou d'un désert : les talus autour des maisons sont en sable
   comme le sol d'alentour, plus en blocs d'herbe.
 

@@ -580,6 +580,49 @@ pub struct Vanilla {
 }
 
 /// Taille des cellules de la grille de densité (comme dans le jeu).
+/// Emprise d'une pièce rigide de structure (une maison de village) dont le terrain doit
+/// épouser la base : rectangle au sol et hauteur du dernier bloc plein sous la pièce.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pad {
+    pub min: (i32, i32),
+    pub max: (i32, i32),
+    pub floor: i32,
+}
+
+/// Portée de l'adaptation du terrain autour d'une pièce (celle du jeu).
+pub const BEARD: i32 = 12;
+
+/// Pièces assez proches de cette colonne pour en modeler le sol : (distance horizontale au
+/// carré jusqu'à l'emprise, hauteur du sol de la pièce).
+pub fn column_pads(pads: &[Pad], x: i32, z: i32) -> Vec<(f64, i32)> {
+    pads.iter()
+        .filter_map(|p| {
+            let dx = (p.min.0 - x).max(x - p.max.0).max(0);
+            let dz = (p.min.1 - z).max(z - p.max.1).max(0);
+            (dx <= BEARD && dz <= BEARD).then_some(((dx * dx + dz * dz) as f64, p.floor))
+        })
+        .collect()
+}
+
+/// Ce que les pièces proches ajoutent à la densité du terrain à cette hauteur, comme le
+/// fait le jeu (« beard_thin » des villages) : de la matière sous le sol de la pièce, du
+/// vide au-dessus, de moins en moins loin d'elle. Le relief vient ainsi mourir en douceur
+/// au pied des maisons au lieu d'être entaillé.
+pub fn beard(near: &[(f64, i32)], y: i32) -> f64 {
+    let mut sum = 0.0;
+    for &(d2, floor) in near {
+        // Hauteur comptée depuis le premier bloc libre au-dessus du sol de la pièce
+        let dy = y - (floor + 1);
+        if !(-BEARD..BEARD).contains(&dy) {
+            continue;
+        }
+        let e = dy as f64 + 0.5;
+        let f = d2 + e * e;
+        sum += 0.8 * (-e / (f / 2.0).sqrt() / 2.0) * (-f / 16.0).exp();
+    }
+    sum
+}
+
 const CELL_W: i32 = 4;
 const CELL_H: i32 = 8;
 const GRID_Y: usize = ((MAX_Y - MIN_Y + 1) / CELL_H) as usize + 1;
@@ -794,6 +837,42 @@ impl Vanilla {
 
     /// Hauteur réelle du sol d'une colonne (dernier bloc plein du relief, grottes exclues),
     /// calculée comme dans `generate` : même grille, même interpolation.
+    pub(crate) fn column_top_with(&self, x: i32, z: i32, pads: &[Pad]) -> i32 {
+        let near = column_pads(pads, x, z);
+        if near.is_empty() {
+            return self.column_top(x, z);
+        }
+        let (gx0, gz0) = (x.div_euclid(CELL_W) * CELL_W, z.div_euclid(CELL_W) * CELL_W);
+        let (fx, fz) = ((x - gx0) as f64 / CELL_W as f64, (z - gz0) as f64 / CELL_W as f64);
+        const OFFSETS: [(i32, i32); 4] = [(0, 0), (CELL_W, 0), (0, CELL_W), (CELL_W, CELL_W)];
+        let corners: [Shape; 4] = OFFSETS.map(|(dx, dz)| {
+            let (cx, cz) = (gx0 + dx, gz0 + dz);
+            self.shape(&self.grid_climate(cx, cz), cx, cz)
+        });
+        let top_guess = corners.iter().map(|s| s.height + s.jagged).fold(0.0f64, f64::max) as i32 + 48;
+        let mut grid: Vec<Option<f64>> = vec![None; GRID_Y];
+        let mut density = |gy: usize| -> f64 {
+            if let Some(d) = grid[gy] {
+                return d;
+            }
+            let y = MIN_Y + gy as i32 * CELL_H;
+            let d: [f64; 4] = std::array::from_fn(|k| self.terrain_density(&corners[k], gx0 + OFFSETS[k].0, y, gz0 + OFFSETS[k].1));
+            let v = lerp(fz, lerp(fx, d[0], d[1]), lerp(fx, d[2], d[3]));
+            grid[gy] = Some(v);
+            v
+        };
+        for y in (MIN_Y + 1..=top_guess.min(MAX_Y)).rev() {
+            let gy = ((y - MIN_Y) / CELL_H) as usize;
+            let fy = ((y - MIN_Y) % CELL_H) as f64 / CELL_H as f64;
+            let (a, b) = (density(gy), density((gy + 1).min(GRID_Y - 1)));
+            if lerp(fy, a, b) + beard(&near, y) > 0.0 {
+                return y;
+            }
+        }
+        MIN_Y
+    }
+
+    /// Hauteur du relief naturel d'une colonne, sans l'adaptation autour des structures.
     fn column_top(&self, x: i32, z: i32) -> i32 {
         let (gx0, gz0) = (x.div_euclid(CELL_W) * CELL_W, z.div_euclid(CELL_W) * CELL_W);
         let (fx, fz) = ((x - gx0) as f64 / CELL_W as f64, (z - gz0) as f64 / CELL_W as f64);
@@ -919,6 +998,13 @@ impl Vanilla {
         let mut terrain_col = [0f64; GRID_Y];
         let mut caves_col = [0f64; GRID_Y];
 
+        // Maisons de structures proches : le relief épouse leur base (comme dans le jeu)
+        let pads: Vec<Pad> = super::structures::near(self, p, &self.structures, cx, cz)
+            .iter()
+            .flat_map(|plan| plan.pads().iter().copied())
+            .filter(|pad| pad.max.0 >= bx - BEARD && pad.min.0 <= bx + 15 + BEARD && pad.max.1 >= bz - BEARD && pad.min.1 <= bz + 15 + BEARD)
+            .collect();
+
         // 3. Roche, eau et lave ; sommet du relief de chaque colonne
         let mut tops = [[MIN_Y; 16]; 16];
         let mut climates = vec![
@@ -934,9 +1020,10 @@ impl Vanilla {
                 biomes[x][z] = surface_biome(&c);
                 column_of(&terrain, x, z, &mut terrain_col);
                 column_of(&caves, x, z, &mut caves_col);
+                let shaped = if pads.is_empty() { Vec::new() } else { column_pads(&pads, bx + x as i32, bz + z as i32) };
                 let mut top = MIN_Y;
                 for y in (MIN_Y..=MAX_Y.min(top_cell)).rev() {
-                    if along(&terrain_col, y) > 0.0 {
+                    if along(&terrain_col, y) + beard(&shaped, y) > 0.0 {
                         top = y;
                         break;
                     }
@@ -944,7 +1031,7 @@ impl Vanilla {
                 tops[x][z] = top;
                 let under_sea = top < SEA_LEVEL;
                 for y in MIN_Y..=top {
-                    let solid = along(&terrain_col, y) > 0.0;
+                    let solid = along(&terrain_col, y) + beard(&shaped, y) > 0.0;
                     let cave = along(&caves_col, y) < 0.0 && !(under_sea && y > top - 5);
                     let block = if y == MIN_Y || (y < MIN_Y + 5 && (rng.below(5) as i32) >= y - MIN_Y) {
                         p.bedrock
@@ -1072,7 +1159,8 @@ impl Vanilla {
                 // Les structures proches du chunk de l'arbre : un arbre qui les gênerait n'est
                 // pas dessiné (dans tous les chunks à la fois, puisque tous font ce calcul)
                 let plans = super::structures::near(self, p, &self.structures, ncx, ncz);
-                for plant in self.plants(ncx, ncz, own) {
+                let plant_pads: Vec<Pad> = plans.iter().flat_map(|plan| plan.pads().iter().copied()).collect();
+                for plant in self.plants(ncx, ncz, own, &plant_pads) {
                     if plans.iter().any(|plan| plan.blocks_tree(plant.x, plant.z)) {
                         continue;
                     }
@@ -1601,7 +1689,7 @@ impl Vanilla {
     /// Arbres (et pics de glace) dont le pied est dans un chunk. `own` : sommets et biomes
     /// déjà calculés quand il s'agit du chunk en cours de génération.
     #[allow(clippy::type_complexity)]
-    fn plants(&self, cx: i32, cz: i32, own: Option<(&[[i32; 16]; 16], &[[B; 16]; 16])>) -> Vec<Plant> {
+    fn plants(&self, cx: i32, cz: i32, own: Option<(&[[i32; 16]; 16], &[[B; 16]; 16])>, pads: &[Pad]) -> Vec<Plant> {
         let mut rng = Rng::new(mix(self.seed, cx as i64, cz as i64, 700));
         let center = surface_biome(&self.climate(cx * 16 + 8, cz * 16 + 8));
         // Nombre d'essais par chunk, comme les densités du jeu (à peu près)
@@ -1657,7 +1745,7 @@ impl Vanilla {
                     if biome.ocean() || matches!(biome, B::River | B::FrozenRiver | B::Beach | B::Desert | B::StonyShore) {
                         continue;
                     }
-                    (self.column_top(x, z), biome)
+                    (self.column_top_with(x, z, pads), biome)
                 }
             };
             if top < SEA_LEVEL - if biome == B::MangroveSwamp { 3 } else { 0 } || top + 32 > MAX_Y || biome.ocean() || matches!(biome, B::River | B::FrozenRiver | B::Beach | B::Desert | B::StonyShore) {
@@ -2150,6 +2238,20 @@ fn ring(r: i32) -> Vec<(i32, i32)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn beard_fills_below_and_carves_above_a_piece() {
+        let pads = [Pad { min: (0, 0), max: (8, 8), floor: 70 }];
+        let under = column_pads(&pads, 4, 4);
+        // Sous la pièce : de la matière jusqu'à son sol, du vide juste au-dessus
+        assert!(beard(&under, 70) > 0.4 && beard(&under, 71) < -0.4);
+        assert!(beard(&under, 66) > 0.0 && beard(&under, 75) < 0.0);
+        // L'effet s'estompe avec la distance et s'arrête à 12 blocs
+        let near = column_pads(&pads, 12, 4);
+        assert!(beard(&near, 70) > 0.0 && beard(&near, 70) < beard(&under, 70));
+        assert!(column_pads(&pads, 21, 4).is_empty() && !column_pads(&pads, 20, 4).is_empty());
+        assert_eq!(beard(&under, 70 + BEARD + 1), 0.0);
+    }
+
     use super::*;
 
     fn palette() -> Palette {
@@ -2205,7 +2307,7 @@ mod tests {
         let mut seen = 0;
         for cx in -20..20 {
             for cz in -20..20 {
-                let plants = v.plants(cx, cz, None);
+                let plants = v.plants(cx, cz, None, &[]);
                 seen += plants.len();
                 for (i, a) in plants.iter().enumerate() {
                     for b in &plants[i + 1..] {
