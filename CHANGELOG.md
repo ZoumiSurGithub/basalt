@@ -10,6 +10,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ## [Non publié]
 
+## [0.0.2] — 2026-11-22
+
 ### Ajouté
 
 - Logos, bannière GitHub et images Discord en PNG (`docs/images/`), bannière en tête du README.
