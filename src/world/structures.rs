@@ -1639,7 +1639,8 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
             }
             let top = b.top(x, z);
             if top >= SEA_LEVEL && y - 1 < top && y - 1 >= top - 3 {
-                b.put((x, y - 1, z), grass);
+                let cover = b.cover(x, z, grass);
+                b.put((x, y - 1, z), cover);
             }
         }
     }
@@ -1675,6 +1676,9 @@ fn earthworks(b: &mut Builder, piece: &super::templates::Piece, under: &str) {
             let taken = |b: &Builder, y: i32| b.blocks.get(&(x, y, z)).map(|s| *s != air).unwrap_or(false);
             // Entaille : le sol ne dépasse pas le plancher + 2 blocs par bloc d'écart
             let cut = floor + 2 * d - 1;
+            // (couvert comme le sol d'ici : du sable sur une plage, pas de l'herbe)
+            let top_block = b.cover(x, z, top_block);
+            let fill = if top_block == b.p.sand || top_block == b.p.stone { top_block } else { fill };
             if g > cut && !(cut..=g).any(|y| taken(b, y)) {
                 for y in cut + 1..=g.min(cut + 14) {
                     b.air((x, y, z));
@@ -1939,6 +1943,17 @@ impl<'a> Builder<'a> {
         let t = self.v.surface(x, z).0;
         self.tops.insert((x, z), t);
         t
+    }
+
+    /// Bloc qui couvre naturellement le sol de cette colonne : sable des plages et des
+    /// déserts, pierre des côtes rocheuses, `default` (l'herbe) ailleurs.
+    fn cover(&self, x: i32, z: i32, default: u32) -> u32 {
+        match self.biome(x, z) {
+            B::Desert | B::Beach | B::SnowyBeach | B::River | B::FrozenRiver => self.p.sand,
+            B::StonyShore | B::StonyPeaks => self.p.stone,
+            b if b.ocean() => self.p.sand,
+            _ => default,
+        }
     }
 
     /// Biome de surface (rapide : sans calculer la hauteur du sol).

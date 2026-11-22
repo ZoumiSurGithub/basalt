@@ -968,6 +968,60 @@ impl Server {
         s == self.world.generator().blocks.water || self.npc_passable(s)
     }
 
+    /// Comme `mob_free`, mais une porte en bois laisse aussi passer (`doors` : un villageois).
+    fn mob_pass(&self, doors: bool, x: i32, y: i32, z: i32) -> bool {
+        self.mob_free(x, y, z) || (doors && self.wood_door(x, y, z))
+    }
+    /// Une porte en bois (pas en fer) à cet endroit ?
+    fn wood_door(&self, x: i32, y: i32, z: i32) -> bool {
+        let s = self.mob_get(x, y, z);
+        self.data.as_ref().map(|d| crate::block::placement::is_door(d, s) && !d.block_name(s).map(|n| n.contains("iron")).unwrap_or(true)).unwrap_or(false)
+    }
+    /// Ouvre ou ferme une porte (ses deux moitiés). Vrai si elle a changé.
+    fn set_door(&mut self, pos: (i32, i32, i32), open: bool) -> bool {
+        use crate::data::Prop;
+        let mut changed = false;
+        for y in [pos.1 - 1, pos.1, pos.1 + 1] {
+            let s = self.world.get(pos.0, y, pos.2);
+            let next = self.data.as_ref().and_then(|d| {
+                if !crate::block::placement::is_door(d, s) || d.prop(s, "open_bit") == Some(Prop::Int(open as i32)) {
+                    return None;
+                }
+                d.with_props(s, &[("open_bit", Prop::Int(open as i32))])
+            });
+            if let Some(n) = next {
+                self.change_block((pos.0, y, pos.2), n);
+                changed = true;
+            }
+        }
+        changed
+    }
+    /// Portes des villageois : celui qui arrive devant une porte fermée l'ouvre ; elle se
+    /// referme une seconde après son passage.
+    fn villager_doors(&mut self) {
+        let tick = self.tick;
+        let walkers: Vec<((f32, f32, f32), (f32, f32))> = self.mobs.values().filter(|m| m.species == Species::Villager && m.dead.is_none()).map(|m| (m.pos, (m.vel.0, m.vel.2))).collect();
+        for (pos, vel) in &walkers {
+            let speed = (vel.0 * vel.0 + vel.1 * vel.1).sqrt();
+            let ahead = if speed > 0.01 { (pos.0 + vel.0 / speed * 0.8, pos.2 + vel.1 / speed * 0.8) } else { (pos.0, pos.2) };
+            for (x, z) in [(pos.0, pos.2), ahead] {
+                let cell = (x.floor() as i32, pos.1.floor() as i32, z.floor() as i32);
+                if self.wood_door(cell.0, cell.1, cell.2) {
+                    self.set_door(cell, true);
+                    match self.open_doors.iter_mut().find(|(p, _)| *p == cell) {
+                        Some(d) => d.1 = tick + 20,
+                        None => self.open_doors.push((cell, tick + 20)),
+                    }
+                }
+            }
+        }
+        let due: Vec<(i32, i32, i32)> = self.open_doors.iter().filter(|(_, t)| *t <= tick).map(|(p, _)| *p).collect();
+        self.open_doors.retain(|(_, t)| *t > tick);
+        for p in due {
+            self.set_door(p, false);
+        }
+    }
+
     fn mob_water(&self, x: f32, y: f32, z: f32) -> bool {
         self.mob_get(x.floor() as i32, y.floor() as i32, z.floor() as i32) == self.world.generator().blocks.water
     }
@@ -1262,6 +1316,7 @@ impl Server {
                 ((c.pos.0, c.pos.1 - EYE, c.pos.2), name)
             })
             .collect();
+        self.villager_doors();
         let ids: Vec<i64> = self.mobs.keys().copied().collect();
         let tick = self.tick;
         // Distance de simulation, comme le jeu : au-delà, les créatures restent figées
@@ -2119,6 +2174,8 @@ impl Server {
 
     /// Gravité, nage et collisions avec les blocs (marches d'un bloc sautées, vide évité).
     fn mob_physics(&mut self, m: &mut Mob) {
+        // Un villageois passe les portes en bois (il les ouvre devant lui)
+        let doors = m.species == Species::Villager;
         let (w, h) = m.size();
         let half = w / 2.0;
         let in_water = self.mob_water(m.pos.0, m.pos.1 + 0.2, m.pos.2);
@@ -2142,12 +2199,12 @@ impl Server {
         let body_free = |s: &Self, x: f32, y: f32, z: f32| -> bool {
             let mut yy = y;
             while yy < y + h {
-                if !s.mob_free(x.floor() as i32, yy.floor() as i32, z.floor() as i32) {
+                if !s.mob_pass(doors, x.floor() as i32, yy.floor() as i32, z.floor() as i32) {
                     return false;
                 }
                 yy += 1.0;
             }
-            s.mob_free(x.floor() as i32, (y + h - 0.01).floor() as i32, z.floor() as i32)
+            s.mob_pass(doors, x.floor() as i32, (y + h - 0.01).floor() as i32, z.floor() as i32)
         };
         // Horizontal, axe par axe : le bord du corps dans le sens du déplacement
         for axis in 0..2 {
@@ -2161,7 +2218,7 @@ impl Server {
             let ok = body_free(self, ex, m.pos.1 + 0.01, ez);
             if ok {
                 // Pas de chute de plus de 3 blocs (sauf en fuite ou dans l'eau)
-                let ground_below = (1..=4).any(|d| !self.mob_free(ex.floor() as i32, m.pos.1.floor() as i32 - d, ez.floor() as i32));
+                let ground_below = (1..=4).any(|d| !self.mob_pass(doors, ex.floor() as i32, m.pos.1.floor() as i32 - d, ez.floor() as i32));
                 if !ground_below && m.panic == 0 && m.knock == 0 && !in_water {
                     m.target = None;
                     continue;
@@ -2187,7 +2244,7 @@ impl Server {
         let ny = m.pos.1 + m.vel.1;
         if m.vel.1 <= 0.0 {
             let feet = ny.floor() as i32;
-            if !self.mob_free(m.pos.0.floor() as i32, feet, m.pos.2.floor() as i32) && !in_water {
+            if !self.mob_pass(doors, m.pos.0.floor() as i32, feet, m.pos.2.floor() as i32) && !in_water {
                 m.pos.1 = (feet + 1) as f32;
                 m.vel.1 = 0.0;
                 m.on_ground = true;
@@ -2195,14 +2252,14 @@ impl Server {
                 m.pos.1 = ny;
                 m.on_ground = false;
             }
-        } else if self.mob_free(m.pos.0.floor() as i32, (ny + h).floor() as i32, m.pos.2.floor() as i32) {
+        } else if self.mob_pass(doors, m.pos.0.floor() as i32, (ny + h).floor() as i32, m.pos.2.floor() as i32) {
             m.pos.1 = ny;
             m.on_ground = false;
         } else {
             m.vel.1 = 0.0;
         }
         // Coincé dans un bloc (bloc posé dessus) : remonte
-        if !self.mob_free(m.pos.0.floor() as i32, m.pos.1.floor() as i32, m.pos.2.floor() as i32) {
+        if !self.mob_pass(doors, m.pos.0.floor() as i32, m.pos.1.floor() as i32, m.pos.2.floor() as i32) {
             m.pos.1 = m.pos.1.floor() + 1.0;
             m.vel.1 = 0.0;
         }

@@ -26,8 +26,9 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   `/summon cat`.
 - Villageois (première étape) : les villages sont habités, près des lits, au costume du
   biome et avec un métier (ou « nigaud ») ; ils se promènent sans quitter leur village,
-  regardent les joueurs, fuient sous les coups. Pas encore d'échange, de reproduction ni
-  de portes ouvertes. `/summon villager`.
+  regardent les joueurs, fuient sous les coups. Pas encore de reproduction ni
+  d'échange avec eux. Ils ouvrent les portes en bois devant eux, qui se referment après
+  leur passage. `/summon villager`.
 
 ### Corrigé
 
@@ -40,6 +41,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 - Villages : la terre mise à nu là où une maison entaille le terrain se couvre d'herbe
   (plus de plaques de terre autour des maisons).
 - Villages : plus d'herbes, de fleurs ni de feuilles mortes poussées sur les chemins.
+- Villages au bord d'une plage ou d'un désert : les talus autour des maisons sont en sable
+  comme le sol d'alentour, plus en blocs d'herbe.
 
 ## [0.0.2] — 2026-11-22
 

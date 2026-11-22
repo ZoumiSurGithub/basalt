@@ -447,6 +447,8 @@ pub struct Server {
     player_list_refused: bool,
     /// Boutons enfoncés à relâcher : (tick, position, état au repos)
     releases: Vec<(u64, (i32, i32, i32), u32)>,
+    /// Portes ouvertes par un villageois : (position, tick où la refermer)
+    open_doors: Vec<((i32, i32, i32), u64)>,
     started: Instant,
     world: crate::world::World,
     /// Point d'apparition du monde (bloc où se tiennent les pieds)
@@ -742,6 +744,7 @@ impl Server {
             animate_refused: false,
             player_list_refused: false,
             releases: Vec::new(),
+            open_doors: Vec::new(),
             started: Instant::now(),
             world: crate::world::World::new(),
             spawn: (0, -60, 0),
