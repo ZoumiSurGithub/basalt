@@ -4337,12 +4337,17 @@ impl Server {
                 _ => 2,
             }
             .min(list.len());
-            let pk = bedrock::container_items_named(window as u32, bedrock::CONTAINER_HORSE_EQUIP, &list[..equip], self.item_net_ids, features);
-            self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
             if list.len() > 2 {
-                let mut chest = vec![(0, 0, 0, 0)];
+                // Avec un coffre, une seule liste : la selle (ou le tapis du lama) en case 0,
+                // puis le coffre. Envoyée à part, la case 0 vide de cette liste effaçait la
+                // selle à l'écran.
+                let first = if species == mobs::Species::Llama { list[1] } else { list[0] };
+                let mut chest = vec![first];
                 chest.extend_from_slice(&list[2..]);
                 let pk = bedrock::container_items_named(window as u32, bedrock::CONTAINER_LEVEL_ENTITY, &chest, self.item_net_ids, features);
+                self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
+            } else {
+                let pk = bedrock::container_items_named(window as u32, bedrock::CONTAINER_HORSE_EQUIP, &list[..equip], self.item_net_ids, features);
                 self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
             }
             return;

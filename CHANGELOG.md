@@ -113,6 +113,11 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   les cases sont comptées à partir de 1 ; le lama a son tapis et 3 cases de coffre par
   point de force ; les données d'entité annoncent 2 cases pour le cheval, 16 pour l'âne,
   la mule et le lama, et la force du lama.
+- Âne, mule ou lama portant un coffre : la selle (ou le tapis) est envoyée en tête de la
+  liste du coffre ; envoyée à part, elle était effacée à l'écran.
+- Monture quittée en plein saut : elle est reposée au sol (elle restait figée en l'air dans
+  l'animation du saut).
+- Lama : il ne crache plus sur un joueur en créatif ou spectateur.
 - Crachat du lama : il part de la bouche et vole jusqu'à sa cible au lieu de rester immobile
   au-dessus du lama (données de projectile, position redessinée à chaque tick).
 - Un jeu qui refusait les animaux les supprimait pour tout le serveur (et de la sauvegarde) :

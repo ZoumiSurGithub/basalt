@@ -1871,6 +1871,8 @@ impl Server {
                 d(a.1).total_cmp(&d(b.1))
             });
             // (un seul crachat par coup reçu, juste après)
+            // (jamais sur un joueur en créatif ou spectateur, comme dans le jeu)
+            let attacker = attacker.filter(|(_, c)| matches!(c.mode, GameMode::Survival | GameMode::Adventure));
             if let (Some((a, _)), Some(m)) = (attacker.map(|(a, c)| (*a, c.id)), self.mobs.get_mut(&id)) {
                 m.angry = Some((a, 10));
                 m.panic = 0;
@@ -2470,13 +2472,36 @@ impl Server {
 
     /// La monture n'a plus de cavalier (lien retiré chez tous ceux qui la voient).
     pub(super) fn release_mount(&mut self, mob: i64, player: i64) {
+        // Quittée en plein saut : plus personne ne la fait retomber, elle restait figée en
+        // l'air dans l'animation du saut. Elle est reposée sur le sol sous elle.
+        let landing = self.mobs.get(&mob).filter(|m| m.airborne).map(|m| {
+            let (x, z) = (m.pos.0.floor() as i32, m.pos.2.floor() as i32);
+            let mut y = m.pos.1.floor() as i32;
+            let mut steps = 0;
+            while steps < 64 && self.mob_free(x, y - 1, z) {
+                y -= 1;
+                steps += 1;
+            }
+            ((m.pos.0, y as f32, m.pos.2), m.yaw)
+        });
         if let Some(m) = self.mobs.get_mut(&mob) {
             m.rider = None;
             m.tame_in = 0;
             m.sent = (f32::MAX, 0.0, 0.0); // position renvoyée à tous au prochain tick
+            if let Some((pos, _)) = landing {
+                m.pos = pos;
+                m.airborne = false;
+                m.fall_peak = None;
+                m.vel = (0.0, 0.0, 0.0);
+            }
         }
         let link = bedrock::set_actor_link(mob, player, bedrock::LINK_REMOVE, false);
         self.send_to_viewers(mob, bedrock::ID_SET_ACTOR_LINK, &link);
+        if let Some((pos, yaw)) = landing {
+            self.send_to_viewers(mob, bedrock::ID_MOVE_ACTOR_ABSOLUTE, &bedrock::move_actor_absolute(mob, pos, 0.0, yaw, yaw, true));
+            self.send_to_viewers(mob, bedrock::ID_SET_ACTOR_MOTION, &bedrock::set_actor_motion(mob, (0.0, 0.0, 0.0)));
+            self.mob_sound(mob, bedrock::SOUND_LAND, None);
+        }
         let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.visible.contains(&player)).map(|(a, _)| *a).collect();
         for v in viewers {
             self.send(&v, bedrock::ID_SET_ACTOR_LINK, &link);

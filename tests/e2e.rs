@@ -2579,12 +2579,9 @@ fn donkey_chest_and_dyed_sheep() {
     let equip = wait(&mut steve, 81).expect("cases d'équipement envoyées");
     assert_eq!((equip[0], equip[1]), (2, 12), "fenêtre 2, écran de monture : {:?}", &equip[..4]);
     assert!(equip.windows(16).any(|w| w == b"minecraft:saddle"), "la selle parmi les objets acceptés");
-    // La selle seule (âne) dans « équipement de monture », puis le coffre dans « conteneur
-    // d'entité » : une case vide, puis ses 15 cases comptées à partir de 1
-    let equip = wait(&mut steve, 49).expect("équipement envoyé");
-    assert_eq!((equip[0], equip[1]), (2, 1), "la selle seule : {:?}", &equip[..4]);
-    let content = wait(&mut steve, 49).expect("coffre envoyé");
-    assert_eq!((content[0], content[1]), (2, 16), "une case vide et 15 cases de coffre : {:?}", &content[..4]);
+    // Âne avec coffre : une seule liste, la selle en case 0 puis les 15 cases du coffre
+    let content = wait(&mut steve, 49).expect("contenu envoyé");
+    assert_eq!((content[0], content[1]), (2, 16), "selle et 15 cases de coffre : {:?}", &content[..4]);
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = handle.join();
     let _ = std::fs::remove_dir_all(&dir);
