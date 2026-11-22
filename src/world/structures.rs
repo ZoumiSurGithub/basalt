@@ -1629,6 +1629,20 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
         };
         b.put((x, y, z), state);
     }
+    // Terre mise à nu : là où une pièce a creusé le terrain (l'air de son plan), la terre du
+    // sous-sol restait apparente en plaques autour des maisons. Elle se couvre d'herbe.
+    if how.under.map(|u| u != "sandstone").unwrap_or(false) && how.air {
+        let dug: Vec<(i32, i32, i32)> = b.blocks.iter().filter(|(_, s)| **s == air).map(|(p, _)| *p).collect();
+        for (x, y, z) in dug {
+            if b.blocks.contains_key(&(x, y - 1, z)) {
+                continue;
+            }
+            let top = b.top(x, z);
+            if top >= SEA_LEVEL && y - 1 < top && y - 1 >= top - 3 {
+                b.put((x, y - 1, z), grass);
+            }
+        }
+    }
     if how.carve {
         sculk_patches(b, rng, layout, floors);
     }

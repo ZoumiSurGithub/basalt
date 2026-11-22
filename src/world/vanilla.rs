@@ -1297,13 +1297,19 @@ impl Vanilla {
                 .chain([p.short_grass, p.dandelion, p.poppy, p.cactus, p.snow_layer])
                 .filter(|s| *s != p.air)
                 .collect();
+            // … et celles restées posées sur un bloc de la structure qui n'est pas de l'herbe
+            // (herbes, fleurs et feuilles mortes sur les chemins) ; les plantes que la
+            // structure pose elle-même (jardinières, champs) restent
+            let placed: std::collections::HashSet<(u8, i16, u8)> = touched.iter().copied().collect();
             for (x, y, z) in touched {
+                let own = (x, y, z);
                 let (x, z) = (x as usize, z as usize);
                 let mut yy = y as i32 + 1;
                 while yy <= MAX_Y && yy <= y as i32 + 4 {
                     let i = at(x, z, yy);
                     let below = blocks[at(x, z, yy - 1)];
-                    if !loose.contains(&blocks[i]) || (below != p.air && below != p.water) {
+                    let on_structure = yy == y as i32 + 1 && below != p.grass && below != p.dirt && below != p.sand;
+                    if !loose.contains(&blocks[i]) || placed.contains(&(own.0, yy as i16, own.2)) || (below != p.air && below != p.water && !on_structure) {
                         break;
                     }
                     blocks[i] = p.air;

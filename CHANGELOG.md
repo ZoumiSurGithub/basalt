@@ -34,6 +34,12 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 - Lapins et chats sauvages ne fuient plus un joueur en créatif ou spectateur.
 - Villageois et chats des villages : ils apparaissent dans la maison, au pied du lit, et
   plus sur le toit.
+- Structures (plans officiels) : les barrières se relient au portillon voisin quand il
+  vient d'un point d'attache du plan, et ne tendent plus un bras vers les fleurs, les
+  citrouilles ou les pastèques.
+- Villages : la terre mise à nu là où une maison entaille le terrain se couvre d'herbe
+  (plus de plaques de terre autour des maisons).
+- Villages : plus d'herbes, de fleurs ni de feuilles mortes poussées sur les chemins.
 
 ## [0.0.2] — 2026-11-22
 

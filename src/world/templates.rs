@@ -362,6 +362,7 @@ fn read_template(path: &str, tag: &Tag, resolve: &dyn Fn(&str) -> Option<u32>, u
         })
         .collect();
     let mut t = Template { path: path.to_string(), size: (size[0], size[1], size[2]), states: vec![Vec::new(); 12], blocks: Vec::new(), chests: Vec::new(), beds: Vec::new(), markers: Vec::new(), jigsaws: Vec::new() };
+    let mut jigsaw_blocks: HashMap<(i32, i32, i32), String> = HashMap::new();
     for b in tag.get("blocks")?.as_list()? {
         let pos: Vec<i32> = b.get("pos").and_then(|p| p.as_list()).map(|l| l.iter().filter_map(|t| t.as_int()).collect()).unwrap_or_default();
         let state = b.get("state").and_then(|s| s.as_int()).unwrap_or(0) as usize;
@@ -372,6 +373,10 @@ fn read_template(path: &str, tag: &Tag, resolve: &dyn Fn(&str) -> Option<u32>, u
         let (name, props) = &palette[state];
         let nbt = b.get("nbt");
         if name == "minecraft:jigsaw" || nbt.and_then(|n| n.get("final_state")).is_some() {
+            if let Some(f) = nbt.and_then(|n| n.get("final_state")).and_then(|f| f.as_str()) {
+                let (fname, fprops) = parse_state(f);
+                jigsaw_blocks.insert(at, modern_name(&fname, &fprops));
+            }
             if let Some(j) = read_jigsaw(at, props, nbt?, resolve, unknown) {
                 t.jigsaws.push(j);
             }
@@ -394,7 +399,7 @@ fn read_template(path: &str, tag: &Tag, resolve: &dyn Fn(&str) -> Option<u32>, u
     }
     // Formes qui dépendent des voisins (coins d'escaliers, barrières, vitres, murets) :
     // recalculées comme le jeu le fait en posant un plan (les plus anciens les notent mal)
-    fix_shapes(&mut palette, &mut t.blocks);
+    fix_shapes(&mut palette, &mut t.blocks, &jigsaw_blocks);
     for (k, list) in t.states.iter_mut().enumerate() {
         let (m, r) = ((k / 4) as u8, (k % 4) as u8);
         // Le miroir ne sert qu'au manoir : inutile de le calculer pour les autres plans
@@ -425,19 +430,20 @@ fn modern_name(name: &str, props: &[(String, String)]) -> String {
 
 /// Bloc plein (au sens des raccords : une barrière ou une vitre s'y accroche), d'après son nom.
 fn java_full(short: &str) -> bool {
-    const PARTIAL: [&str; 62] = [
+    const PARTIAL: [&str; 87] = [
         "air", "slab", "stairs", "fence", "_wall", "pane", "iron_bars", "door", "torch", "lantern", "carpet", "flower", "grass", "fern", "leaves", "sign",
         "banner", "button", "lever", "pressure_plate", "ladder", "vine", "chest", "_bed", "candle", "rail", "skull", "head", "pot", "chain", "campfire",
         "bell", "snow", "water", "lava", "cake", "web", "cobweb", "sapling", "mushroom", "wheat", "carrots", "potatoes", "beetroots", "stem", "cane", "cactus",
         "kelp", "seagrass", "coral", "pickle", "scaffolding", "anvil", "grindstone", "lectern", "brewing", "cauldron", "hopper", "structure", "jigsaw",
-        "sculk_vein", "path",
+        "sculk_vein", "path", "poppy", "dandelion", "orchid", "allium", "bluet", "tulip", "daisy", "cornflower", "lily", "rose", "peony", "lilac", "bush",
+        "petals", "bamboo", "dripleaf", "roots", "sprouts", "fungus", "pumpkin", "melon", "berr", "torchflower", "pitcher", "eyeblossom",
     ];
     !PARTIAL.iter().any(|p| short.contains(p)) || short == "snow_block" || short.ends_with("_wood") && !short.contains("door")
 }
 
 /// Recalcule, dans le plan non tourné, les coins des escaliers et les raccords des
 /// barrières, vitres, barreaux et murets, d'après leurs voisins dans le plan (règles du jeu).
-fn fix_shapes(palette: &mut Vec<(String, Vec<(String, String)>)>, blocks: &mut [(i16, i16, i16, u16)]) {
+fn fix_shapes(palette: &mut Vec<(String, Vec<(String, String)>)>, blocks: &mut [(i16, i16, i16, u16)], jigsaws: &HashMap<(i32, i32, i32), String>) {
     let at: HashMap<(i32, i32, i32), usize> = blocks.iter().map(|&(x, y, z, i)| ((x as i32, y as i32, z as i32), i as usize)).collect();
     let names: Vec<String> = palette.iter().map(|(n, p)| modern_name(n, p)).collect();
     let prop = |i: usize, k: &str| palette[i].1.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone());
@@ -488,8 +494,11 @@ fn fix_shapes(palette: &mut Vec<(String, Vec<(String, String)>)>, blocks: &mut [
             let fence = name.ends_with("_fence");
             let mut sides = Vec::new();
             for d in [Dir::North, Dir::East, Dir::South, Dir::West] {
-                let joins = near(d).map(|n| {
-                    let o = &names[n];
+                // (un point d'attache compte pour le bloc qui le remplacera : un portillon,
+                // souvent)
+                let (dx, dy, dz) = d.step();
+                let other = near(d).map(|n| names[n].as_str()).or_else(|| jigsaws.get(&(x + dx, y + dy, z + dz)).map(|n| n.as_str()));
+                let joins = other.map(|o| {
                     java_full(o)
                         || (fence && (o.ends_with("_fence") && (o == "nether_brick_fence") == (name == "nether_brick_fence") || o.ends_with("fence_gate")))
                         || (!fence && !wall && (o.ends_with("_pane") || o == "iron_bars" || o.ends_with("_wall")))
