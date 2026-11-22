@@ -728,8 +728,8 @@ impl Server {
                             break;
                         }
                         let bed = beds[(i * 2).min(beds.len() - 1)];
-                        let (bx, bz) = (bed.0 + self.mob_rng.below(3) as i32 - 1, bed.2 + self.mob_rng.below(3) as i32 - 1);
-                        let Some(y) = self.surface_y(bx, bz, bed.1) else { continue };
+                        // Dans la maison, au pied du lit (pas sur le toit)
+                        let Some((bx, y, bz)) = self.floor_near(bed, 2) else { continue };
                         let costume = match self.world.generator().vanilla().map(|v| v.surface_biome_at(bx, bz)) {
                             Some(B::Desert) => 1,
                             Some(B::Jungle | B::SparseJungle | B::BambooJungle) => 2,
@@ -752,8 +752,7 @@ impl Server {
                     // Un chat errant près d'un lit, de temps en temps
                     if !beds.is_empty() && self.mobs.len() < MAX_MOBS && self.mob_rng.below(3) == 0 {
                         let bed = beds[self.mob_rng.below(beds.len() as u32) as usize];
-                        let (bx, bz) = (bed.0 + self.mob_rng.below(7) as i32 - 3, bed.2 + self.mob_rng.below(7) as i32 - 3);
-                        if let Some(y) = self.surface_y(bx, bz, bed.1) {
+                        if let Some((bx, y, bz)) = self.floor_near(bed, 3) {
                             let variant = self.cat_variant();
                             let id = self.add_mob(Species::Cat, (bx as f32 + 0.5, y as f32, bz as f32 + 0.5));
                             if let Some(m) = self.mobs.get_mut(&id) {
@@ -764,6 +763,26 @@ impl Server {
                 }
             }
         }
+    }
+
+    /// Une place où se tenir près de ce bloc, à sa hauteur (un étage près) : deux blocs libres
+    /// sur un sol solide, au plus près d'abord.
+    fn floor_near(&self, at: (i32, i32, i32), radius: i32) -> Option<(i32, i32, i32)> {
+        let mut best: Option<((i32, i32, i32), i32)> = None;
+        for dx in -radius..=radius {
+            for dz in -radius..=radius {
+                for dy in [0, -1, 1] {
+                    let (x, y, z) = (at.0 + dx, at.1 + dy, at.2 + dz);
+                    if self.mob_free(x, y, z) && self.mob_free(x, y + 1, z) && !self.mob_free(x, y - 1, z) && !self.mob_water(x as f32 + 0.5, y as f32 - 0.5, z as f32 + 0.5) {
+                        let d = dx * dx + dz * dz + dy.abs() * 4;
+                        if best.map(|(_, b)| d < b).unwrap_or(true) {
+                            best = Some(((x, y, z), d));
+                        }
+                    }
+                }
+            }
+        }
+        best.map(|(p, _)| p)
     }
 
     /// Métier d'un villageois (numéros du jeu : 1 fermier, 2 pêcheur, 3 berger, 4 fléchier,

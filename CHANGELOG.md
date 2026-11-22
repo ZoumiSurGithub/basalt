@@ -32,6 +32,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 ### Corrigé
 
 - Lapins et chats sauvages ne fuient plus un joueur en créatif ou spectateur.
+- Villageois et chats des villages : ils apparaissent dans la maison, au pied du lit, et
+  plus sur le toit.
 
 ## [0.0.2] — 2026-11-22
 
