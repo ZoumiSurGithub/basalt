@@ -1666,7 +1666,7 @@ fn place_layout(b: &mut Builder, rng: &mut Rng, layout: &Layout, how: Placing) {
 /// douce, le terrain plus bas est remblayé en pente jusqu'à son plancher. Les colonnes déjà
 /// occupées par la structure (rues, autres maisons) ne sont pas touchées.
 fn earthworks(b: &mut Builder, piece: &super::templates::Piece, under: &str) {
-    const M: i32 = 4;
+    const M: i32 = 6;
     let (lo, hi) = (piece.bbox.min, piece.bbox.max);
     let floor = lo.1;
     let fill = b.id(under);
@@ -1684,11 +1684,22 @@ fn earthworks(b: &mut Builder, piece: &super::templates::Piece, under: &str) {
                 for y in hi.1 + 1..=g.min(hi.1 + 12) {
                     b.air((x, y, z));
                 }
+                // Sous la pièce, là où son plan ne pose rien au niveau du sol et où le
+                // terrain est plus bas : comblé de plain-pied (sinon un trou le long du mur)
+                if g < floor && floor - g <= 8 && !b.blocks.contains_key(&(x, floor, z)) {
+                    let cover = b.cover(x, z, top_block);
+                    let fill = if cover == b.p.sand || cover == b.p.stone { cover } else { fill };
+                    for y in g + 1..floor {
+                        b.put((x, y, z), fill);
+                    }
+                    b.put((x, floor, z), cover);
+                }
                 continue;
             }
             let taken = |b: &Builder, y: i32| b.blocks.get(&(x, y, z)).map(|s| *s != air).unwrap_or(false);
-            // Entaille : le sol ne dépasse pas le plancher + 2 blocs par bloc d'écart
-            let cut = floor + 2 * d - 1;
+            // Entaille : de plain-pied au ras de la pièce, puis un bloc de plus par bloc d'écart
+            // (une pente douce ; un rebord dès le premier bloc laissait un fossé le long des murs)
+            let cut = floor + d - 1;
             // (couvert comme le sol d'ici : du sable sur une plage, pas de l'herbe)
             let top_block = b.cover(x, z, top_block);
             let fill = if top_block == b.p.sand || top_block == b.p.stone { top_block } else { fill };
@@ -1698,9 +1709,10 @@ fn earthworks(b: &mut Builder, piece: &super::templates::Piece, under: &str) {
                 }
                 b.put((x, cut, z), top_block);
             }
-            // Remblai : jusqu'au plancher - 1, en descendant de 2 blocs par bloc d'écart
-            let bank = floor - 1 - 2 * (d - 1);
-            if g < bank && !(g + 1..=bank).any(|y| taken(b, y)) {
+            // Remblai : de plain-pied au ras de la pièce, puis un bloc de moins par bloc d'écart
+            let bank = floor - (d - 1);
+            // (jamais par-dessus une rue ou une autre pièce posée au niveau du sol)
+            if g < bank && !(g..=bank).any(|y| taken(b, y)) {
                 if bank - g > 8 {
                     continue; // trop haut : pas de talus, plutôt qu'un bloc de terre suspendu
                 }
