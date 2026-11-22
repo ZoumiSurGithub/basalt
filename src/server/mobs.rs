@@ -560,7 +560,7 @@ impl Server {
     /// Installe des animaux dans les chunks qu'un joueur découvre (une fois par chunk, comme
     /// à la génération dans le jeu : un chunk sur dix environ reçoit un troupeau).
     pub(super) fn populate_chunks(&mut self) {
-        if !self.cfg.spawn_animals || self.mobs_refused {
+        if !self.cfg.spawn_animals {
             return;
         }
         let players: Vec<(f32, f32, f32)> = self.clients.values().filter(|c| c.joined && c.stage == Stage::InGame).map(|c| (c.pos.0, c.pos.1 - EYE, c.pos.2)).collect();

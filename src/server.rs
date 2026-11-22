@@ -678,6 +678,17 @@ fn build_chunk(exp: u8, x: i32, z: i32, payload: (u32, Vec<u8>), features: crate
     bedrock::level_chunk_counted(x, z, sections, &payload, features)
 }
 
+/// Retouches d'un paquet écrit pour les versions récentes, pour la version du joueur.
+/// Avant la 1.26.60, AddActor et AddPlayer n'ont pas l'octet final des données « passager
+/// d'un bloc » : le jeu 1.26.40 refusait le paquet (« read() incomplete »).
+fn adapt_for_version(id: u32, body: &[u8], protocol: i32) -> &[u8] {
+    let ends_with_passenger = id == bedrock::ID_ADD_ACTOR || id == bedrock::ID_ADD_PLAYER;
+    if ends_with_passenger && protocol > 0 && !crate::versions::features(protocol).passenger_block_data && body.last() == Some(&0) {
+        return &body[..body.len() - 1];
+    }
+    body
+}
+
 /// Paquets propres à Bedrock, que la version Java ne connaît pas.
 fn bedrock_extra(id: u32) -> bool {
     bedrock::EXTRA_IDS.contains(&id)
@@ -2689,6 +2700,8 @@ impl Server {
     /// Envoie un paquet de jeu à un joueur (compressé si sa session le demande).
     fn send(&mut self, addr: &SocketAddr, id: u32, body: &[u8]) {
         let compression = self.clients.get(addr).map(|c| c.compression).unwrap_or(false);
+        let protocol = self.clients.get(addr).map(|c| c.protocol).unwrap_or(0);
+        let body = adapt_for_version(id, body, protocol);
         if self.cfg.debug {
             if id != bedrock::ID_LEVEL_CHUNK {
                 info!("[paquets] -> {} : id {} ({} octets)", addr, id, body.len());
@@ -5249,13 +5262,10 @@ impl Server {
                     warn!("Le déplacement des autres joueurs est refusé par le jeu : il est désactivé. Les joueurs peuvent se reconnecter ; ils se verront, immobiles.");
                 }
                 if packet == bedrock::ID_ADD_ACTOR as i32 && !self.mobs_refused {
-                    // Format des créatures pas encore relevé : en cas de refus, plus d'animaux
+                    // Signalé une fois. Les animaux ne sont plus supprimés : un seul jeu d'une
+                    // autre version faisait disparaître ceux de tout le monde.
                     self.mobs_refused = true;
-                    let ids: Vec<i64> = self.mobs.keys().copied().collect();
-                    for id in ids {
-                        self.remove_mob(id);
-                    }
-                    warn!("Les animaux sont refusés par le jeu : ils sont désactivés. Lancez la capture (Capturer-les-donnees.cmd) avec « summon cow » pour relever leur format.");
+                    warn!("Les animaux sont refusés par le jeu de ce joueur (version {}) : signalez-le avec cette ligne.", crate::versions::name(self.clients.get(&addr).map(|c| c.protocol).unwrap_or(0)));
                 }
                 if packet == bedrock::ID_ADD_PLAYER as i32 && !self.add_player_refused {
                     // Sans ce repli, chaque arrivée d'un second joueur déconnecterait tout le monde
@@ -6889,4 +6899,16 @@ fn quick_hash(data: &[u8]) -> u64 {
         h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
     }
     h
+}
+
+#[cfg(test)]
+mod version_adapt_tests {
+    #[test]
+    fn passenger_byte_is_dropped_before_1_26_60() {
+        let actor = crate::network::protocol::bedrock::add_actor(3, "minecraft:cow", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.0, (10.0, 10.0), None, None, &[]);
+        let old = super::adapt_for_version(crate::network::protocol::bedrock::ID_ADD_ACTOR, &actor, 2168);
+        assert_eq!(old, &actor[..actor.len() - 1]);
+        assert_eq!(super::adapt_for_version(crate::network::protocol::bedrock::ID_ADD_ACTOR, &actor, 2225), &actor[..]);
+        assert_eq!(super::adapt_for_version(58, &actor, 2168), &actor[..]);
+    }
 }

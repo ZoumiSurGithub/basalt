@@ -33,6 +33,9 @@ pub struct Features {
     pub editor_migration_version: bool,
     /// Préversion 1.26.70 (protocole 2259) : NetworkSettings se termine par le profil SCTP.
     pub sctp_recovery_profile: bool,
+    /// 1.26.60 (préversion 2223) : AddActor et AddPlayer se terminent par les données
+    /// facultatives « passager d'un bloc » (un octet nul quand elles sont absentes).
+    pub passenger_block_data: bool,
     /// 1.26.50 : le client attend VoxelShapes avant StartGame.
     pub voxel_shapes: bool,
 }
@@ -45,6 +48,7 @@ pub fn features(protocol: i32) -> Features {
         editor_migration_version: protocol >= 2216,
         sctp_recovery_profile: protocol >= 2251,
         voxel_shapes: protocol >= 2193,
+        passenger_block_data: protocol >= 2223,
     }
 }
 
@@ -63,5 +67,6 @@ mod tests {
         let f = features(2225);
         assert!(f.jigsaw_before_start && f.chunk_biome_update_flag && f.editor_migration_version);
         assert!(!f.sctp_recovery_profile && features(2259).sctp_recovery_profile);
+        assert!(f.passenger_block_data && !features(2168).passenger_block_data);
     }
 }
