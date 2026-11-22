@@ -1154,7 +1154,7 @@ impl Server {
     /// sinon le sprint en cours serait annulé.
     fn send_attributes(&mut self, addr: &SocketAddr, full: bool) {
         let packet = match self.clients.get(addr) {
-            Some(c) if c.protocol >= 2225 => match &c.data {
+            Some(c) if c.protocol >= crate::versions::MIN_PROTOCOL => match &c.data {
                 Some(d) if full => bedrock::update_attributes_with(c.id as u64, d.health, d.max_health, d.food, d.xp_level, d.xp_progress),
                 Some(d) => bedrock::update_vitals(c.id as u64, d.health, d.max_health, d.food, d.xp_level, d.xp_progress),
                 None => return,
@@ -2783,12 +2783,12 @@ impl Server {
         }
     }
 
-    /// Envoie un paquet à tous les joueurs en jeu (jeux 1.26.60 et plus), sauf éventuellement un.
+    /// Envoie un paquet à tous les joueurs en jeu, sauf éventuellement un.
     fn broadcast(&mut self, id: u32, body: &[u8], except: Option<SocketAddr>) {
         let targets: Vec<SocketAddr> = self
             .clients
             .iter()
-            .filter(|(a, c)| c.stage == Stage::InGame && c.protocol >= 2225 && Some(**a) != except)
+            .filter(|(a, c)| c.stage == Stage::InGame && c.protocol >= crate::versions::MIN_PROTOCOL && Some(**a) != except)
             .map(|(a, _)| *a)
             .collect();
         for addr in targets {
@@ -2799,7 +2799,7 @@ impl Server {
     /// Message de chat d'un joueur : limité en fréquence et en longueur, nettoyé, puis diffusé.
     fn on_chat(&mut self, addr: &SocketAddr, body: &[u8]) {
         let (name, allowed) = match self.clients.get_mut(addr) {
-            Some(c) if c.protocol >= 2225 => {
+            Some(c) if c.protocol >= crate::versions::MIN_PROTOCOL => {
                 if c.chat_window.elapsed() > Duration::from_secs(5) {
                     c.chat_window = Instant::now();
                     c.chat_count = 0;
@@ -3845,7 +3845,7 @@ impl Server {
     /// Idem ; `worn` : l'armure et la seconde main sont envoyées même vides (après les avoir vidées).
     fn send_inventory_with(&mut self, addr: &SocketAddr, worn: bool) {
         let (windows, protocol) = match self.clients.get(addr) {
-            Some(c) if c.protocol >= 2225 => {
+            Some(c) if c.protocol >= crate::versions::MIN_PROTOCOL => {
                 let of = |slots: &[inventory::ItemStack]| -> Vec<(i16, u8, i32)> { slots.iter().map(|s| (s.id, s.count, s.net_id)).collect() };
                 let mut windows = vec![(0u32, of(&c.inv.main.slots))];
                 // Armure et seconde main : envoyées seulement si elles portent quelque chose
@@ -3880,7 +3880,7 @@ impl Server {
             }
         }
         let id = match self.clients.get_mut(addr) {
-            Some(c) if c.protocol >= 2225 && c.inv.open_window == 0 => {
+            Some(c) if c.protocol >= crate::versions::MIN_PROTOCOL && c.inv.open_window == 0 => {
                 c.inv.open_window = 1;
                 c.id
             }
@@ -6027,7 +6027,7 @@ impl Server {
                     .find(|(_, c)| c.stage == Stage::InGame && c.name.as_deref().map(|n| n.eq_ignore_ascii_case(args[0])).unwrap_or(false))
                     .map(|(a, c)| (*a, c.protocol));
                 match target {
-                    Some((addr, protocol)) if protocol >= 2225 => {
+                    Some((addr, protocol)) if protocol >= crate::versions::MIN_PROTOCOL => {
                         if self.add_item(&addr, id, count) {
                             info!("{} × {} donnés à {}", count, wanted, args[0]);
                         } else {

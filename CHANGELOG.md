@@ -84,7 +84,9 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 - Connexion en 1.26.40 / 1.26.45 : le jeu ne pouvait lire ni la liste des packs de ressources
   (paquet 6), ni les chunks (paquet 58), ni les animaux et les autres joueurs (paquets 13 et 12,
-  qui ont un octet de moins avant la 1.26.60).
+  qui ont un octet de moins avant la 1.26.60). Ces versions reçoivent aussi désormais les
+  attributs (sans eux le joueur ne pouvait ni marcher, ni sauter, ni voler), l'inventaire, le
+  chat et les paquets envoyés à tous, qui étaient réservés à la 1.26.60 et plus.
 - Un jeu qui refusait les animaux les supprimait pour tout le serveur (et de la sauvegarde) :
   le refus est maintenant seulement signalé.
 - Les animaux qui se promenaient renonçaient en plein saut devant une marche d'un bloc
