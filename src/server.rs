@@ -4209,6 +4209,11 @@ impl Server {
         if self.is_fence(state) && self.tie_to_fence(addr, pos) {
             return true;
         }
+        // Cloche : elle sonne
+        if self.data.as_ref().and_then(|d| d.block_name(state)) == Some("minecraft:bell") {
+            self.ring_bell(addr, pos);
+            return true;
+        }
         let (name, action, kind) = match self.block_at_state(state) {
             Some(b) if b.interaction() != Interaction::None => (b.short_name().to_string(), b.interaction(), b.tile()),
             _ => return false,
@@ -4895,6 +4900,52 @@ impl Server {
         if self.world.set(pos.0, pos.1, pos.2, state) {
             self.liquid_neighbours(pos);
             self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(pos.0, pos.1, pos.2, state), None);
+        }
+    }
+
+    /// Coup de cloche : elle se balance dans le sens du regard du joueur et tinte, pour tous
+    /// les joueurs des environs.
+    fn ring_bell(&mut self, addr: &SocketAddr, pos: (i32, i32, i32)) {
+        // Le jeu répète le clic tant que le bouton est tenu : un coup à la fois
+        let now = self.tick;
+        let looks = match self.clients.get_mut(addr) {
+            Some(c) => {
+                let gap = now.saturating_sub(c.last_toggle);
+                c.last_toggle = now;
+                if gap < 5 {
+                    return;
+                }
+                placement::facing(c.yaw)
+            }
+            None => return,
+        };
+        // Sens du balancement, dans la numérotation du jeu : sud, ouest, nord, est
+        let direction = match looks {
+            placement::SOUTH => 0,
+            placement::WEST => 1,
+            placement::NORTH => 2,
+            _ => 3,
+        };
+        let tag = crate::nbt::Tag::compound(vec![
+            ("id", crate::nbt::Tag::string("Bell")),
+            ("x", crate::nbt::Tag::Int(pos.0)),
+            ("y", crate::nbt::Tag::Int(pos.1)),
+            ("z", crate::nbt::Tag::Int(pos.2)),
+            ("Ringing", crate::nbt::Tag::Byte(1)),
+            ("Direction", crate::nbt::Tag::Int(direction)),
+            ("Ticks", crate::nbt::Tag::Int(0)),
+            ("isMovable", crate::nbt::Tag::Byte(1)),
+        ]);
+        let at = (pos.0 as f32 + 0.5, pos.1 as f32 + 0.5, pos.2 as f32 + 0.5);
+        let swing = bedrock::block_actor_data(pos, &tag);
+        let sound = bedrock::level_sound(bedrock::SOUND_BELL, at, "", false, -1);
+        let animate = !self.refused_extras.contains(&bedrock::ID_BLOCK_ACTOR_DATA);
+        let near: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.joined && (c.pos.0 - at.0).powi(2) + (c.pos.2 - at.2).powi(2) < 48.0 * 48.0).map(|(a, _)| *a).collect();
+        for a in near {
+            if animate {
+                self.send(&a, bedrock::ID_BLOCK_ACTOR_DATA, &swing);
+            }
+            self.send(&a, bedrock::ID_LEVEL_SOUND_EVENT, &sound);
         }
     }
 

@@ -56,6 +56,7 @@ pub(super) enum Species {
     Wolf,
     Cat,
     Villager,
+    IronGolem,
 }
 
 /// Ce qu'un loup attaque.
@@ -106,7 +107,7 @@ const WOLF_TAMED_HEALTH: f32 = 40.0;
 
 impl Species {
     const FARM: [Species; 4] = [Species::Cow, Species::Pig, Species::Sheep, Species::Chicken];
-    const ALL: [Species; 14] = [
+    const ALL: [Species; 15] = [
         Species::Cow,
         Species::Pig,
         Species::Sheep,
@@ -121,6 +122,7 @@ impl Species {
         Species::Wolf,
         Species::Cat,
         Species::Villager,
+        Species::IronGolem,
     ];
 
     fn id(self) -> &'static str {
@@ -139,6 +141,7 @@ impl Species {
             Species::Wolf => "minecraft:wolf",
             Species::Cat => "minecraft:cat",
             Species::Villager => "minecraft:villager_v2",
+            Species::IronGolem => "minecraft:iron_golem",
         }
     }
     fn from_id(s: &str) -> Option<Species> {
@@ -209,6 +212,7 @@ impl Species {
             // (apprivoisé ; sauvage : 8)
             Species::Wolf => WOLF_TAMED_HEALTH,
             Species::Villager => 20.0,
+            Species::IronGolem => 100.0,
         }
     }
     /// Largeur et hauteur de la boîte de collision d'un adulte (celles du jeu)
@@ -224,6 +228,7 @@ impl Species {
             Species::Wolf => (0.6, 0.8),
             Species::Cat => (0.6, 0.7),
             Species::Villager => (0.6, 1.9),
+            Species::IronGolem => (1.4, 2.9),
         }
     }
     /// Taille d'affichage (« minecraft:scale » des fichiers du jeu) : le lapin est un petit
@@ -261,6 +266,7 @@ impl Species {
             Species::Wolf => (0.8, 1.0, 1.0, 1.0),
             Species::Cat => (0.8, 1.33, 0.5, 1.0),
             Species::Villager => (0.6, 1.0, 0.6, 0.6),
+            Species::IronGolem => (0.6, 1.0, 1.0, 1.0),
         }
     }
     /// Ce qui l'attire : il suit le joueur qui le tient
@@ -275,7 +281,7 @@ impl Species {
             Species::Horse | Species::Donkey | Species::Mule => &["golden_apple", "enchanted_golden_apple", "golden_carrot"],
             Species::Wolf => &[],
             Species::Cat => &["cod", "salmon"],
-            Species::Villager => &[],
+            Species::Villager | Species::IronGolem => &[],
         }
     }
     /// Ce qui le rend amoureux (les montures doivent d'abord être apprivoisées ; la mule
@@ -301,7 +307,7 @@ impl Species {
             Species::Rabbit => &[("carrot", 0.1), ("golden_carrot", 0.1), ("dandelion", 0.1)],
             Species::Wolf => &WOLF_GROW,
             Species::Cat => &[("cod", 0.1), ("salmon", 0.1)],
-            Species::Villager => &[],
+            Species::Villager | Species::IronGolem => &[],
         }
     }
     /// Ce qui le soigne : (objet, points de vie rendus)
@@ -327,6 +333,7 @@ impl Species {
             Species::Goat | Species::Wolf => &[],
             Species::Cat => &[("minecraft:string", 0, 2)],
             Species::Villager => &[],
+            Species::IronGolem => &[("minecraft:iron_ingot", 3, 5), ("minecraft:poppy", 0, 2)],
         }
     }
 }
@@ -765,6 +772,23 @@ impl Server {
                             }
                         }
                     }
+                    // Un golem de fer au pied de la cloche : le gardien du village
+                    for bell in self.world.structure_bells(cx, cz) {
+                        if self.mobs.len() >= MAX_MOBS {
+                            break;
+                        }
+                        let spot = [(2, 0), (0, 2), (-2, 0), (0, -2), (2, 2), (-2, -2), (3, 0), (0, 3)].iter().find_map(|&(dx, dz)| {
+                            let (x, z) = (bell.0 + dx, bell.2 + dz);
+                            self.surface_y(x, z, bell.1 + 2).filter(|y| (*y - bell.1).abs() <= 3).map(|y| (x, y, z))
+                        });
+                        if let Some((x, y, z)) = spot {
+                            let id = self.add_mob(Species::IronGolem, (x as f32 + 0.5, y as f32, z as f32 + 0.5));
+                            if let Some(m) = self.mobs.get_mut(&id) {
+                                m.age = 0;
+                                m.home = Some((bell.0 as f32 + 0.5, bell.1 as f32, bell.2 as f32 + 0.5));
+                            }
+                        }
+                    }
                     // Un chat errant près d'un lit, de temps en temps
                     if !beds.is_empty() && self.mobs.len() < MAX_MOBS && self.mob_rng.below(3) == 0 {
                         let bed = beds[self.mob_rng.below(beds.len() as u32) as usize];
@@ -1184,7 +1208,7 @@ impl Server {
             attack: None,
             bite_in: 0,
             refresh: false,
-            home: (species == Species::Villager).then_some(pos),
+            home: matches!(species, Species::Villager | Species::IronGolem).then_some(pos),
             late: 0,
             meet: None,
             errand: None,
@@ -1699,7 +1723,7 @@ impl Server {
         let mut stop_at = 0.4;
         let tempting: &[&str] = if m.species.mount() && !m.tamed { &[] } else { m.species.tempt() };
         // Loup : assis, à la poursuite d'une proie, ou sur les talons de son maître
-        let wolf = if m.species.pet() { self.wolf_think(m) } else { None };
+        let wolf = if m.species.pet() { self.wolf_think(m) } else if m.species == Species::IronGolem { self.golem_think(m) } else { None };
         // Villageois : ce que l'heure lui dicte (sauf en pleine fuite)
         let villager = if m.species == Species::Villager && m.panic == 0 { self.villager_think(m) } else { None };
         let near_player = |p: &(f32, f32, f32), r: f32| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2) < r * r && (p.1 - m.pos.1).abs() < 4.0;
@@ -1942,6 +1966,60 @@ impl Server {
         }
         m.meet = None;
         None
+    }
+
+    /// Golem de fer : il fonce sur le joueur qui l'a frappé, lui ou un villageois, et l'envoie
+    /// en l'air d'un coup de bras ; sinon il reste près du cœur du village.
+    fn golem_think(&mut self, m: &mut Mob) -> Option<(f32, f32)> {
+        m.bite_in = m.bite_in.saturating_sub(1);
+        let attr = m.movement();
+        let flat2 = |p: (f32, f32, f32)| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2);
+        let prey = match m.attack {
+            Some(Prey::Player(a)) => self.clients.get(&a).filter(|c| c.joined && c.dead.is_none() && c.mode.takes_damage()).map(|c| (a, c.id, (c.pos.0, c.pos.1 - EYE, c.pos.2))),
+            _ => None,
+        }
+        .filter(|(_, _, p)| flat2(*p) < 24.0 * 24.0);
+        if m.attack.is_some() && prey.is_none() {
+            m.attack = None;
+            m.target = None;
+        }
+        if let Some((a, pid, p)) = prey {
+            m.target = Some((p.0, p.2));
+            if flat2(p) < 2.4 * 2.4 && (p.1 - m.pos.1).abs() < 3.0 && m.bite_in == 0 {
+                m.bite_in = 20;
+                // Entre 7,5 et 21,5 points de dégâts, comme dans le jeu
+                let damage = 7.5 + self.mob_rng.unit() as f32 * 14.0;
+                self.send_to_viewers(m.id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(m.id, bedrock::EVENT_ARM_SWING, 0));
+                self.hurt(&a, damage, Cause::Mob("un golem de fer"));
+                if !self.refused_extras.contains(&bedrock::ID_SET_ACTOR_MOTION) {
+                    let d = flat2(p).sqrt().max(0.01);
+                    self.send(&a, bedrock::ID_SET_ACTOR_MOTION, &bedrock::set_actor_motion(pid, ((p.0 - m.pos.0) / d * 0.3, 0.8, (p.2 - m.pos.2) / d * 0.3)));
+                }
+            }
+            return Some((ground_speed(attr * 1.3), 1.6));
+        }
+        // Trop loin de la cloche : il revient
+        if let Some(h) = m.home {
+            if flat2(h) > 24.0 * 24.0 {
+                m.target = Some((h.0, h.2));
+                return Some((ground_speed(attr * 0.6), 4.0));
+            }
+        }
+        None
+    }
+
+    /// Les golems de fer des environs prennent ce joueur pour cible (il a frappé un
+    /// villageois ou l'un d'eux). Jamais un joueur en créatif.
+    fn rally_golems(&mut self, culprit: SocketAddr, near: (f32, f32, f32)) {
+        if !self.clients.get(&culprit).map(|c| c.mode.takes_damage()).unwrap_or(false) {
+            return;
+        }
+        for g in self.mobs.values_mut() {
+            if g.species == Species::IronGolem && g.dead.is_none() && (g.pos.0 - near.0).powi(2) + (g.pos.2 - near.2).powi(2) < 24.0 * 24.0 {
+                g.attack = Some(Prey::Player(culprit));
+                g.panic = 0;
+            }
+        }
     }
 
     /// Ce que fait un loup avant tout le reste : (vitesse, distance d'arrêt) s'il a mieux à
@@ -2478,11 +2556,14 @@ impl Server {
         }
         m.hurt_tick = tick;
         m.health -= damage;
-        let flat = (dx * dx + dz * dz).sqrt().max(0.01);
-        m.vel = (dx / flat * 0.4, 0.36, dz / flat * 0.4);
-        m.knock = 8;
-        m.on_ground = false;
-        m.panic = if m.species == Species::Wolf { 0 } else { 100 };
+        // (le golem de fer ne recule pas et ne fuit pas)
+        if m.species != Species::IronGolem {
+            let flat = (dx * dx + dz * dz).sqrt().max(0.01);
+            m.vel = (dx / flat * 0.4, 0.36, dz / flat * 0.4);
+            m.knock = 8;
+            m.on_ground = false;
+        }
+        m.panic = if matches!(m.species, Species::Wolf | Species::IronGolem) { 0 } else { 100 };
         // Un loup assis qu'on frappe se relève
         m.sitting = false;
         m.target = None;
@@ -2542,6 +2623,10 @@ impl Server {
         }
         if let Some(name) = attacker_name {
             self.rally_wolves(&name, Prey::Mob(id), from);
+        }
+        // Villageois ou golem frappé par un joueur : les golems du village s'en mêlent
+        if let (Attacker::Player(a), Species::Villager | Species::IronGolem) = (by, species) {
+            self.rally_golems(a, from);
         }
         self.mobs_dirty = true;
         self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_HURT, 0));
@@ -3715,7 +3800,7 @@ mod tests {
         for s in Species::ALL {
             assert_eq!(Species::from_id(s.id()), Some(s));
             // (le villageois ne se nourrit pas à la main)
-            assert!(s == Species::Villager || !s.grow_items().is_empty(), "{:?} : un petit doit pouvoir grandir plus vite", s);
+            assert!(matches!(s, Species::Villager | Species::IronGolem) || !s.grow_items().is_empty(), "{:?} : un petit doit pouvoir grandir plus vite", s);
         }
     }
 
@@ -3767,6 +3852,10 @@ mod tests {
         let wolf = MobRecord { species: Species::Wolf, health: 33.0, max_health: 40.0, color: 14, variant: 0, mark: 0, saddled: false, chested: false, knot: None, items: Vec::new(), owner: Some("Steve".into()), sitting: true, ..r };
         assert_eq!(MobRecord::from_json(&wolf.to_json()), Some(wolf));
         assert_eq!(Species::from_id("minecraft:wolf"), Some(Species::Wolf));
+        // Le golem de fer : 100 points de vie, du fer et des coquelicots, ni élevage ni petit
+        assert_eq!(Species::from_id("minecraft:iron_golem"), Some(Species::IronGolem));
+        assert_eq!(Species::IronGolem.health(), 100.0);
+        assert!(Species::IronGolem.breed_items().is_empty() && Species::IronGolem.drops().iter().any(|d| d.0 == "minecraft:iron_ingot"));
         assert_eq!(Species::from_id("minecraft:cat"), Some(Species::Cat));
         assert_eq!(Species::from_id("minecraft:villager"), Some(Species::Villager));
         assert_eq!(Species::from_id("minecraft:villager_v2"), Some(Species::Villager));

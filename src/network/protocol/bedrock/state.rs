@@ -191,7 +191,8 @@ pub const ID_AVAILABLE_ACTOR_IDENTIFIERS: u32 = 119;
 pub const ID_UPDATE_ADVENTURE_SETTINGS: u32 = 188;
 
 /// Paquets d'état du joueur dont le format reste à confirmer avec le vrai jeu.
-pub const EXTRA_IDS: [u32; 17] = [
+pub const EXTRA_IDS: [u32; 18] = [
+    56, // BlockActorData (cloche qui sonne)
     25, // LevelEvent (bruit des portes)
     52,
     302,

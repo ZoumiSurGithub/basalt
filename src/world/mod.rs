@@ -384,6 +384,11 @@ impl World {
         self.terrain.request((cx, cz));
     }
 
+    /// Cloches posées par une structure dans ce chunk déjà généré (le cœur d'un village).
+    pub fn structure_bells(&self, cx: i32, cz: i32) -> Vec<(i32, i32, i32)> {
+        self.terrain.cached((cx, cz)).map(|c| c.bells.iter().map(|&(x, y, z)| (cx * 16 + x as i32, y as i32, cz * 16 + z as i32)).collect()).unwrap_or_default()
+    }
+
     /// Lits posés par une structure dans ce chunk déjà généré (un village) : position dans le
     /// monde. Vide si le chunk n'est pas prêt.
     pub fn structure_beds(&self, cx: i32, cz: i32) -> Vec<(i32, i32, i32)> {
@@ -628,6 +633,23 @@ fn encode_chunk(terrain: &Terrain, all_edits: &HashMap<(i32, i32), Arc<ChunkEdit
                 ("y", crate::nbt::Tag::Int(y as i32)),
                 ("z", crate::nbt::Tag::Int(cz * 16 + z as i32)),
                 ("color", crate::nbt::Tag::Byte(color as i8)),
+                ("isMovable", crate::nbt::Tag::Byte(1)),
+            ]);
+            w.0.extend_from_slice(&crate::nbt::write_network(&tag));
+        }
+        // Les cloches : le jeu ne les dessine et ne les fait sonner qu'avec leurs données
+        for &(x, y, z) in &column.bells {
+            if edits.map(|e| e.contains_key(&(x, y, z))).unwrap_or(false) {
+                continue;
+            }
+            let tag = crate::nbt::Tag::compound(vec![
+                ("id", crate::nbt::Tag::string("Bell")),
+                ("x", crate::nbt::Tag::Int(cx * 16 + x as i32)),
+                ("y", crate::nbt::Tag::Int(y as i32)),
+                ("z", crate::nbt::Tag::Int(cz * 16 + z as i32)),
+                ("Ringing", crate::nbt::Tag::Byte(0)),
+                ("Direction", crate::nbt::Tag::Int(0)),
+                ("Ticks", crate::nbt::Tag::Int(0)),
                 ("isMovable", crate::nbt::Tag::Byte(1)),
             ]);
             w.0.extend_from_slice(&crate::nbt::write_network(&tag));

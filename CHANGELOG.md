@@ -12,6 +12,11 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Ajouté
 
+- Golems de fer : un par village, au pied de la cloche. Il reste dans le village, s'en
+  prend au joueur qui frappe un villageois ou un golem (jamais en créatif), l'envoie en l'air
+  d'un coup de bras, ne recule pas sous les coups et laisse du fer et des coquelicots.
+  `/summon iron_golem` fonctionne aussi.
+- Cloches : un clic les fait sonner et se balancer, pour tous les joueurs des environs.
 - Loups : meutes de quatre dans les taïgas, les bosquets enneigés et (plus rarement) les
   forêts ; sauvages, ils chassent moutons et lapins et se retournent en meute contre le
   joueur qui en frappe un. Un os les apprivoise une fois sur trois : collier rouge (à

@@ -51,6 +51,8 @@ pub struct Plan {
     clear: HashMap<(i32, i32), Vec<(u8, u8, i16)>>,
     chests: HashMap<(i32, i32), Vec<(u8, i16, u8, Loot)>>,
     beds: HashMap<(i32, i32), Vec<(u8, i16, u8, u8)>>,
+    /// Cloches (x local, y, z local) : le cœur d'un village
+    bells: HashMap<(i32, i32), Vec<(u8, i16, u8)>>,
     /// Zones (x min, z min, x max, z max) où aucun arbre ne pousse : un arbre dont le pied y
     /// tombe n'est pas dessiné du tout, plutôt que coupé
     no_trees: Vec<(i32, i32, i32, i32)>,
@@ -71,6 +73,11 @@ impl Plan {
     /// Vrai si un arbre dont le pied est en (x, z) gênerait la structure.
     pub fn blocks_tree(&self, x: i32, z: i32) -> bool {
         self.no_trees.iter().any(|&(x0, z0, x1, z1)| x >= x0 && x <= x1 && z >= z0 && z <= z1)
+    }
+
+    /// Cloches de la structure dans ce chunk.
+    pub fn bells_in(&self, cx: i32, cz: i32) -> &[(u8, i16, u8)] {
+        self.bells.get(&(cx, cz)).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     /// Lits de la structure dans ce chunk, avec leur couleur.
@@ -1961,8 +1968,12 @@ impl<'a> Builder<'a> {
             self.put((x, y, z), s);
         }
         let mut plan = Plan::default();
+        let bells: std::collections::HashSet<u32> = self.p.named.iter().filter(|(n, _)| n.starts_with("bell[") || n.as_str() == "bell").map(|(_, s)| *s).collect();
         for ((x, y, z), s) in self.blocks {
             plan.blocks.entry((x >> 4, z >> 4)).or_default().push(((x & 15) as u8, y as i16, (z & 15) as u8, s));
+            if bells.contains(&s) {
+                plan.bells.entry((x >> 4, z >> 4)).or_default().push(((x & 15) as u8, y as i16, (z & 15) as u8));
+            }
         }
         plan.no_trees = self.no_trees;
         plan.pads = self.pads;
@@ -2051,7 +2062,9 @@ pub fn block_specs() -> Vec<String> {
         }
         out.push(format!("loom[direction={}]", legacy(d)));
         out.push(format!("grindstone[attachment=standing,direction={}]", legacy(d)));
-        out.push(format!("bell[attachment=standing,direction={}]", legacy(d)));
+        for attachment in ["standing", "hanging", "side", "multiple"] {
+            out.push(format!("bell[attachment={},direction={}]", attachment, legacy(d)));
+        }
         for head in 0..2 {
             out.push(format!("bed[direction={},head_piece_bit={}]", legacy(d), head));
         }
@@ -4769,6 +4782,24 @@ mod tests {
         }
         let (x, _, z) = locate(&v, Target::DesertPyramid, 0, 0).unwrap();
         write(&build(&v, &p, (Kind::DesertPyramid, (x - 8) >> 4, (z - 8) >> 4)), "pyramid");
+    }
+
+    /// Un village a sa cloche, et le plan sait où elle est (le golem de fer y apparaît).
+    #[test]
+    fn a_village_knows_its_bell() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
+        let data = crate::data::GameData::load(&dir).unwrap();
+        let p = test_palette(&data);
+        let v = Vanilla::new(4818530737973287857);
+        let (x, _, z) = locate(&v, Target::Village, 8800, 3930).unwrap();
+        let plan = build(&v, &p, (Kind::Village, (x - 8) >> 4, (z - 8) >> 4));
+        let bells: usize = plan.bells.values().map(|b| b.len()).sum();
+        assert_eq!(bells, 1, "une cloche par village");
+        // Elle est bien parmi les blocs du plan, à la même place
+        let (chunk, list) = plan.bells.iter().next().unwrap();
+        let (bx, by, bz) = list[0];
+        let state = plan.blocks_in(chunk.0, chunk.1).iter().find(|(x, y, z, _)| (*x, *y, *z) == (bx, by, bz)).map(|b| b.3).unwrap();
+        assert_eq!(data.block_name(state), Some("minecraft:bell"));
     }
 
     /// Cherche et dessine (vue de dessus) une structure de chaque sorte.

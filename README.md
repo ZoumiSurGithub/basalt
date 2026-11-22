@@ -56,7 +56,7 @@ jeu (Bedrock 1.26.63 à 1.26.66 sous Windows, deux comptes Xbox en même temps).
   coffre) ; cochon à monter avec une carotte sur un bâton ; moutons à teindre ;
   loups (meutes des taïgas et des forêts, à apprivoiser avec un os : ils suivent leur
   maître, s'assoient, attaquent ce qu'il frappe) ; chats errants des villages (à apprivoiser
-  avec du poisson cru) ; villageois dans les villages (sans échange pour l'instant) ;
+  avec du poisson cru) ; villageois dans les villages (sans échange pour l'instant), gardés par un golem de fer ; cloches qui sonnent ;
   `/summon <animal>` ;
   `spawn-animals=false` pour s'en passer ;
 - personnages non joueurs (PNJ) créés par les plugins, qui marchent seuls (`server.spawnNpc`) ;

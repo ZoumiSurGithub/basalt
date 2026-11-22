@@ -1301,6 +1301,7 @@ impl Vanilla {
         // 7. Structures : villages, temples, mines (la part qui tombe dans ce chunk)
         let mut chests = Vec::new();
         let mut beds = Vec::new();
+        let mut bells = Vec::new();
         let plans = super::structures::near(self, p, &self.structures, cx, cz);
         // Arbres du terrain qui poussent dans une structure : abattus avant de la poser
         if plans.iter().any(|plan| !plan.clear_in(cx, cz).is_empty()) {
@@ -1332,6 +1333,7 @@ impl Vanilla {
             }
             chests.extend_from_slice(plan.chests_in(cx, cz));
             beds.extend_from_slice(plan.beds_in(cx, cz));
+            bells.extend_from_slice(plan.bells_in(cx, cz));
         }
 
         // Blocs de structure sous l'eau qui n'ont pas pris la place de l'eau (enfoncés dans
@@ -1424,6 +1426,7 @@ impl Vanilla {
         column.biome_ids = Some(ids);
         column.chests = chests;
         column.beds = beds;
+        column.bells = bells;
         column.wet = wet;
         let _ = Section::Uniform(0);
         column

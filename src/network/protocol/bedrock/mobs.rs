@@ -303,6 +303,20 @@ pub fn level_event(event: i32, pos: (f32, f32, f32), data: i32) -> Vec<u8> {
     w.vari32(data);
     w.0
 }
+/// BlockActorData : les données d'un bloc changent (ici une cloche qui se met à sonner).
+pub const ID_BLOCK_ACTOR_DATA: u32 = 56;
+pub fn block_actor_data(pos: (i32, i32, i32), tag: &crate::nbt::Tag) -> Vec<u8> {
+    let mut w = W::default();
+    w.vari32(pos.0);
+    w.vari32(pos.1);
+    w.vari32(pos.2);
+    w.0.extend_from_slice(&crate::nbt::write_network(tag));
+    w.0
+}
+/// Coup de cloche
+pub const SOUND_BELL: &str = "block.bell.hit";
+/// Le golem de fer lève les bras pour frapper
+pub const EVENT_ARM_SWING: u8 = 4;
 /// Sons d'une créature (LevelSoundEvent) : depuis la 1.26, le son est désigné par son nom
 pub const SOUND_AMBIENT: &str = "ambient";
 pub const SOUND_DEATH: &str = "death";
