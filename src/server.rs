@@ -5069,9 +5069,9 @@ impl Server {
     }
 
     /// Login accepté (et chiffrement en place s'il y en a un) : début des packs de ressources.
-    fn send_login_success(&mut self, addr: &SocketAddr, protocol: i32) {
+    fn send_login_success(&mut self, addr: &SocketAddr, _protocol: i32) {
         self.send(addr, bedrock::ID_PLAY_STATUS, &bedrock::play_status(bedrock::STATUS_LOGIN_SUCCESS));
-        self.send(addr, bedrock::ID_RESOURCE_PACKS_INFO, &bedrock::resource_packs_info(crate::versions::features(protocol)));
+        self.send(addr, bedrock::ID_RESOURCE_PACKS_INFO, &bedrock::resource_packs_info());
     }
 
     /// Traite les logins analysés et vérifiés en arrière-plan.

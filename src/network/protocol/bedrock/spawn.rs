@@ -4,7 +4,7 @@
 use super::*;
 
 /// Liste des packs de ressources : aucun.
-pub fn resource_packs_info(features: crate::versions::Features) -> Vec<u8> {
+pub fn resource_packs_info() -> Vec<u8> {
     let mut w = W::default();
     w.bool(false); // pack obligatoire
     w.bool(false); // packs d'extension
@@ -13,11 +13,10 @@ pub fn resource_packs_info(features: crate::versions::Features) -> Vec<u8> {
     w.u64(0); // identifiant du modèle de monde (UUID)
     w.u64(0);
     w.string(""); // version du modèle
-    if features.varint_pack_count {
-        w.varu32(0); // nombre de packs : 0 (le jeu refuse tout octet en trop)
-    } else {
-        w.0.extend_from_slice(&[0, 0]); // nombre de packs : 0, sur deux octets
-    }
+    // Nombre de packs : 0, en entier à taille variable pour toutes les versions
+    // (la doc officielle ne note aucun changement de ce paquet ; les deux octets
+    // envoyés autrefois au 1.26.40 étaient refusés par le jeu).
+    w.varu32(0);
     w.0
 }
 
@@ -192,4 +191,15 @@ pub fn chunk_publisher_update(x: i32, y: i32, z: i32, radius_blocks: u32) -> Vec
     w.varu32(radius_blocks);
     w.u32(0); // chunks enregistrés
     w.0
+}
+
+#[cfg(test)]
+mod pack_info_tests {
+    #[test]
+    fn pack_count_is_a_single_varint() {
+        // 4 booléens, UUID (16 octets), chaîne vide (1 octet), nombre de packs (1 octet).
+        let p = super::resource_packs_info();
+        assert_eq!(p.len(), 22);
+        assert_eq!(*p.last().unwrap(), 0);
+    }
 }

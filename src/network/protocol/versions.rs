@@ -33,8 +33,6 @@ pub struct Features {
     pub editor_migration_version: bool,
     /// Préversion 1.26.70 (protocole 2259) : NetworkSettings se termine par le profil SCTP.
     pub sctp_recovery_profile: bool,
-    /// 1.26.60 : dans ResourcePacksInfo, le nombre de packs est un entier à taille variable.
-    pub varint_pack_count: bool,
     /// 1.26.50 : le client attend VoxelShapes avant StartGame.
     pub voxel_shapes: bool,
 }
@@ -46,7 +44,6 @@ pub fn features(protocol: i32) -> Features {
         chunk_biome_update_flag: protocol >= 2208,
         editor_migration_version: protocol >= 2216,
         sctp_recovery_profile: protocol >= 2251,
-        varint_pack_count: protocol >= 2208,
         voxel_shapes: protocol >= 2193,
     }
 }

@@ -1,6 +1,7 @@
 # Journal des versions
 
 Les changements de chaque version de Basalt. La section « Non publié » reçoit au fil de l'eau
+
 ce qui est fait sur la branche `dev` ; `./release.sh <version>` la transforme en version
 datée au moment de publier (voir « Publier une version » dans le README).
 
@@ -81,6 +82,7 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Corrigé
 
+- Connexion en 1.26.40 / 1.26.45 : le jeu ne pouvait pas lire la liste des packs de ressources (paquet 6).
 - Les animaux qui se promenaient renonçaient en plein saut devant une marche d'un bloc
   (ils sautaient sur place) ; le lapin, qui avance par bonds, ne la franchissait jamais.
 - Boîte de collision des petits et des lapins trop petite (réduite deux fois : par
