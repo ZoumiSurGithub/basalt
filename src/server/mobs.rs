@@ -437,7 +437,10 @@ pub(super) struct Mob {
     /// État à renvoyer aux joueurs (changé pendant qu'il réfléchissait)
     refresh: bool,
     /// Villageois : là où il vit (il ne s'en éloigne pas)
-    home: Option<(f32, f32)>,
+    home: Option<(f32, f32, f32)>,
+    /// Villageois : ticks passés la nuit loin de chez lui ; point de rassemblement du village
+    late: u32,
+    meet: Option<(f32, f32)>,
     /// Villageois : où aller une fois la porte visée franchie
     errand: Option<(f32, f32)>,
 }
@@ -575,6 +578,8 @@ pub(super) struct MobRecord {
     /// Loup apprivoisé : son maître, assis
     pub owner: Option<String>,
     pub sitting: bool,
+    /// Villageois : là où il vit
+    pub home: Option<(f32, f32, f32)>,
 }
 
 impl MobRecord {
@@ -610,6 +615,10 @@ impl MobRecord {
                 None => Json::Null,
             }),
             ("sitting".into(), Json::Bool(self.sitting)),
+            ("home".into(), match self.home {
+                Some((x, y, z)) => Json::Arr(vec![n(x), n(y), n(z)]),
+                None => Json::Null,
+            }),
             ("items".into(), Json::Arr(self.items.iter().map(|(slot, name, count)| Json::Arr(vec![Json::Num(*slot as f64), Json::Str(name.clone()), Json::Num(*count as f64)])).collect())),
         ])
     }
@@ -639,6 +648,10 @@ impl MobRecord {
             horns: num("horns").unwrap_or(2.0).clamp(0.0, 2.0) as u8,
             owner: v.get("owner").and_then(|o| o.as_str()).filter(|o| !o.is_empty() && o.len() <= 64).map(|o| o.to_string()),
             sitting: v.get("sitting").and_then(|s| s.as_bool()).unwrap_or(false),
+            home: v.get("home").and_then(|k| k.as_arr()).and_then(|k| match k {
+                [x, y, z] => Some((x.as_f64()? as f32, y.as_f64()? as f32, z.as_f64()? as f32)),
+                _ => None,
+            }),
             items: v
                 .get("items")
                 .and_then(|i| i.as_arr())
@@ -684,6 +697,7 @@ impl Mob {
             horns: self.horns,
             owner: self.owner.clone(),
             sitting: self.sitting,
+            home: self.home,
             items: self.items.iter().enumerate().filter_map(|(i, it)| it.as_ref().map(|(n, c)| (i as u8, n.clone(), *c))).collect(),
         }
     }
@@ -970,6 +984,13 @@ impl Server {
         s == self.world.generator().blocks.water || self.npc_passable(s)
     }
 
+    /// Bloc sur lequel une créature ne grimpe pas d'un saut : barrières et murets (trop hauts
+    /// dans le jeu), portillons, trappes, portes, vitres et barreaux (trop minces pour s'y
+    /// tenir). Sans cela, elle se retrouvait perchée dessus, comme en l'air.
+    fn no_step(&self, x: i32, y: i32, z: i32) -> bool {
+        let s = self.mob_get(x, y, z);
+        self.data.as_ref().and_then(|d| d.block_name(s)).map(|n| n.contains("fence") || n.ends_with("_wall") || n.contains("trapdoor") || n.contains("door") || n.contains("_pane") || n.contains("iron_bars")).unwrap_or(false)
+    }
     /// Comme `mob_free`, mais une porte en bois laisse aussi passer (`doors` : un villageois).
     fn mob_pass(&self, doors: bool, x: i32, y: i32, z: i32) -> bool {
         self.mob_free(x, y, z) || (doors && self.wood_door(x, y, z))
@@ -1010,7 +1031,12 @@ impl Server {
     /// Villageois : la porte en bois la plus proche (8 blocs, un étage près) et le point où
     /// aller une fois passée, de l'autre côté.
     fn door_errand(&self, m: &Mob) -> Option<((f32, f32), (f32, f32))> {
-        let (px, py, pz) = (m.pos.0.floor() as i32, m.pos.1.floor() as i32, m.pos.2.floor() as i32);
+        self.door_near(m.pos, m.pos)
+    }
+    /// La porte en bois la plus proche de `center`, et le point de l'autre côté pour qui
+    /// vient de `from`.
+    fn door_near(&self, center: (f32, f32, f32), from: (f32, f32, f32)) -> Option<((f32, f32), (f32, f32))> {
+        let (px, py, pz) = (center.0.floor() as i32, center.1.floor() as i32, center.2.floor() as i32);
         let mut best: Option<((i32, i32, i32), i32)> = None;
         for dx in -8..=8 {
             for dz in -8..=8 {
@@ -1019,7 +1045,7 @@ impl Server {
                     // (la moitié basse : le sol est dessous)
                     if self.wood_door(x, y, z) && !self.wood_door(x, y - 1, z) {
                         let d = dx * dx + dz * dz;
-                        if d > 0 && best.map(|(_, b)| d < b).unwrap_or(true) {
+                        if best.map(|(_, b)| d < b).unwrap_or(true) {
                             best = Some(((x, y, z), d));
                         }
                     }
@@ -1033,9 +1059,9 @@ impl Server {
         let along_x = self.mob_free(x - 1, y, z) && self.mob_free(x + 1, y, z);
         let along_z = self.mob_free(x, y, z - 1) && self.mob_free(x, y, z + 1);
         let beyond = if along_x {
-            (door.0 + if m.pos.0 < door.0 { 3.0 } else { -3.0 }, door.1)
+            (door.0 + if from.0 < door.0 { 3.0 } else { -3.0 }, door.1)
         } else if along_z {
-            (door.0, door.1 + if m.pos.2 < door.1 { 3.0 } else { -3.0 })
+            (door.0, door.1 + if from.2 < door.1 { 3.0 } else { -3.0 })
         } else {
             return None;
         };
@@ -1158,7 +1184,9 @@ impl Server {
             attack: None,
             bite_in: 0,
             refresh: false,
-            home: (species == Species::Villager).then_some((pos.0, pos.2)),
+            home: (species == Species::Villager).then_some(pos),
+            late: 0,
+            meet: None,
             errand: None,
         };
         self.mobs.insert(id, mob);
@@ -1672,6 +1700,8 @@ impl Server {
         let tempting: &[&str] = if m.species.mount() && !m.tamed { &[] } else { m.species.tempt() };
         // Loup : assis, à la poursuite d'une proie, ou sur les talons de son maître
         let wolf = if m.species.pet() { self.wolf_think(m) } else { None };
+        // Villageois : ce que l'heure lui dicte (sauf en pleine fuite)
+        let villager = if m.species == Species::Villager && m.panic == 0 { self.villager_think(m) } else { None };
         let near_player = |p: &(f32, f32, f32), r: f32| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2) < r * r && (p.1 - m.pos.1).abs() < 4.0;
         // Lapin : fuit le joueur qui ne lui tend pas sa nourriture (à moins de 8 blocs)
         let scary = if m.species == Species::Rabbit || (m.species == Species::Cat && !m.tamed) {
@@ -1697,11 +1727,15 @@ impl Server {
         } else if m.panic > 0 {
             m.panic -= 1;
             speed = ground_speed(attr * panic);
+            m.errand = None;
             // En fuite : une nouvelle direction de temps en temps
             if m.target.is_none() || self.mob_rng.below(20) == 0 {
                 let a = self.mob_rng.unit() as f32 * std::f32::consts::TAU;
                 m.target = Some((m.pos.0 + a.cos() * 8.0, m.pos.2 + a.sin() * 8.0));
             }
+        } else if let Some((s, stop)) = villager {
+            speed = s;
+            stop_at = stop;
         } else if let Some(p) = scary {
             let (dx, dz) = (m.pos.0 - p.0, m.pos.2 - p.2);
             let d = (dx * dx + dz * dz).sqrt().max(0.1);
@@ -1788,8 +1822,8 @@ impl Server {
                 }
             }
             // Villageois : il reste dans son village (retour vers chez lui au-delà de 24 blocs)
-            if let Some(h) = m.home.filter(|h| (t.0 - h.0).powi(2) + (t.1 - h.1).powi(2) > 24.0 * 24.0) {
-                let (dx, dz) = (h.0 - m.pos.0, h.1 - m.pos.2);
+            if let Some(h) = m.home.filter(|h| (t.0 - h.0).powi(2) + (t.1 - h.2).powi(2) > 24.0 * 24.0) {
+                let (dx, dz) = (h.0 - m.pos.0, h.2 - m.pos.2);
                 let len = (dx * dx + dz * dz).sqrt().max(0.1);
                 t = (m.pos.0 + dx / len * d.min(len), m.pos.2 + dz / len * d.min(len));
             }
@@ -1827,6 +1861,87 @@ impl Server {
                 m.vel.2 = 0.0;
             }
         }
+    }
+
+    /// Emploi du temps d'un villageois, comme dans le jeu : la journée il vaque dans le
+    /// village, l'après-midi (9000 à 11000) les adultes se retrouvent au centre, la nuit
+    /// (12000 à 24000) chacun rentre chez lui et n'en bouge plus. Rend (vitesse, distance
+    /// d'arrêt) quand l'heure lui dicte où aller.
+    fn villager_think(&mut self, m: &mut Mob) -> Option<(f32, f32)> {
+        let home = m.home?;
+        let time = self.world_time().rem_euclid(24_000);
+        let attr = m.movement();
+        let flat2 = |p: (f32, f32)| (p.0 - m.pos.0).powi(2) + (p.1 - m.pos.2).powi(2);
+        if time >= 12_000 {
+            m.meet = None;
+            // La nuit : chez lui, près de son lit
+            if flat2((home.0, home.2)) < 1.5 * 1.5 && (home.1 - m.pos.1).abs() < 2.0 {
+                m.target = None;
+                m.errand = None;
+                m.late = 0;
+                return Some((0.0, f32::MAX));
+            }
+            m.late += 1;
+            if m.late > 1200 {
+                // Une minute sans y arriver (il marche droit, sans chercher son chemin) : le
+                // voilà rentré
+                m.pos = home;
+                m.vel = (0.0, 0.0, 0.0);
+                m.sent = (f32::MAX, 0.0, 0.0);
+                m.target = None;
+                m.errand = None;
+                m.late = 0;
+                return Some((0.0, f32::MAX));
+            }
+            if m.target.is_none() {
+                // Par la porte de sa maison s'il est dehors, puis jusqu'au lit
+                match self.door_near(home, m.pos).filter(|(door, _)| flat2((home.0, home.2)) > 3.0 * 3.0 && flat2(*door) > 1.0) {
+                    Some((door, _)) => {
+                        m.target = Some(door);
+                        m.errand = Some((home.0, home.2));
+                    }
+                    None => {
+                        m.target = Some((home.0, home.2));
+                        m.errand = None;
+                    }
+                }
+            }
+            return Some((ground_speed(attr * 0.6), 0.4));
+        }
+        m.late = 0;
+        if (9_000..11_000).contains(&time) && !m.baby() && m.variant != 14 {
+            // L'après-midi : rendez-vous au centre du village (le milieu des maisons voisines)
+            let center = match m.meet {
+                Some(c) => c,
+                None => {
+                    let homes: Vec<(f32, f32)> = self.mobs.values().filter_map(|v| v.home).filter(|h| (h.0 - home.0).powi(2) + (h.2 - home.2).powi(2) < 64.0 * 64.0).map(|h| (h.0, h.2)).chain([(home.0, home.2)]).collect();
+                    let n = homes.len() as f32;
+                    let c = (homes.iter().map(|h| h.0).sum::<f32>() / n, homes.iter().map(|h| h.1).sum::<f32>() / n);
+                    m.meet = Some(c);
+                    c
+                }
+            };
+            if flat2(center) > 5.0 * 5.0 {
+                if m.target.is_none() {
+                    // Bloqué ou tout juste parti : par la porte la plus proche une fois sur
+                    // deux (il est peut-être enfermé), sinon droit vers le centre
+                    match self.door_errand(m).filter(|_| self.mob_rng.below(2) == 0) {
+                        Some((door, beyond)) => {
+                            m.target = Some(door);
+                            m.errand = Some(beyond);
+                        }
+                        None => {
+                            m.target = Some(center);
+                            m.errand = None;
+                        }
+                    }
+                }
+                return Some((ground_speed(attr * 0.6), 0.4));
+            }
+            return None;
+        }
+        m.meet = None;
+        None
     }
 
     /// Ce que fait un loup avant tout le reste : (vitesse, distance d'arrêt) s'il a mieux à
@@ -2284,7 +2399,7 @@ impl Server {
                 } else {
                     m.pos.2 = nz;
                 }
-            } else if grounded && body_free(self, ex, m.pos.1.floor() + 1.01, ez) {
+            } else if grounded && !self.no_step(ex.floor() as i32, m.pos.1.floor() as i32, ez.floor() as i32) && body_free(self, ex, m.pos.1.floor() + 1.01, ez) {
                 // Marche d'un bloc : saute
                 m.vel.1 = m.vel.1.max(0.42);
                 m.on_ground = false;
@@ -3412,6 +3527,9 @@ impl Server {
             m.horns = r.horns;
             m.owner = r.owner;
             m.sitting = r.sitting;
+            if r.home.is_some() {
+                m.home = r.home;
+            }
             m.items = vec![None; m.inventory_size()];
             for (slot, name, count) in r.items {
                 if let Some(cell) = m.items.get_mut(slot as usize) {
@@ -3642,6 +3760,7 @@ mod tests {
             items: vec![(0, "saddle".into(), 1), (5, "diamond".into(), 3)],
             owner: None,
             sitting: false,
+            home: Some((10.5, 70.0, -3.5)),
         };
         assert_eq!(MobRecord::from_json(&r.to_json()), Some(r.clone()));
         // Loup apprivoisé : son maître, assis, collier, vie d'un loup apprivoisé

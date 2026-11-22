@@ -66,7 +66,7 @@ jeu (Bedrock 1.26.63 à 1.26.66 sous Windows, deux comptes Xbox en même temps).
 
 **Pas encore fait :** chargement de vrais mondes Minecraft (format LevelDB),
 mondes multiples (Nether, End), blocs soumis à la gravité (sable, gravier), redstone,
-monstres, échanges avec les villageois, autres animaux, faim qui baisse et expérience gagnée, cycle jour/nuit animé, météo.
+monstres, échanges avec les villageois, autres animaux, faim qui baisse et expérience gagnée, météo.
 
 **Réglages de secours.** Si un joueur est replacé à tort, ou se déconnecte quand un autre
 joueur apparaît, `movement-check=false` et `show-players=false` désactivent ces fonctions

@@ -6798,6 +6798,11 @@ impl Server {
                     self.watch_containers();
                 }
                 self.release_buttons();
+                // Le jour et la nuit : l'heure avance chez tous les joueurs (le jeu ne la fait
+                // pas avancer seul), une fois par seconde
+                if self.tick % 20 == 0 {
+                    self.broadcast(bedrock::ID_SET_TIME, &bedrock::set_time(self.world_time().rem_euclid(i32::MAX as i64) as i32), None);
+                }
                 {
                     let _t = timings::scope("Tick — minuteries des plugins");
                     self.plugins.run_timers(self.tick);

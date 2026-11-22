@@ -30,6 +30,11 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   d'échange avec eux. Ils ouvrent les portes en bois devant eux, qui se referment après
   leur passage (avec leur bruit), et vont régulièrement passer la porte la plus proche
   pour sortir de chez eux ou y rentrer. `/summon villager`.
+- Jour et nuit : l'heure avance chez les joueurs (une journée dure 20 minutes, comme dans
+  le jeu) ; `/time set` continue de la régler.
+- Emploi du temps des villageois : la journée ils vaquent dans le village, l'après-midi
+  (9000 à 11000) les adultes se retrouvent au centre, la nuit (à partir de 12000) chacun
+  rentre chez lui par sa porte et n'en bouge plus jusqu'au matin.
 
 ### Corrigé
 
@@ -42,6 +47,9 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 - Villages : la terre mise à nu là où une maison entaille le terrain se couvre d'herbe
   (plus de plaques de terre autour des maisons).
 - Villages : plus d'herbes, de fleurs ni de feuilles mortes poussées sur les chemins.
+- Créatures : elles ne sautent plus sur les trappes, barrières, murets, portillons, vitres
+  et barreaux (un villageois se retrouvait perché sur une trappe ; les animaux pouvaient
+  franchir une barrière d'un saut).
 - Villages au bord d'une plage ou d'un désert : les talus autour des maisons sont en sable
   comme le sol d'alentour, plus en blocs d'herbe.
 
