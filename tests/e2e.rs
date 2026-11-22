@@ -2596,6 +2596,9 @@ fn donkey_chest_and_dyed_sheep() {
     steve.game(33, &[6, donkey, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], Some(0xff));
     let open = wait(&mut steve, 46).expect("écran ouvert");
     assert_eq!((open[0], open[1]), (2, 12), "fenêtre 2, écran de monture : {:?}", open);
+    let equip = wait(&mut steve, 81).expect("cases d'équipement envoyées");
+    assert_eq!((equip[0], equip[1]), (2, 12));
+    assert!(equip.windows(16).any(|w| w == b"minecraft:saddle"), "la selle parmi les objets acceptés");
     let content = wait(&mut steve, 49).expect("contenu envoyé");
     assert_eq!((content[0], content[1]), (2, 17), "selle, armure et 15 cases de coffre : {:?}", &content[..4]);
     stop.store(true, std::sync::atomic::Ordering::SeqCst);

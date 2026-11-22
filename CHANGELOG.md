@@ -22,8 +22,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   - chèvre qui fonce sur les joueurs (2 points de dégâts et un recul ; la hurleuse bien
     plus souvent), perd une corne contre le bois, la pierre, les minerais ou la glace
     compacte, et bondit de bloc en bloc ;
-  - lamas en caravane derrière celui qu'on tient en laisse (10 au plus), qui crachent sur
-    qui les frappe ;
+  - lamas en caravane derrière celui qu'on tient en laisse (10 au plus), qui crachent une
+    fois sur qui les frappe (le crachat vole jusqu'à lui) ;
   - lapins qui grignotent les carottes plantées ;
   - monture sauvage qui gambade avec son cavalier pendant le dressage.
 - Laisses : une laisse en main sur un animal l'attache au joueur, un clic droit sur une

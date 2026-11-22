@@ -252,6 +252,32 @@ pub fn container_open_entity(window: u8, kind: u8, unique_id: i64) -> Vec<u8> {
 /// Type d'écran de l'inventaire d'une monture (cheval, âne, mule, lama)
 pub const SCREEN_HORSE: u8 = 12;
 
+/// UpdateEquip : les cases d'équipement d'une monture (ce que chacune accepte). Sans lui, le
+/// jeu n'affiche pas l'écran de la monture (et refuse ensuite d'ouvrir le sien). `slots` :
+/// (numéro de case, objet montré, objets acceptés).
+pub const ID_UPDATE_EQUIP: u32 = 81;
+pub fn update_equip(window: u8, unique_id: i64, slots: &[(i32, &str, Vec<&str>)]) -> Vec<u8> {
+    use crate::nbt::Tag;
+    let item = |name: &str| Tag::compound(vec![("Aux", Tag::Short(i16::MAX)), ("Name", Tag::string(&format!("minecraft:{}", name)))]);
+    let list: Vec<Tag> = slots
+        .iter()
+        .map(|(slot, shown, accepted)| {
+            Tag::compound(vec![
+                ("acceptedItems", Tag::list_of(accepted.iter().map(|a| Tag::compound(vec![("slotItem", item(a))])).collect())),
+                ("item", item(shown)),
+                ("slotNumber", Tag::Int(*slot)),
+            ])
+        })
+        .collect();
+    let mut w = W::default();
+    w.u8(window);
+    w.u8(SCREEN_HORSE);
+    w.vari32(0); // taille : 0, comme les serveurs connus
+    w.vari64(unique_id);
+    w.0.extend_from_slice(&crate::nbt::write_network(&Tag::compound(vec![("slots", Tag::list_of(list))])));
+    w.0
+}
+
 /// MobArmorEquipment : ce que porte une créature (tête, torse, jambes, pieds, corps) ; seul
 /// le corps sert ici (armure du cheval, tapis du lama). `body` : (objet, quantité).
 pub const ID_MOB_ARMOR_EQUIPMENT: u32 = 32;

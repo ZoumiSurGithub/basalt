@@ -3859,6 +3859,10 @@ impl Server {
 
     /// Le joueur ouvre son inventaire : le serveur confirme l'ouverture de l'écran.
     fn on_open_inventory(&mut self, addr: &SocketAddr) {
+        // Écran de monture resté ouvert chez nous alors que le jeu ne l'a pas montré : oublié
+        if self.clients.get(addr).map(|c| c.inv.open_window != 0 && c.inv.block_mob.is_some()).unwrap_or(false) {
+            self.force_close(addr);
+        }
         // En selle sur une monture apprivoisée : c'est son inventaire qui s'ouvre
         if let Some(mob) = self.clients.get(addr).and_then(|c| c.riding) {
             if self.open_mob_inventory(addr, mob) {

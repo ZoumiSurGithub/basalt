@@ -1337,7 +1337,7 @@ impl Server {
             if let Some(p) = self.clients.get(&a).filter(|c| c.dead.is_none()).map(|c| c.pos) {
                 m.yaw = (-(p.0 - m.pos.0)).atan2(p.2 - m.pos.2).to_degrees().rem_euclid(360.0);
                 let d2 = (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2);
-                if d2 < 10.0 * 10.0 && left % 40 == 0 {
+                if d2 < 10.0 * 10.0 && left == 1 {
                     self.spit(m, a);
                 }
             }
@@ -1542,8 +1542,13 @@ impl Server {
         let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.joined && (c.pos.0 - from.0).powi(2) + (c.pos.2 - from.2).powi(2) < 64.0 * 64.0).map(|(a, _)| *a).collect();
         let meta = bedrock::mob_metadata(0.25, 0.25, 0, 0, 0);
         let packet = bedrock::add_actor(id, "minecraft:llama_spit", from, vel, m.yaw, (1.0, 1.0), None, None, &meta);
+        // Son élan aussi, pour que le jeu le fasse voler entre deux positions
+        let motion = bedrock::set_actor_motion(id, vel);
         for v in &viewers {
             self.send(v, bedrock::ID_ADD_ACTOR, &packet);
+            if !self.refused_extras.contains(&bedrock::ID_SET_ACTOR_MOTION) {
+                self.send(v, bedrock::ID_SET_ACTOR_MOTION, &motion);
+            }
         }
         self.mob_sound(m.id, bedrock::SOUND_SPIT, None);
         self.spits.push(Spit { id, pos: from, vel, ttl: 30, target: at, viewers });
@@ -1795,8 +1800,9 @@ impl Server {
                 let d = |c: &Client| (c.pos.0 - from.0).powi(2) + (c.pos.2 - from.2).powi(2);
                 d(a.1).total_cmp(&d(b.1))
             });
+            // (un seul crachat par coup reçu, juste après)
             if let (Some((a, _)), Some(m)) = (attacker.map(|(a, c)| (*a, c.id)), self.mobs.get_mut(&id)) {
-                m.angry = Some((a, 200));
+                m.angry = Some((a, 10));
                 m.panic = 0;
             }
         }
@@ -2106,6 +2112,21 @@ impl Server {
             c.inv.block.slots = slots.clone();
         }
         self.send(addr, bedrock::ID_CONTAINER_OPEN, &bedrock::container_open_entity(WINDOW, bedrock::SCREEN_HORSE, id));
+        // Les cases d'équipement et ce qu'elles acceptent (selle ; armure du cheval, tapis du lama)
+        let species = self.mobs.get(&id).map(|m| m.species);
+        const COLORS: [&str; 16] = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black"];
+        let carpets: Vec<String> = COLORS.iter().map(|c| format!("{}_carpet", c)).collect();
+        let mut equip: Vec<(i32, &str, Vec<&str>)> = Vec::new();
+        match species {
+            Some(Species::Horse) => {
+                equip.push((0, "saddle", vec!["saddle"]));
+                equip.push((1, "iron_horse_armor", vec!["leather_horse_armor", "iron_horse_armor", "golden_horse_armor", "diamond_horse_armor"]));
+            }
+            Some(Species::Donkey | Species::Mule) => equip.push((0, "saddle", vec!["saddle"])),
+            Some(Species::Llama) => equip.push((1, "white_carpet", carpets.iter().map(|s| s.as_str()).collect())),
+            _ => {}
+        }
+        self.send(addr, bedrock::ID_UPDATE_EQUIP, &bedrock::update_equip(WINDOW, id, &equip));
         self.send_block_content(addr, &slots);
         true
     }
@@ -2338,6 +2359,10 @@ impl Server {
 
     /// Le cavalier descend (de lui-même, jeté par une monture sauvage, mort ou parti).
     pub(super) fn dismount(&mut self, addr: &SocketAddr) {
+        // Son inventaire ouvert se ferme
+        if self.clients.get(addr).map(|c| c.inv.block_mob.is_some()).unwrap_or(false) {
+            self.force_close(addr);
+        }
         let tick = self.tick + 1;
         // Il descend debout à la place de sa monture : la position que donnait son jeu en selle
         // est sous elle, dans le sol (enregistrée telle quelle, il reviendrait ailleurs)
