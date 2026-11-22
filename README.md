@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/images/banniere.png" alt="Basalt, serveur Minecraft Bedrock écrit en Rust, extensible en Lua" width="100%"></p>
+
 # Basalt
 
 Socle de serveur **Minecraft Bedrock** écrit en Rust, dans l'esprit de PocketMine-MP :

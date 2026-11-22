@@ -20,7 +20,7 @@ end)
 -- Appelé quand le joueur est apparu dans le monde. `joueur` est un objet :
 -- vie, expérience, position, noms… (voir « L'objet joueur » dans docs/PLUGINS.md)
 server.on("join", function(joueur)
-  server.log(joueur .. " est en jeu (" .. #server.players() .. " connecté(s))")
+  server.log(joueur .. " est en jeu (" .. #server.getOnlinePlayers() .. " connecté(s))")
   joueur:sendMessage("Bienvenue " .. joueur:getDisplayName() .. " ! Vie : " .. joueur:getHealth() .. "/" .. joueur:getMaxHealth())
 end)
 
@@ -31,14 +31,14 @@ end)
 -- Commande utilisable dans la console : « annonce <texte> »
 server.command("annonce", "change le nom affiché du serveur", function(args)
   if #args == 0 then
-    server.log("Nom actuel : " .. server.motd())
+    server.log("Nom actuel : " .. server.getMotd())
   else
-    server.set_motd(table.concat(args, " "))
-    server.log("Nouveau nom : " .. server.motd())
+    server.setMotd(table.concat(args, " "))
+    server.log("Nouveau nom demandé : " .. table.concat(args, " "))
   end
 end)
 
--- Minuterie : toutes les 6000 ticks (5 minutes à 20 ticks/s)
-server.every(6000, function()
-  server.log(#server.players() .. " joueur(s) connecté(s)")
+-- Minuterie : toutes les 5 minutes
+server.everySeconds(300, function()
+  server.log(#server.getOnlinePlayers() .. " joueur(s) connecté(s)")
 end)

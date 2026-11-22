@@ -12,6 +12,7 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Ajouté
 
+- Logo et bannière (`docs/images/`), bannière en tête du README.
 - Comportements particuliers du jeu :
   - inventaire des montures apprivoisées (accroupi + clic droit, ou touche d'inventaire en
     selle) : selle, armure du cheval, tapis du lama, coffre de l'âne, de la mule et du lama
