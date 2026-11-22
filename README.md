@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/images/banniere.png" alt="Basalt, serveur Minecraft Bedrock écrit en Rust, extensible en Lua" width="100%"></p>
+<p align="center"><img src="docs/images/banniere-github.png" alt="Basalt, serveur Minecraft Bedrock écrit en Rust, extensible en Lua" width="100%"></p>
 
 # Basalt
 

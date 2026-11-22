@@ -22,6 +22,28 @@ pub enum Meta {
     EmptyNbt,
 }
 
+/// Données d'entité d'un projectile (crachat de lama) : ses indicateurs (collisions, sans
+/// gravité, comme le projectile du jeu), son tireur et sa petite boîte de collision.
+pub fn projectile_metadata(owner: i64) -> Vec<(u32, Meta)> {
+    vec![
+        (0, Meta::Long(1 << 48)), // a des collisions ; pas de gravité ni d'IA
+        (5, Meta::Long(owner)), // tireur
+        (38, Meta::Float(1.0)),
+        (53, Meta::Float(0.25)),
+        (54, Meta::Float(0.25)),
+    ]
+}
+
+/// Déplace une entité sans glissement (drapeau « téléportation ») : un projectile
+/// rapide est ainsi redessiné à chaque tick à sa position exacte.
+pub fn move_actor_snap(id: i64, pos: (f32, f32, f32), yaw: f32) -> Vec<u8> {
+    let mut p = super::move_actor_absolute(id, pos, 0.0, yaw, yaw, false);
+    // L'octet des drapeaux suit l'identifiant (entier à taille variable)
+    let flags = p.iter().position(|b| b & 0x80 == 0).map(|i| i + 1).unwrap_or(1);
+    p[flags] |= 0x02;
+    p
+}
+
 /// Écrit des données d'entité.
 pub fn write_metadata(w: &mut W, entries: &[(u32, Meta)]) {
     w.varu32(entries.len() as u32);
@@ -342,6 +364,10 @@ mod tests {
         assert_eq!((id, pos), (300, (1.5, 64.0, -2.25)));
         assert!((yaw - 90.0).abs() < 1.5);
         assert_eq!(read_move_actor(&[1, 0, 0]), None);
+        // Déplacement d'un projectile : drapeau « téléportation » juste après l'identifiant
+        let snap = move_actor_snap(300, (1.0, 2.0, 3.0), 0.0);
+        assert_eq!(snap[2], 0x02);
+        assert_eq!(&snap[3..], &move_actor_absolute(300, (1.0, 2.0, 3.0), 0.0, 0.0, 0.0, false)[3..]);
         // Lien : monture, cavalier, type, immédiat, à l'initiative du cavalier, rotation
         assert_eq!(set_actor_link(3, 1, LINK_RIDER, false), vec![6, 2, 1, 0, 1, 0, 0, 0, 0]);
         // AddActor d'une monture : vitesse et saut parmi les attributs, cavalier parmi les liens

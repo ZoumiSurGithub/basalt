@@ -12,7 +12,7 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Ajouté
 
-- Logo et bannière (`docs/images/`), bannière en tête du README.
+- Logos, bannière GitHub et images Discord en PNG (`docs/images/`), bannière en tête du README.
 - Comportements particuliers du jeu :
   - inventaire des montures apprivoisées (accroupi + clic droit, ou touche d'inventaire en
     selle) : selle, armure du cheval, tapis du lama, coffre de l'âne, de la mule et du lama
@@ -86,6 +86,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Corrigé
 
+- Crachat du lama : il part de la bouche et vole jusqu'à sa cible au lieu de rester immobile
+  au-dessus du lama (données de projectile, position redessinée à chaque tick).
 - Un jeu qui refusait les animaux les supprimait pour tout le serveur (et de la sauvegarde) :
   le refus est maintenant seulement signalé.
 - Les animaux qui se promenaient renonçaient en plein saut devant une marche d'un bloc

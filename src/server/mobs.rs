@@ -1533,15 +1533,20 @@ impl Server {
     /// Le lama crache sur ce joueur : un crachat part de sa bouche, droit sur lui.
     fn spit(&mut self, m: &Mob, at: SocketAddr) {
         let Some(target) = self.clients.get(&at).map(|c| (c.pos.0, c.pos.1 - 0.6, c.pos.2)) else { return };
-        let from = (m.pos.0, m.pos.1 + 1.6, m.pos.2);
+        // Part de la bouche : devant la tête, dans la direction de la cible
+        let (fx, fz) = (target.0 - m.pos.0, target.2 - m.pos.2);
+        let flat = (fx * fx + fz * fz).sqrt().max(0.1);
+        let from = (m.pos.0 + fx / flat * 0.7, m.pos.1 + 1.6, m.pos.2 + fz / flat * 0.7);
         let (dx, dy, dz) = (target.0 - from.0, target.1 - from.1, target.2 - from.2);
         let d = (dx * dx + dy * dy + dz * dz).sqrt().max(0.1);
-        let vel = (dx / d * 1.2, dy / d * 1.2, dz / d * 1.2);
+        // Un peu moins vite que le vrai crachat, pour qu'on le voie partir même de près
+        let vel = (dx / d * 0.9, dy / d * 0.9, dz / d * 0.9);
         let id = self.next_id;
         self.next_id += 1;
         let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.joined && (c.pos.0 - from.0).powi(2) + (c.pos.2 - from.2).powi(2) < 64.0 * 64.0).map(|(a, _)| *a).collect();
-        let meta = bedrock::mob_metadata(0.25, 0.25, 0, 0, 0);
-        let packet = bedrock::add_actor(id, "minecraft:llama_spit", from, vel, m.yaw, (1.0, 1.0), None, None, &meta);
+        let meta = bedrock::projectile_metadata(m.id);
+        let yaw = (-fx).atan2(fz).to_degrees();
+        let packet = bedrock::add_actor(id, "minecraft:llama_spit", from, vel, yaw, (1.0, 1.0), None, None, &meta);
         // Son élan aussi, pour que le jeu le fasse voler entre deux positions
         let motion = bedrock::set_actor_motion(id, vel);
         for v in &viewers {
@@ -1574,9 +1579,14 @@ impl Server {
                 }
                 return false;
             }
-            let packet = bedrock::move_actor_absolute(s.id, s.pos, 0.0, 0.0, 0.0, false);
+            let packet = bedrock::move_actor_snap(s.id, s.pos, (-s.vel.0).atan2(s.vel.2).to_degrees());
+            let motion = bedrock::set_actor_motion(s.id, s.vel);
+            let motion_ok = !self.refused_extras.contains(&bedrock::ID_SET_ACTOR_MOTION);
             for v in &s.viewers {
                 self.send(v, bedrock::ID_MOVE_ACTOR_ABSOLUTE, &packet);
+                if motion_ok {
+                    self.send(v, bedrock::ID_SET_ACTOR_MOTION, &motion);
+                }
             }
             true
         });
