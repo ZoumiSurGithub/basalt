@@ -384,6 +384,12 @@ impl World {
         self.terrain.request((cx, cz));
     }
 
+    /// Lits posés par une structure dans ce chunk déjà généré (un village) : position dans le
+    /// monde. Vide si le chunk n'est pas prêt.
+    pub fn structure_beds(&self, cx: i32, cz: i32) -> Vec<(i32, i32, i32)> {
+        self.terrain.cached((cx, cz)).map(|c| c.beds.iter().map(|&(x, y, z, _)| (cx * 16 + x as i32, y as i32, cz * 16 + z as i32)).collect()).unwrap_or_default()
+    }
+
     /// Le chunk est-il généré (prêt à être envoyé sans attendre) ?
     pub fn is_ready(&self, cx: i32, cz: i32) -> bool {
         self.terrain.ready((cx, cz))

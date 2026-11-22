@@ -54,6 +54,7 @@ pub(super) enum Species {
     Donkey,
     Mule,
     Wolf,
+    Cat,
 }
 
 /// Ce qu'un loup attaque.
@@ -104,7 +105,7 @@ const WOLF_TAMED_HEALTH: f32 = 40.0;
 
 impl Species {
     const FARM: [Species; 4] = [Species::Cow, Species::Pig, Species::Sheep, Species::Chicken];
-    const ALL: [Species; 12] = [
+    const ALL: [Species; 13] = [
         Species::Cow,
         Species::Pig,
         Species::Sheep,
@@ -117,6 +118,7 @@ impl Species {
         Species::Donkey,
         Species::Mule,
         Species::Wolf,
+        Species::Cat,
     ];
 
     fn id(self) -> &'static str {
@@ -133,6 +135,7 @@ impl Species {
             Species::Donkey => "minecraft:donkey",
             Species::Mule => "minecraft:mule",
             Species::Wolf => "minecraft:wolf",
+            Species::Cat => "minecraft:cat",
         }
     }
     fn from_id(s: &str) -> Option<Species> {
@@ -144,7 +147,19 @@ impl Species {
     }
     /// S'apprivoise avant de se reproduire (montures, loup)
     fn tameable(self) -> bool {
-        self.mount() || self == Species::Wolf
+        self.mount() || self.pet()
+    }
+    /// Compagnon : apprivoisé, il a un maître qu'il suit, et s'assoit sur demande
+    fn pet(self) -> bool {
+        matches!(self, Species::Wolf | Species::Cat)
+    }
+    /// Ce qui l'apprivoise (une chance sur trois par objet donné)
+    fn taming_items(self) -> &'static [&'static str] {
+        match self {
+            Species::Wolf => &["bone"],
+            Species::Cat => &["cod", "salmon"],
+            _ => &[],
+        }
     }
     /// Se dirige au clavier une fois apprivoisée et sellée (pas le lama)
     fn steerable(self) -> bool {
@@ -180,7 +195,7 @@ impl Species {
     /// Vie maximale (celle du jeu ; les montures tirent la leur entre 15 et 30)
     fn health(self) -> f32 {
         match self {
-            Species::Cow | Species::Pig | Species::Mooshroom | Species::Goat => 10.0,
+            Species::Cow | Species::Pig | Species::Mooshroom | Species::Goat | Species::Cat => 10.0,
             Species::Sheep => 8.0,
             Species::Chicken => 4.0,
             Species::Rabbit => 3.0,
@@ -200,6 +215,7 @@ impl Species {
             Species::Llama => (0.9, 1.87),
             Species::Horse | Species::Donkey | Species::Mule => (1.4, 1.6),
             Species::Wolf => (0.6, 0.8),
+            Species::Cat => (0.6, 0.7),
         }
     }
     /// Taille d'affichage (« minecraft:scale » des fichiers du jeu) : le lapin est un petit
@@ -208,6 +224,8 @@ impl Species {
         match (self, baby) {
             (Species::Rabbit, false) => 0.6,
             (Species::Rabbit, true) => 0.4,
+            (Species::Cat, false) => 0.8,
+            (Species::Cat, true) => 0.4,
             (_, true) => 0.5,
             (_, false) => 1.0,
         }
@@ -215,7 +233,7 @@ impl Species {
     /// Vitesse du jeu (« minecraft:movement ») ; celle du cheval est tirée à sa naissance
     fn movement(self) -> f32 {
         match self {
-            Species::Rabbit | Species::Wolf => 0.3,
+            Species::Rabbit | Species::Wolf | Species::Cat => 0.3,
             Species::Goat => 0.4,
             Species::Donkey | Species::Mule => 0.175,
             _ => 0.25,
@@ -232,6 +250,7 @@ impl Species {
             Species::Goat => (0.6, 1.0, 0.75, 1.0),
             Species::Llama | Species::Horse | Species::Donkey | Species::Mule => (0.7, 1.2, 1.2, 1.0),
             Species::Wolf => (0.8, 1.0, 1.0, 1.0),
+            Species::Cat => (0.8, 1.33, 0.5, 1.0),
         }
     }
     /// Ce qui l'attire : il suit le joueur qui le tient
@@ -245,6 +264,7 @@ impl Species {
             Species::Llama => &[],
             Species::Horse | Species::Donkey | Species::Mule => &["golden_apple", "enchanted_golden_apple", "golden_carrot"],
             Species::Wolf => &[],
+            Species::Cat => &["cod", "salmon"],
         }
     }
     /// Ce qui le rend amoureux (les montures doivent d'abord être apprivoisées ; la mule
@@ -269,6 +289,7 @@ impl Species {
             Species::Chicken => &[("wheat_seeds", 0.1), ("pumpkin_seeds", 0.1), ("melon_seeds", 0.1), ("beetroot_seeds", 0.1), ("torchflower_seeds", 0.1), ("pitcher_pod", 0.1)],
             Species::Rabbit => &[("carrot", 0.1), ("golden_carrot", 0.1), ("dandelion", 0.1)],
             Species::Wolf => &WOLF_GROW,
+            Species::Cat => &[("cod", 0.1), ("salmon", 0.1)],
         }
     }
     /// Ce qui le soigne : (objet, points de vie rendus)
@@ -278,6 +299,7 @@ impl Species {
             Species::Horse | Species::Donkey | Species::Mule => &EQUINE,
             Species::Llama => &[("wheat", 2.0), ("hay_block", 10.0)],
             Species::Wolf => &WOLF_FOOD,
+            Species::Cat => &[("cod", 2.0), ("salmon", 2.0)],
             _ => &[],
         }
     }
@@ -291,6 +313,7 @@ impl Species {
             Species::Rabbit => &[("minecraft:rabbit", 0, 1), ("minecraft:rabbit_hide", 0, 1)],
             Species::Llama | Species::Horse | Species::Donkey | Species::Mule => &[("minecraft:leather", 0, 2)],
             Species::Goat | Species::Wolf => &[],
+            Species::Cat => &[("minecraft:string", 0, 2)],
         }
     }
 }
@@ -681,8 +704,29 @@ impl Server {
                     if self.mobs.len() < MAX_MOBS && self.mob_rng.below(10) == 0 {
                         self.spawn_herd(cx, cz, p.1 as i32);
                     }
+                    // Village : un chat errant près d'un lit, de temps en temps
+                    let beds = self.world.structure_beds(cx, cz);
+                    if !beds.is_empty() && self.mobs.len() < MAX_MOBS && self.mob_rng.below(3) == 0 {
+                        let bed = beds[self.mob_rng.below(beds.len() as u32) as usize];
+                        let (bx, bz) = (bed.0 + self.mob_rng.below(7) as i32 - 3, bed.2 + self.mob_rng.below(7) as i32 - 3);
+                        if let Some(y) = self.surface_y(bx, bz, bed.1) {
+                            let variant = self.cat_variant();
+                            let id = self.add_mob(Species::Cat, (bx as f32 + 0.5, y as f32, bz as f32 + 0.5));
+                            if let Some(m) = self.mobs.get_mut(&id) {
+                                m.variant = variant;
+                            }
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    /// Pelage d'un chat errant : l'un des onze du jeu (le noir est rare hors des marais)
+    fn cat_variant(&mut self) -> i32 {
+        match self.mob_rng.below(31) {
+            30 => 9,
+            n => [0, 1, 2, 3, 4, 5, 6, 7, 8, 10][(n % 10) as usize],
         }
     }
 
@@ -1451,10 +1495,10 @@ impl Server {
         let mut stop_at = 0.4;
         let tempting: &[&str] = if m.species.mount() && !m.tamed { &[] } else { m.species.tempt() };
         // Loup : assis, à la poursuite d'une proie, ou sur les talons de son maître
-        let wolf = if m.species == Species::Wolf { self.wolf_think(m) } else { None };
+        let wolf = if m.species.pet() { self.wolf_think(m) } else { None };
         let near_player = |p: &(f32, f32, f32), r: f32| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2) < r * r && (p.1 - m.pos.1).abs() < 4.0;
         // Lapin : fuit le joueur qui ne lui tend pas sa nourriture (à moins de 8 blocs)
-        let scary = if m.species == Species::Rabbit {
+        let scary = if m.species == Species::Rabbit || (m.species == Species::Cat && !m.tamed) {
             players.iter().filter(|(p, held)| near_player(p, 8.0) && !tempting.contains(&held.as_str())).map(|(p, _)| *p).min_by(|a, b| {
                 let d = |p: &(f32, f32, f32)| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2);
                 d(a).total_cmp(&d(b))
@@ -1621,13 +1665,13 @@ impl Server {
             m.target = Some((p.0, p.2));
             if flat2(p) < 1.7 * 1.7 && (p.1 - m.pos.1).abs() < 1.8 && m.bite_in == 0 {
                 m.bite_in = 20;
-                let damage = if m.tamed { 4.0 } else { 3.0 };
+                let damage = if m.tamed && m.species == Species::Wolf { 4.0 } else { 3.0 };
                 match prey {
                     Prey::Mob(id) => {
                         self.hit_mob(id, m.pos, damage, Attacker::Mob(m.id));
                     }
                     Prey::Player(a) => {
-                        self.hurt(&a, damage, Cause::Mob("un loup"));
+                        self.hurt(&a, damage, Cause::Mob(if m.species == Species::Cat { "un chat" } else { "un loup" }));
                         // Les loups de la victime la défendent
                         if let Some(name) = self.clients.get(&a).and_then(|c| c.name.clone()) {
                             self.rally_wolves(&name, Prey::Mob(m.id), m.pos);
@@ -1642,7 +1686,7 @@ impl Server {
             let prey = self
                 .mobs
                 .values()
-                .filter(|t| matches!(t.species, Species::Sheep | Species::Rabbit) && t.dead.is_none() && flat2(t.pos) < 12.0 * 12.0 && (t.pos.1 - m.pos.1).abs() < 4.0)
+                .filter(|t| (t.species == Species::Rabbit || (t.species == Species::Sheep && m.species == Species::Wolf)) && t.dead.is_none() && flat2(t.pos) < 12.0 * 12.0 && (t.pos.1 - m.pos.1).abs() < 4.0)
                 .min_by(|a, b| flat2(a.pos).total_cmp(&flat2(b.pos)))
                 .map(|t| t.id);
             if let Some(id) = prey {
@@ -1963,12 +2007,14 @@ impl Server {
                     m.color = color;
                     m.variant = variant;
                     m.mark = if kind == Species::Horse { mark } else { 0 };
-                    if kind == Species::Wolf {
-                        // Louveteau de loups apprivoisés : apprivoisé, au même maître
+                    if kind.pet() {
+                        // Petit de compagnons apprivoisés : apprivoisé, au même maître
                         m.tamed = true;
                         m.owner = wolf_owner.clone();
-                        m.max_health = WOLF_TAMED_HEALTH;
-                        m.health = m.max_health;
+                        if kind == Species::Wolf {
+                            m.max_health = WOLF_TAMED_HEALTH;
+                            m.health = m.max_health;
+                        }
                     }
                     if kind.mount() {
                         // Né de parents apprivoisés : apprivoisé lui aussi, comme dans le jeu
@@ -2262,10 +2308,10 @@ impl Server {
         let grow = m.species.grow_items().iter().find(|(name, _)| *name == held).map(|(_, g)| *g);
         let heal = m.species.heal_items().iter().find(|(name, _)| *name == held).map(|(_, h)| *h);
         let breeds = m.species.breed_items().contains(&held.as_str()) && (!m.species.tameable() || m.tamed) && (m.species != Species::Wolf || m.health >= m.max_health);
-        if m.species == Species::Wolf {
+        if m.species.pet() {
             let name = self.clients.get(addr).and_then(|c| c.name.clone());
             let mine = m.tamed && name.is_some() && m.owner == name;
-            if !m.tamed && held == "bone" && !matches!(m.attack, Some(Prey::Player(_))) {
+            if !m.tamed && m.species.taming_items().contains(&held.as_str()) && !matches!(m.attack, Some(Prey::Player(_))) {
                 // Un os : une chance sur trois de l'apprivoiser ; il s'assoit, collier rouge
                 let tamed = self.mob_rng.below(3) == 0;
                 let player = self.clients.get(addr).map(|c| c.id).unwrap_or(-1);
@@ -2278,10 +2324,14 @@ impl Server {
                         w.attack = None;
                         w.target = None;
                         w.color = 14;
-                        w.max_health = WOLF_TAMED_HEALTH;
-                        w.health = WOLF_TAMED_HEALTH;
+                        if w.species == Species::Wolf {
+                            w.max_health = WOLF_TAMED_HEALTH;
+                            w.health = WOLF_TAMED_HEALTH;
+                        }
                     }
-                    self.send_to_viewers(id, bedrock::ID_UPDATE_ATTRIBUTES, &bedrock::health_attribute(id, WOLF_TAMED_HEALTH, WOLF_TAMED_HEALTH));
+                    if m.species == Species::Wolf {
+                        self.send_to_viewers(id, bedrock::ID_UPDATE_ATTRIBUTES, &bedrock::health_attribute(id, WOLF_TAMED_HEALTH, WOLF_TAMED_HEALTH));
+                    }
                     self.mob_changed(id);
                 }
                 self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, if tamed { bedrock::EVENT_TAME_SUCCESS } else { bedrock::EVENT_TAME_FAIL }, 0));
@@ -2493,6 +2543,7 @@ impl Server {
             Species::Horse => self.mob_rng.below(7) as i32,
             Species::Llama => self.mob_rng.below(4) as i32,
             Species::Goat => (self.mob_rng.below(100) < 2) as i32,
+            Species::Cat => self.cat_variant(),
             _ => 0,
         };
         let mark = if species == Species::Horse { self.mob_rng.below(5) as i32 } else { 0 };
@@ -2505,7 +2556,7 @@ impl Server {
             }
             // Événement « minecraft:on_tame » du jeu : une monture déjà apprivoisée
             m.tamed = tamed && species.mount();
-            if species == Species::Wolf {
+            if species.pet() {
                 m.color = 14;
             }
         }
@@ -3401,6 +3452,8 @@ mod tests {
         let wolf = MobRecord { species: Species::Wolf, health: 33.0, max_health: 40.0, color: 14, variant: 0, mark: 0, saddled: false, chested: false, knot: None, items: Vec::new(), owner: Some("Steve".into()), sitting: true, ..r };
         assert_eq!(MobRecord::from_json(&wolf.to_json()), Some(wolf));
         assert_eq!(Species::from_id("minecraft:wolf"), Some(Species::Wolf));
+        assert_eq!(Species::from_id("minecraft:cat"), Some(Species::Cat));
+        assert!(Species::Cat.pet() && Species::Cat.taming_items().contains(&"salmon") && Species::Cat.breed_items().contains(&"cod"));
         assert!(Species::Wolf.breed_items().contains(&"cooked_beef") && Species::Wolf.tameable() && !Species::Wolf.mount());
         // Ancien enregistrement (sans les nouveaux champs) : valeurs du jeu par défaut
         let old = crate::json::parse(r#"{"kind":"minecraft:cow","x":0,"y":0,"z":0}"#).unwrap();

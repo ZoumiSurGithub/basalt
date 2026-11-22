@@ -19,6 +19,11 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   réapparaissent près de lui s'ils sont distancés), attaquent ce qu'il frappe et le loup
   qui le mord ; la viande les soigne, puis les rend amoureux (louveteau apprivoisé, au
   même maître). `/summon wolf`.
+- Chats : errants dans les villages (près des lits), onze pelages ; sauvages, ils fuient le
+  joueur qui ne leur tend pas de poisson et chassent les lapins. Morue ou saumon crus les
+  apprivoisent une fois sur trois : collier (à teindre), assis ou debout d'un clic, ils
+  suivent leur maître ; le poisson les soigne et les rend amoureux (chaton apprivoisé).
+  `/summon cat`.
 
 ## [0.0.2] — 2026-11-22
 
