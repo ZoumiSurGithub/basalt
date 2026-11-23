@@ -245,6 +245,15 @@ annulé n'est plus transmis aux écouteurs suivants, sauf à ceux qui demandent 
 | `PlayerDropItemEvent` | oui (l'objet revient dans l'inventaire) | `getPlayer()`, `getItem()` | — |
 | `EntityItemPickupEvent` | oui (l'objet reste au sol) | `getEntity()` (ou `getPlayer()`), `getItem()` | — |
 | `PlayerGameModeChangeEvent` | oui | `getPlayer()`, `getNewGamemode()` (`GameMode.SURVIVAL` 0, `CREATIVE` 1, `ADVENTURE` 2, `SPECTATOR` 3) | — |
+| `PlayerItemUseEvent` | oui (l'objet ne fait rien) | `getPlayer()`, `getItem()` | — |
+| `PlayerItemConsumeEvent` | oui (l'aliment n'est pas mangé) | `getPlayer()`, `getItem()` | — |
+| `PlayerExhaustEvent` | oui (le point de faim n'est pas perdu) | `getPlayer()`, `getAmount()` (fatigue qui va coûter un point) | — |
+| `PlayerExperienceChangeEvent` | oui | `getPlayer()`, `getAmount()` (points gagnés) | `setAmount(n)` |
+| `PlayerBedEnterEvent` | oui (le joueur ne se couche pas) | `getPlayer()`, `getBed()` | — |
+| `PlayerBedLeaveEvent` | non | `getPlayer()`, `getBed()` | — |
+| `LeavesDecayEvent` | oui (la feuille reste) | `getBlock()` | — |
+| `BlockFallEvent` | oui (le bloc ne tombe pas) | `getBlock()` (sable, gravier… qui va descendre) | — |
+| `BlockGrowEvent` | oui (rien ne pousse) | `getBlock()` (le bloc tel qu'il sera : culture grandie, herbe étendue, canne plus haute) | — |
 
 `getBlock()` renvoie un bloc : `bloc:getName()` (`"minecraft:stone"`), `bloc:getX()`,
 `getY()`, `getZ()`, `getPosition()`. `getItem()` et `getDrops()` renvoient des tables
@@ -424,6 +433,219 @@ end)
   recréez-les à l'événement `enable` si besoin.
 - Les PNJ n'ont ni vie ni inventaire et ne réagissent pas aux coups.
 
+## Modifier objets et blocs
+
+Un plugin peut changer ce que valent les objets et les blocs du jeu : ce que nourrit un
+aliment, combien de temps dure un outil, ce que rend un bloc cassé, s'il tombe. On le fait
+une fois, au chargement du plugin ; le serveur applique ensuite la nouvelle règle partout,
+sans que le plugin soit appelé à chaque fois.
+
+```lua
+-- Un pain qui rassasie entièrement, une épée en bois qui frappe fort mais casse vite
+server.items.modify("minecraft:bread", { food = 20, saturation = 12 })
+server.items.modify("minecraft:wooden_sword", { attackDamage = 9, durability = 10 })
+
+-- Le gravier ne tombe plus et rend toujours du silex ; la pierre du fond est incassable
+server.blocks.modify("minecraft:gravel", { falls = false, drops = { ["minecraft:flint"] = 1 } })
+server.blocks.modify("minecraft:deepslate", { breakable = false })
+```
+
+### Objets : `server.items.modify(nom, valeurs)`
+
+| Valeur | Type | Effet |
+|---|---|---|
+| `food` | nombre (0 à 20) | points de faim rendus |
+| `saturation` | nombre (0 à 20) | satiété rendue |
+| `leftover` | texte | objet qui reste en main après le repas (`"minecraft:bowl"`) ; `""` : rien |
+| `durability` | nombre | utilisations avant de casser ; `0` : incassable |
+| `attackDamage` | nombre | dégâts d'un coup porté avec l'objet |
+
+### Blocs : `server.blocks.modify(nom, valeurs)`
+
+| Valeur | Type | Effet |
+|---|---|---|
+| `drops` | table | butin à la place de celui du jeu ; `{}` : rien |
+| `falls` | vrai ou faux | tombe quand rien ne le porte, comme le sable |
+| `needsFloor` | vrai ou faux | se détache si le bloc du dessous disparaît, comme une fleur |
+| `breakable` | vrai ou faux | peut être cassé en survie |
+
+Le butin s'écrit de deux façons, que l'on peut mêler :
+
+```lua
+drops = { ["minecraft:diamond"] = 2 }                      -- objet = quantité
+drops = { "minecraft:stick", { "minecraft:flint", 3 } }    -- liste ; sans quantité : 1
+```
+
+### Revenir à la règle du jeu
+
+```lua
+server.items.reset("minecraft:bread")
+server.blocks.reset("minecraft:gravel")
+```
+
+La commande `reload` de la console remet aussi tout à la règle du jeu avant de recharger
+les plugins : chacun refait alors ses modifications.
+
+### À savoir
+
+- On ne modifie que **ce qui existe** dans le jeu. Un nom inconnu est signalé dans la
+  console (`objet inconnu « … »`) ; une valeur inconnue ou du mauvais type arrête le
+  plugin sur la ligne fautive.
+- `food`, `saturation` et `leftover` ne valent que pour ce qui se mange déjà : le jeu du
+  joueur ne porte pas une pierre à la bouche.
+- Le butin fixé par `drops` suit la règle du jeu pour l'outil : un minerai n'en rend
+  toujours pas à la main.
+- La barre d'usure est dessinée par le jeu du joueur d'après la durée de vie d'origine.
+  Avec `durability`, l'objet casse bien au moment voulu, mais la barre peut ne pas être
+  vide (ou l'être avant) à cet instant.
+- Dureté, vitesse de minage, taille de pile, lumière et glissance sont calculées par le
+  jeu du joueur : elles ne sont pas modifiables, pour que l'écran dise toujours la même
+  chose que le serveur.
+- Si deux plugins modifient la même valeur, le dernier chargé l'emporte.
+- Pour une règle qui dépend des circonstances (du joueur, du lieu), utilisez plutôt un
+  événement : `BlockBreakEvent` et son butin, `PlayerItemConsumeEvent`.
+
+## Créer des objets
+
+Un plugin peut ajouter au jeu des objets qui n'existent pas dans Minecraft. À la différence
+d'un objet modifié, un objet créé est **déclaré au jeu du joueur** à sa connexion : taille
+de pile, durée de vie, valeur nutritive sont appliquées par le jeu lui-même, et l'écran dit
+exactement la même chose que le serveur.
+
+```lua
+-- Une pierre précieuse, qui s'empile par 16 et brille
+server.items.create("monserveur:rubis", {
+  name = "Rubis",
+  icon = "emerald",
+  maxStack = 16,
+  glint = true,
+})
+
+-- Un plat : 8 de faim, se mange même le ventre plein, laisse un bol
+server.items.create("monserveur:ragout_du_chef", {
+  name = "Ragoût du chef",
+  icon = "rabbit_stew",
+  food = 8,
+  saturation = 12,
+  alwaysEdible = true,
+  leftover = "minecraft:bowl",
+})
+
+-- Une arme : 12 de dégâts, casse après 300 coups
+server.items.create("monserveur:lame_de_rubis", {
+  name = "Lame de rubis",
+  icon = "netherite_sword",
+  attackDamage = 12,
+  durability = 300,
+})
+```
+
+Le nom s'écrit `espace:objet`, en minuscules, chiffres et `_`. L'espace de noms est le
+vôtre (le nom de votre serveur ou de votre plugin) ; `minecraft` est réservé au jeu.
+
+| Réglage | Type | Effet | Par défaut |
+|---|---|---|---|
+| `name` | texte | nom affiché au joueur | le nom de l'objet |
+| `icon` | texte | image : celle d'un objet du jeu (`emerald`, `netherite_sword`, `bread`…) | `stick` |
+| `maxStack` | nombre (1 à 64) | taille de pile | 64 |
+| `glint` | vrai ou faux | brille comme un objet enchanté | faux |
+| `category` | texte | onglet du menu créatif : `"construction"`, `"nature"`, `"equipment"`, `"items"` | `equipment` pour ce qui s'use ou frappe, `items` sinon |
+| `group` | texte | groupe du menu créatif : les objets du même groupe se replient sous une seule case, qui porte ce nom | aucun |
+| `creative` | vrai ou faux | présent dans le menu créatif | vrai |
+| `food` | nombre (0 à 20) | points de faim rendus : l'objet se mange | ne se mange pas |
+| `saturation` | nombre (0 à 20) | satiété rendue | `food` × 0,6 |
+| `alwaysEdible` | vrai ou faux | se mange le ventre plein | faux |
+| `leftover` | texte | objet qui reste en main après le repas | rien |
+| `durability` | nombre | utilisations avant de casser ; l'objet ne s'empile plus et se tient comme un outil | ne s'use pas |
+| `attackDamage` | nombre | dégâts d'un coup | 1 |
+| `handEquipped` | vrai ou faux | tenu en main comme un outil | faux |
+
+### Menu créatif et groupes
+
+Un objet créé apparaît dans le menu créatif, à la fin de l'onglet choisi par `category`.
+Avec `group`, plusieurs objets partagent une case qui se déplie, comme les laines ou les
+planches du jeu ; la case montre le premier objet créé du groupe.
+
+```lua
+server.items.create("monserveur:rubis", { name = "Rubis", icon = "emerald", category = "nature", group = "Gemmes" })
+server.items.create("monserveur:saphir", { name = "Saphir", icon = "diamond", category = "nature", group = "Gemmes" })
+server.items.create("monserveur:cle_admin", { name = "Clé", icon = "trial_key", creative = false })  -- hors du menu
+```
+
+Deux objets vont dans le même groupe s'ils ont le même `group` **et** la même `category`.
+
+### Donner l'objet
+
+```lua
+joueur:give("monserveur:rubis", 3)
+```
+
+ou, dans la console et en jeu : `give Steve monserveur:rubis 3`.
+
+### Réagir quand l'objet est utilisé
+
+`PlayerItemUseEvent` est appelé quand un joueur fait un clic droit (ou un appui long, sur
+écran tactile) avec un objet en main sans viser de bloc. C'est là qu'un plugin donne son
+effet à un objet :
+
+```lua
+local Baguette = {}
+
+function Baguette:onPlayerItemUse(event)
+  local joueur = event:getPlayer()
+  if event:getItem().name == "monserveur:baguette" then
+    local x, y, z = joueur:getPosition()
+    joueur:teleport(x, y + 10, z)
+    joueur:sendMessage("§dZou !")
+  end
+end
+
+server.registerEvents(Baguette)
+```
+
+Annuler l'événement empêche l'usage normal de l'objet (un aliment n'est pas mangé).
+Tant que le joueur garde le clic appuyé, le jeu renvoie le geste toutes les 1,6 seconde :
+l'événement est alors appelé de nouveau. Pour un clic sur un bloc, c'est
+`PlayerInteractEvent` ; pour un coup porté, `EntityDamageByEntityEvent`.
+
+### À savoir
+
+- **Créez vos objets au chargement du plugin**, pas plus tard. Le jeu reçoit la liste des
+  objets une seule fois, à la connexion : un objet créé pendant que des joueurs sont en
+  jeu ne leur apparaît qu'à leur prochaine connexion (la console le signale).
+- **L'image est celle d'un objet du jeu.** Aucun fichier n'est envoyé aux joueurs ; des
+  images propres demanderont un pack de ressources, que Basalt n'envoie pas encore. Le nom
+  à donner à `icon` est le nom de texture du jeu, en général le nom de l'objet
+  (`emerald`, `apple`, `iron_ingot`, `rabbit_stew`). Si le jeu ne le connaît pas, l'objet
+  s'affiche **vide**.
+- **Outils et armures d'origine n'ont pas d'image à leur nom** : le jeu range celles du
+  bois, de la pierre, du fer, de l'or, du diamant, du cuir et des mailles dans des planches
+  communes. `diamond_sword` ou `iron_pickaxe` donnent donc un objet vide (la console le
+  signale). Prenez la Netherite (`netherite_sword`, `netherite_pickaxe`,
+  `netherite_helmet`…) ou un autre objet (`mace`, `trident`, `blaze_rod`, `stick`).
+- Pour une image qui n'existe pas dans le jeu, ajoutez un pack de ressources : voir
+  [PACKS.md](PACKS.md).
+- Dans la sauvegarde d'un joueur, l'objet est rangé sous son nom. Si le plugin est retiré,
+  l'objet disparaît de l'inventaire au chargement.
+- Un objet créé se modifie ensuite comme un autre (`server.items.modify`), et répond aux
+  mêmes événements (`PlayerItemConsumeEvent`…).
+- 2 000 objets créés au plus.
+- Blocs et entités nouveaux ne sont pas encore possibles.
+
+## Écrire ses plugins dans VS Code
+
+Pour que VS Code propose les fonctions de Basalt, affiche leur aide et signale les fautes :
+
+1. Installez l'extension **Lua** (éditeur « sumneko », identifiant `sumneko.lua`).
+2. Copiez `docs/vscode/luarc.json` dans le dossier de votre plugin (`plugins/MonPlugin/`) et
+   renommez-le `.luarc.json`. Il indique à l'extension où trouver les définitions
+   (`docs/vscode/basalt-api.lua`). Si votre plugin n'est pas dans `plugins/` du serveur,
+   remplacez le chemin par celui du fichier sur votre machine.
+3. Ouvrez le dossier du plugin dans VS Code : tapez `server.` et la liste apparaît.
+
+`basalt-api.lua` ne s'exécute pas et ne se copie pas dans le plugin : il ne fait que décrire
+l'API. Il suit ce document ; en cas d'écart, ce document fait foi.
+
 ## Référence de l'API
 
 Tout passe par la table globale `server`.
@@ -445,6 +667,9 @@ Tout passe par la table globale `server`.
 | `server.getMotd()` | nom du serveur affiché dans la liste des serveurs |
 | `server.setMotd(texte)` | changer ce nom (64 caractères au plus) |
 | `server.stop()` | arrêter le serveur proprement |
+| `server.items.modify(nom, valeurs)`, `server.items.reset(nom)` | changer un objet du jeu (voir « Modifier objets et blocs ») |
+| `server.items.create(nom, réglages)` | créer un objet nouveau (voir « Créer des objets ») |
+| `server.blocks.modify(nom, valeurs)`, `server.blocks.reset(nom)` | changer un bloc du jeu |
 
 Précisions :
 
@@ -813,6 +1038,7 @@ prend environ 0,6 milliseconde par chunk, contre 3 pour le terrain du jeu : pré
 
 L'API suit l'avancement du serveur. Ne sont pas encore accessibles aux plugins :
 
+- la création de blocs et d'entités nouveaux (les objets, oui : voir « Créer des objets ») ;
 - un événement de déplacement (`PlayerMoveEvent`), trop fréquent pour le fil des plugins ;
 - le contenu des inventaires (seuls `joueur:give` et `joueur:getItemInHand` existent) ;
 - les entités autres que les joueurs et les PNJ (animaux, monstres) ;

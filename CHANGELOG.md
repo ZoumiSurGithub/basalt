@@ -12,6 +12,43 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Ajouté
 
+- Packs de ressources, réglés comme sur PocketMine dans `resource_packs/resource_packs.yml` : `resource_stack` liste les `.mcpack` et `.zip` à envoyer aux joueurs, `force_resources` les rend obligatoires ; pack chiffré avec sa clé dans un fichier `.key`. Voir `docs/PACKS.md`.
+- Objets créés par les plugins : présents dans le menu créatif, dans l'onglet (`category`) et le groupe (`group`) choisis ; `creative = false` pour les en écarter.
+- Plugins : événement `PlayerItemUseEvent` (clic avec un objet en main, annulable), pour donner un effet à un objet.
+- Plugins : créer des objets nouveaux. `server.items.create("monserveur:rubis", { name, icon, maxStack, glint, food, saturation, alwaysEdible, leftover, durability, attackDamage, handEquipped })` ; l'objet est déclaré au jeu des joueurs à leur connexion, avec l'image d'un objet du jeu. Voir « Créer des objets » dans `docs/PLUGINS.md`.
+- Plugins : modifier les objets et les blocs du jeu. `server.items.modify(nom, { food, saturation, leftover, durability, attackDamage })` et `server.blocks.modify(nom, { drops, falls, needsFloor, breakable })` ; `reset` pour revenir à la règle du jeu. Voir « Modifier objets et blocs » dans `docs/PLUGINS.md`.
+- Plugins dans VS Code : `docs/vscode/basalt-api.lua` décrit l'API pour l'extension Lua (complétion, aide, fautes signalées) ; mode d'emploi dans `docs/PLUGINS.md`.
+- Buissons à baies : un clic cueille les baies mûres (une ou deux, deux ou trois au dernier stade) et le buisson repart.
+- Objets : chaque pile porte désormais sa variante et son usure, dans l'inventaire, au sol, dans la sauvegarde du joueur et sur le réseau.
+- Lits de couleur : un lit pris au menu créatif garde sa couleur une fois posé, et la rend quand on le casse.
+- Durabilité : pioches, haches, pelles, houes, épées et cisailles s'usent (un cran pour leur usage, deux pour l'autre) et cassent une fois usées ; la barre d'usure s'affiche. Outils, lits et autres objets uniques ne s'empilent plus.
+- Minage : la vitesse des fissures suit l'outil tenu (le bon outil va plus vite, sans l'outil exigé c'est bien plus lent).
+- Plugins : sept événements pour la survie et le monde — `PlayerItemConsumeEvent`, `PlayerExhaustEvent`, `PlayerExperienceChangeEvent`, `PlayerBedEnterEvent`, `PlayerBedLeaveEvent`, `LeavesDecayEvent`, `BlockFallEvent` — tous annulables sauf le lever du lit (voir `docs/PLUGINS.md`).
+- Croissance (ticks aléatoires autour des joueurs, à la cadence du jeu) : blé, carottes, pommes de terre et betteraves poussent en huit stades, plus vite sur une terre arrosée ; les tiges de melon et de citrouille donnent leur fruit ; canne à sucre et cactus montent jusqu'à trois blocs ; l'herbe gagne la terre voisine ; la terre labourée s'arrose près de l'eau (4 blocs), sèche sinon et redevient de la terre si rien n'y pousse ; buissons à baies et verrues du Nether mûrissent. Événement `BlockGrowEvent` pour les plugins.
+- Récoltes : une culture mûre rend sa récolte et de quoi replanter (blé et graines, 2 à 5 carottes ou pommes de terre, betterave et graines) ; pas mûre, seulement la graine.
+- Pose : un bloc qui a besoin d'un support ne se pose que là où le jeu l'accepte — culture sur de la terre labourée, fleur ou pousse sur de la terre ou de l'herbe, cactus sur du sable, canne à sucre au bord de l'eau, torche, rail ou échelle contre un bloc plein. On ne peut plus empiler une plante sur une autre.
+- Houe : un clic laboure l'herbe, la terre et les chemins (la terre stérile redevient de la terre).
+- Minage : le bruit du bloc qu'on frappe, pour le joueur et ceux qui sont autour.
+- Faim : courir, sauter, nager, casser des blocs et encaisser des coups fatiguent ; la
+  fatigue entame la satiété puis la barre de faim. Barre à 18 ou plus, la vie remonte (plus
+  vite le ventre plein) ; vide, le joueur dépérit jusqu'à un demi-cœur. Les aliments se
+  mangent (clic maintenu) et rendent faim et satiété comme dans le jeu ; bol et fiole vides
+  restent en main. Pas de faim en créatif.
+- Expérience : créatures tuées, minerais cassés (charbon, diamant, émeraude, lapis, quartz,
+  redstone), échanges avec les villageois et naissances d'animaux en donnent ; les niveaux
+  suivent le barème du jeu. La mort la fait perdre (sauf `keep-inventory`). Elle est
+  créditée directement : pas encore d'orbes à ramasser.
+- Orbes d'expérience : créatures tuées, minerais cassés et naissances lâchent une orbe, qui file vers le joueur proche et tinte quand il la ramasse ; fanfare à chaque niveau gagné.
+- Blocs : miettes et bruit quand un bloc est cassé, bruit de la matière quand il est posé, fissures et éclats pendant le minage (durée d'après la dureté du bloc, sans tenir compte de l'outil).
+- Pétales roses, fleurs sauvages et feuilles mortes : en reposer sur une touffe l'étoffe (jusqu'à quatre) au lieu de poser un second bloc au-dessus.
+- Lits : on ne peut plus se coucher dans le lit où dort un villageois.
+- Blocs qui tiennent sur un support : fleurs, herbes, pousses, champignons, cultures, canne à sucre, cactus, bambou, torches, lanternes, échelles, boutons, leviers, rails, tapis, plaques de pression, panneaux, portes, neige… se décrochent et tombent en objet quand le bloc qui les porte disparaît, de proche en proche. Une plante ou une porte en deux moitiés part en entier pour un seul objet.
+- Gravité : sable, sable rouge, gravier, béton en poudre et enclumes tombent quand rien ne les porte (bloc cassé dessous, ou posés dans le vide), toute la colonne suit.
+- Feuilles : privées de tronc (à plus de 6 blocs, de feuille en feuille), elles dépérissent en quelques secondes et laissent parfois une pousse, un bâton ou une pomme. Les feuilles posées par un joueur restent.
+- Lits : un lit posé a ses deux moitiés (le pied devant le joueur, l'oreiller au-delà), et casser l'une emporte l'autre pour un seul lit rendu. Manger fait du bruit (mastication, puis rot).
+- Lits : un clic fixe le point de réapparition (enregistré avec le joueur) ; la nuit, le
+  joueur s'y couche, et la nuit passe quand tous les joueurs dorment depuis 5 secondes. Si
+  le lit a disparu, on réapparaît au point du monde.
 - Rapport de mesures : une ligne « Départs depuis le démarrage » compte les joueurs partis, par cause (partis d'eux-mêmes, liaison perdue, jeu figé, données non lues…).
 - `nethernet-threads` (1 par défaut, 16 au plus) : répartit les liaisons NetherNet des joueurs sur plusieurs fils, sans changer de port. Un seul fil plafonnait vers un millier de joueurs.
 - Côté joueur de NetherNet (`src/network/nethernet_client.rs`) : une liaison vers un serveur
@@ -70,6 +107,7 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Modifié
 
+- Code rangé en gabarits, à la manière de PocketMine, sans changement en jeu : `item/consumable.rs` (ce qui se mange : faim, satiété, durée, reste), `item/durable.rs` (ce qui s'use), `block/behavior.rs` (ce qui tombe, tient sur un sol, pousse, dépérit). Le serveur interroge les gabarits au lieu de connaître objets et blocs par leur nom. Nouvelle page `docs/ARCHITECTURE.md`.
 - `max-visible-players` vaut 0 par défaut, et 0 retire le plafond : chacun voit tous les joueurs à portée de vue (avant, le défaut était 48 et 0 n'affichait personne). Un `server.properties` existant garde sa valeur.
 - Arrêt du serveur dans l'ordre de PocketMine : les joueurs sont enregistrés, puis les plugins désactivés et attendus (sans limite de temps ; 2 s avant, et sans attente s'ils étaient occupés), puis le monde écrit et l'écriture sur le disque attendue jusqu'au bout (60 s au plus avant). Ce qu'un plugin demande en se désactivant est encore appliqué et enregistré.
 - Windows : Ctrl+C arrête le serveur proprement, comme la commande `stop` (avant, Windows tuait le processus sans rien enregistrer). Fermer la fenêtre déclenche aussi l'enregistrement, dans les quelques secondes que Windows accorde.
@@ -99,6 +137,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 - Après une coupure pour « jeu figé » (ou un départ juste après l'apparition), le serveur se rabattait sur une liste d'objets vide jusqu'au redémarrage : plus de menu créatif ni d'échanges avec les villageois, pour tout le monde. Ce repli automatique est retiré, et un joueur n'est tenu pour figé qu'après 60 secondes sans mouvement (15 avant).
 - `/timings on` ne ralentit plus le serveur sous forte charge : chaque fil compte dans son coin et verse ses mesures dix fois par seconde, au lieu de prendre un verrou commun à chaque mesure (les fils du réseau se le disputaient, et les temps mesurés en étaient gonflés).
 - Villages : devant les portes, les deux marches qui encadrent celle du milieu forment de nouveau des coins. La marche du milieu est un point d'attache du plan, que le calcul des coins ne voyait pas comme un escalier.
+- Les objets dont le bloc porte un autre nom se posent : canne à sucre, graines, carotte, pomme de terre, redstone, ficelle, baies, fèves de cacao, répéteur, comparateur. Avant, le jeu dessinait un bloc que le serveur n'avait pas posé.
+- La canne à sucre cassée à la main rend bien son objet (son nom d'objet n'était pas reconnu).
 - Villageois : le réassort des échanges n'était pas retenu quand le villageois était déchargé (redémarrage, joueur parti puis revenu) ; il restait alors épuisé à la première visite suivante. Le dernier réassort est enregistré avec le villageois.
 - L'heure du monde (jours écoulés compris) est enregistrée et reprise au démarrage : chaque redémarrage ramenait le monde au premier matin.
 - L'avertissement « le jeu s'est figé » n'est plus écrit à chaque tick pour le même joueur en attendant sa coupure.

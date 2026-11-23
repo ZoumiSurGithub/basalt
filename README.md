@@ -120,6 +120,8 @@ end)
 | [Performances](docs/PERFORMANCES.md) | mesures de charge, réglages pour un grand serveur |
 | [Créer un plugin sans savoir programmer](docs/DEBUTER.md) | les bases du Lua et des exemples |
 | [Plugins : la référence](docs/PLUGINS.md) | événements, commandes, minuteries, générateurs de terrain |
+| [Packs de ressources](docs/PACKS.md) | envoyer images et sons aux joueurs, packs chiffrés, image d'un objet créé |
+| [Architecture](docs/ARCHITECTURE.md) | les gabarits (`Item`, `Durable`, `Food`, `Block`…) : où se trouve chaque règle, comment en ajouter une |
 | [Développement](docs/DEVELOPPEMENT.md) | organisation du code, tests, publication d'une version |
 | [Feuille de route](docs/ROADMAP.md) | ce qui est fait, ce qui reste à faire |
 | [Journal des changements](CHANGELOG.md) | le détail de chaque version |

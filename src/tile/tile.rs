@@ -139,6 +139,29 @@ impl Tile for SignTile {
     }
 }
 
+/// Lit : sa couleur (0 blanc … 14 rouge, 15 noir), celle de l'objet qui l'a posé.
+#[derive(Default)]
+pub struct BedTile {
+    pub color: u8,
+}
+
+impl Tile for BedTile {
+    fn tile_type(&self) -> TileType {
+        TileType::Bed
+    }
+    fn network_id(&self) -> &'static str {
+        "Bed"
+    }
+    fn save_extra(&self) -> Vec<(&'static str, Tag)> {
+        vec![("color", Tag::Byte(self.color as i8))]
+    }
+    fn load_extra(&mut self, key: &str, value: &Tag) {
+        if let ("color", Some(c)) = (key, value.as_i64()) {
+            self.color = c.clamp(0, 15) as u8;
+        }
+    }
+}
+
 /// Bloc qui a des données propres que le serveur ne gère pas encore en détail (lit,
 /// bannière, tête, balise…) : sa présence est notée, rien de plus.
 pub struct GenericTile {
@@ -168,6 +191,7 @@ pub fn create(kind: TileType) -> Option<Box<dyn Tile>> {
         }
         TileType::Furnace | TileType::BlastFurnace | TileType::Smoker => Box::new(super::furnace::FurnaceTile::new(kind)),
         TileType::Sign => Box::new(SignTile::new()),
+        TileType::Bed => Box::new(BedTile::default()),
         TileType::EnderChest => Box::new(GenericTile { kind }),
         TileType::Other => return None,
     })
@@ -188,13 +212,15 @@ pub(super) fn type_name(kind: TileType) -> &'static str {
         TileType::Dropper => "Dropper",
         TileType::BrewingStand => "BrewingStand",
         TileType::Sign => "Sign",
+        TileType::Bed => "Bed",
         TileType::Other => "Other",
     }
 }
 
 /// Sorte de données d'après leur nom dans le jeu (« Chest », « Furnace »…).
 pub(super) fn type_from(name: &str) -> Option<TileType> {
-    const ALL: [TileType; 12] = [
+    const ALL: [TileType; 13] = [
+        TileType::Bed,
         TileType::Chest, TileType::Barrel, TileType::ShulkerBox, TileType::EnderChest, TileType::Furnace, TileType::BlastFurnace, TileType::Smoker,
         TileType::Hopper, TileType::Dispenser, TileType::Dropper, TileType::BrewingStand, TileType::Sign,
     ];

@@ -33,6 +33,8 @@ pub struct Player {
     pub first_played: u64,
     pub last_played: u64,
     pub items: Vec<SavedItem>,
+    /// Variante et usure des objets qui en ont : (conteneur, case, variante, usure)
+    pub kinds: Vec<(String, u8, u16, u16)>,
     /// Permissions fixées pour ce joueur : (nom, accordée)
     pub permissions: Vec<(String, bool)>,
     /// Mode de jeu (0 survie, 1 créatif) ; None : celui du serveur
@@ -41,6 +43,8 @@ pub struct Player {
     pub world: String,
     /// Direction du regard : (orientation, inclinaison), en degrés
     pub rotation: (f32, f32),
+    /// Point de réapparition : le lit où le joueur a dormi (ou cliqué)
+    pub spawn: Option<(i32, i32, i32)>,
 }
 extends!(Player, human, Human);
 
@@ -75,6 +79,8 @@ impl Player {
             game_type: None,
             world: String::new(),
             rotation: (0.0, 0.0),
+            spawn: None,
+            kinds: Vec::new(),
         }
     }
 
@@ -134,6 +140,11 @@ impl Player {
         p.last_played = date("lastPlayed", "LastPlayed");
         p.game_type = int(&["playerGameType"]).filter(|g| (0..=1).contains(g)).map(|g| g as i32);
         p.world = doc.str_of("Level").map(|s| clean_text(s, 64)).unwrap_or_default();
+        if let (Some(x), Some(y), Some(z)) = (int(&["SpawnX"]), int(&["SpawnY"]), int(&["SpawnZ"])) {
+            if x.abs() < 30_000_000 && z.abs() < 30_000_000 && (-64..=320).contains(&y) {
+                p.spawn = Some((x as i32, y as i32, z as i32));
+            }
+        }
         if let Some(r) = doc.get("Rotation").and_then(|t| t.as_list()) {
             let v: Vec<f32> = r.iter().filter_map(|t| t.as_f32()).filter(|f| f.is_finite()).collect();
             if v.len() == 2 {
@@ -168,13 +179,22 @@ impl Player {
                 Some(v) => v,
                 None => continue,
             };
-            match (item.str_of("Container"), slot) {
+            let placed: Option<(String, u8)> = match (item.str_of("Container"), slot) {
                 // ancien format de Basalt : le conteneur est écrit en toutes lettres
-                (Some(container), 0..=255) => p.items.push((container.to_string(), slot as u8, name, count)),
+                (Some(container), 0..=255) => Some((container.to_string(), slot as u8)),
                 // PocketMine : sac de 9 à 44 (la barre d'abord), armure de 100 à 103
-                (None, 9..=44) => p.items.push(("main".to_string(), (slot - 9) as u8, name, count)),
-                (None, 100..=103) => p.items.push(("armor".to_string(), (slot - 100) as u8, name, count)),
-                _ => {}
+                (None, 9..=44) => Some(("main".to_string(), (slot - 9) as u8)),
+                (None, 100..=103) => Some(("armor".to_string(), (slot - 100) as u8)),
+                _ => None,
+            };
+            if let Some((container, at)) = placed {
+                // Variante (« Damage », comme PocketMine) et usure (« Wear »)
+                let meta = item.get("Damage").and_then(|t| t.as_i64()).unwrap_or(0).clamp(0, 32767) as u16;
+                let wear = item.get("Wear").and_then(|t| t.as_i64()).unwrap_or(0).clamp(0, 65535) as u16;
+                if meta != 0 || wear != 0 {
+                    p.kinds.push((container.clone(), at, meta, wear));
+                }
+                p.items.push((container, at, name, count));
             }
         }
         if let Some((name, count)) = doc.get("OffHandItem").and_then(item_of) {
@@ -249,8 +269,11 @@ impl Player {
     /// section « Basalt », qu'il ignore.
     fn to_nbt(&self) -> Tag {
         let doubles = |v: [f64; 3]| Tag::List(6, v.iter().map(|x| Tag::Double(*x)).collect());
-        let item = |slot: Option<i8>, name: &str, count: u8| {
-            let mut e = vec![("Count", Tag::Byte(count as i8)), ("Damage", Tag::Short(0)), ("Name", Tag::string(name))];
+        let item_kind = |slot: Option<i8>, name: &str, count: u8, kind: (u16, u16)| {
+            let mut e = vec![("Count", Tag::Byte(count as i8)), ("Damage", Tag::Short(kind.0 as i16)), ("Name", Tag::string(name))];
+            if kind.1 != 0 {
+                e.push(("Wear", Tag::Int(kind.1 as i32)));
+            }
             if let Some(s) = slot {
                 e.push(("Slot", Tag::Byte(s)));
             }
@@ -285,8 +308,16 @@ impl Player {
         if let Some(g) = self.game_type {
             entries.push(("playerGameType", Tag::Int(g)));
         }
+        if let Some((x, y, z)) = self.spawn {
+            entries.push(("SpawnX", Tag::Int(x)));
+            entries.push(("SpawnY", Tag::Int(y)));
+            entries.push(("SpawnZ", Tag::Int(z)));
+        }
         let mut inventory = Vec::new();
         for (container, slot, name, count) in &self.items {
+            // Variante et usure, pour les objets qui en ont
+            let kind = self.kinds.iter().find(|k| k.0 == *container && k.1 == *slot).map(|k| (k.2, k.3)).unwrap_or((0, 0));
+            let item = |at: Option<i8>, name: &str, count: u8| item_kind(at, name, count, kind);
             match container.as_str() {
                 "main" if *slot < 36 => inventory.push(item(Some(*slot as i8 + 9), name, *count)),
                 "armor" if *slot < 4 => inventory.push(item(Some(100 + *slot as i8), name, *count)),

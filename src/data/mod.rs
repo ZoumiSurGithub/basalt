@@ -43,6 +43,7 @@ pub struct BlockNames {
     pub defaults: HashMap<String, u32>,
 }
 
+#[derive(Clone)]
 pub struct GameData {
     pub items: Vec<ItemDef>,
     item_by_name: HashMap<String, usize>,
@@ -257,6 +258,29 @@ impl GameData {
         self.item_by_name.get(&full).map(|i| &self.items[*i])
     }
 
+    /// Ajoute un objet créé par un plugin (ou remplace celui du même nom).
+    pub fn add_item(&mut self, def: ItemDef) {
+        match self.item_by_name.get(&def.name).copied() {
+            Some(i) => {
+                self.item_by_id.remove(&self.items[i].id);
+                self.item_by_id.insert(def.id, i);
+                self.items[i] = def;
+            }
+            None => {
+                self.item_by_name.insert(def.name.clone(), self.items.len());
+                self.item_by_id.insert(def.id, self.items.len());
+                self.items.push(def);
+            }
+        }
+    }
+
+    /// Retire les objets créés par les plugins (identifiants à partir de `from`).
+    pub fn remove_items_from(&mut self, from: i16) {
+        self.items.retain(|i| i.id < from);
+        self.item_by_name = self.items.iter().enumerate().map(|(i, it)| (it.name.clone(), i)).collect();
+        self.item_by_id = self.items.iter().enumerate().map(|(i, it)| (it.id, i)).collect();
+    }
+
     /// Objet d'après son identifiant numérique.
     pub fn item_by_id(&self, id: i16) -> Option<&ItemDef> {
         self.item_by_id.get(&id).map(|i| &self.items[*i])
@@ -326,7 +350,29 @@ impl GameData {
     pub fn block_for_item(&self, id: i16) -> Option<u32> {
         let item = self.item_by_id(id)?;
         let block = self.item_to_block.get(&item.name).map(|s| s.as_str()).unwrap_or(item.name.as_str());
-        self.default_state(block)
+        // Objets dont le bloc porte un autre nom (la canne à sucre pose des « reeds »)
+        self.default_state(block).or_else(|| {
+            let other = match item.name.trim_start_matches("minecraft:") {
+                "sugar_cane" => "reeds",
+                "wheat_seeds" => "wheat",
+                "carrot" => "carrots",
+                "potato" => "potatoes",
+                "beetroot_seeds" => "beetroot",
+                "melon_seeds" => "melon_stem",
+                "pumpkin_seeds" => "pumpkin_stem",
+                "torchflower_seeds" => "torchflower_crop",
+                "pitcher_pod" => "pitcher_crop",
+                "redstone" => "redstone_wire",
+                "string" => "trip_wire",
+                "sweet_berries" => "sweet_berry_bush",
+                "glow_berries" => "cave_vines",
+                "cocoa_beans" => "cocoa",
+                "repeater" => "unpowered_repeater",
+                "comparator" => "unpowered_comparator",
+                _ => return None,
+            };
+            self.default_state(&format!("minecraft:{}", other))
+        })
     }
 
     /// Objet obtenu en cassant un bloc à la main. Par défaut, le bloc lui-même ; quelques

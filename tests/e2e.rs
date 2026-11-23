@@ -2368,3 +2368,54 @@ fn donkey_chest_and_dyed_sheep() {
     let _ = handle.join();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn plugin_items_are_declared_to_the_game() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-custom-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("rubis.lua"),
+        r#"
+server.items.create("e2e:rubis", { name = "Rubis du test", icon = "emerald", maxStack = 16, category = "nature", group = "Gemmes du test" })
+server.items.create("e2e:secret", { name = "Secret", creative = false })
+server.items.create("e2e:galette", { name = "Galette", icon = "bread", food = 8, saturation = 9.6 })
+pcall(server.items.create, "minecraft:faux", { name = "Refusé" })
+"#,
+    )
+    .unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    // Connexion pas à pas, pour lire la liste des objets envoyée après StartGame
+    let mut c = Client::new(addr);
+    c.handshake();
+    c.game(0xc1, &2225i32.to_be_bytes(), None);
+    assert_eq!(c.recv_game(false).0, 0x8f);
+    c.login(2225, "Steve", false);
+    c.wait_for(6);
+    c.game(8, &[3, 0, 0], Some(0xff));
+    c.wait_for(7);
+    c.game(8, &[4, 0, 0], Some(0xff));
+    c.wait_for(11);
+    let registry = c.wait_for(162);
+    let has = |needle: &[u8]| registry.windows(needle.len()).any(|w| w == needle);
+    // Les objets du jeu sont toujours là, ceux du plugin les suivent avec leurs composants
+    assert!(has(b"minecraft:apple"), "la liste du jeu a disparu");
+    assert!(has(b"e2e:rubis") && has(b"Rubis du test") && has(b"emerald"), "objet du plugin absent de la liste");
+    assert!(has(b"e2e:galette") && has(b"minecraft:food") && has(b"nutrition"));
+    assert!(!has(b"minecraft:faux"), "un plugin ne crée rien sous le nom du jeu");
+    // Le nombre en tête compte les nouveaux venus
+    let mut pos = 0;
+    let count = read_varu32(&registry, &mut pos).unwrap();
+    assert!(count > 2000, "{} objets annoncés", count);
+    // Le menu créatif : celui du jeu, plus le groupe du plugin et ses objets (sauf l'objet caché)
+    c.game(69, &[8, 16], Some(0xff));
+    let menu = c.wait_for(145);
+    let has = |needle: &[u8]| menu.windows(needle.len()).any(|w| w == needle);
+    assert!(has(b"itemGroup.name.planks") && has(b"Gemmes du test"), "groupe du plugin absent du menu créatif");
+    let mut pos = 0;
+    assert_eq!(read_varu32(&menu, &mut pos), Some(124 + 2), "le groupe nommé et celui de la galette");
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

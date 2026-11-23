@@ -137,7 +137,7 @@ impl TileMap {
                     let count = item.get("Count").and_then(|t| t.as_i64()).unwrap_or(0);
                     if let (Some(id), 0..=255, 1..=64) = (item.str_of("Name").and_then(|n| ctx.id_of(n)), slot, count) {
                         let max = inv.max_stack();
-                        inv.set_item(slot as usize, ItemStack { id, count: (count as u8).min(max), net_id: ctx.next_net_id() });
+                        inv.set_item(slot as usize, ItemStack::new(id, (count as u8).min(max), ctx.next_net_id()));
                     }
                 }
             }

@@ -604,3 +604,46 @@ fn beginner_examples_work() {
     let a = m.take_actions();
     assert!(a.iter().any(|x| matches!(x, Action::PlayerMessage(n, t) if n == "Lea" && t.contains("Pensez à lire les règles"))), "{:?}", a);
 }
+
+#[test]
+fn plugins_ask_to_modify_items_and_blocks() {
+    let code = r#"
+server.items.modify("minecraft:bread", { food = 20, leftover = "minecraft:bowl" })
+server.blocks.modify("minecraft:gravel", { falls = false, drops = { ["minecraft:flint"] = 2, "minecraft:stick" } })
+server.blocks.reset("minecraft:sand")
+-- Les fautes sont signalées au plugin, sans rien demander au serveur
+local ok1, why1 = pcall(server.items.modify, "minecraft:bread", { hardness = 3 })
+local ok2, why2 = pcall(server.blocks.modify, "minecraft:gravel", { falls = "oui" })
+server.setMotd(tostring(ok1) .. tostring(ok2) .. (why1:find("valeurs possibles") and "A" or "?") .. (why2:find("attend boolean") and "B" or "?"))
+"#;
+    let d = dir("modify");
+    std::fs::write(d.join("essai.lua"), code).unwrap();
+    let mut m = PluginManager::new(&d);
+    if !m.available() {
+        return;
+    }
+    m.set_sandbox(true, "", 16);
+    m.load_all(&Info::default(), &[]);
+    let mut asked: Vec<(String, String, String, String)> = Vec::new();
+    let mut said = String::new();
+    for a in m.take_actions() {
+        match a {
+            Action::Modify(_, kind, name, key, value) => asked.push((kind, name, key, value)),
+            Action::SetMotd(s) => said = s,
+            _ => {}
+        }
+    }
+    asked.sort();
+    let row = |a: &str, b: &str, c: &str, d: &str| (a.to_string(), b.to_string(), c.to_string(), d.to_string());
+    assert_eq!(
+        asked,
+        vec![
+            row("block", "minecraft:gravel", "drops", "minecraft:flint=2,minecraft:stick=1"),
+            row("block", "minecraft:gravel", "falls", "false"),
+            row("block", "minecraft:sand", "reset", ""),
+            row("item", "minecraft:bread", "food", "20"),
+            row("item", "minecraft:bread", "leftover", "minecraft:bowl"),
+        ]
+    );
+    assert_eq!(said, "falsefalseAB");
+}

@@ -17,6 +17,8 @@ pub enum Meta {
     Text(String),
     Long(i64),
     Vec3(f32, f32, f32),
+    /// Position d'un bloc
+    Pos(i32, i32, i32),
     /// Document NBT vide (un « compound » sans nom ni contenu)
     EmptyNbt,
 }
@@ -43,6 +45,12 @@ pub fn move_actor_snap(id: i64, pos: (f32, f32, f32), yaw: f32) -> Vec<u8> {
     p
 }
 
+/// Données d'un joueur : ses indicateurs propres (octet), et le lit où il dort.
+pub const META_PLAYER_FLAGS: u32 = 26;
+pub const META_BED_POSITION: u32 = 28;
+/// Indicateur « dort » d'un joueur
+pub const PLAYER_FLAG_SLEEP: u8 = 2;
+
 /// Écrit des données d'entité.
 pub fn write_metadata(w: &mut W, entries: &[(u32, Meta)]) {
     w.varu32(entries.len() as u32);
@@ -56,6 +64,7 @@ pub fn write_metadata(w: &mut W, entries: &[(u32, Meta)]) {
             Meta::Text(_) => 4,
             Meta::Long(_) => 7,
             Meta::Vec3(..) => 8,
+            Meta::Pos(..) => 6,
             Meta::EmptyNbt => 5,
         };
         // La variante répète le type (comme dans les paquets relevés)
@@ -72,6 +81,11 @@ pub fn write_metadata(w: &mut W, entries: &[(u32, Meta)]) {
                 w.f32(*x);
                 w.f32(*y);
                 w.f32(*z);
+            }
+            Meta::Pos(x, y, z) => {
+                w.vari32(*x);
+                w.vari32(*y);
+                w.vari32(*z);
             }
             Meta::EmptyNbt => w.0.extend_from_slice(&[0x0a, 0x00, 0x00]),
         }
@@ -317,6 +331,10 @@ pub const SOUND_HAGGLE: &str = "haggle";
 pub const SOUND_HAGGLE_YES: &str = "haggle.yes";
 /// Coup de cloche
 pub const SOUND_BELL: &str = "block.bell.hit";
+/// Rot de fin de repas
+pub const SOUND_BURP: &str = "burp";
+/// Le joueur mâche (bruit et miettes) ; la donnée désigne l'aliment
+pub const EVENT_EATING: u8 = 57;
 /// Le golem de fer lève les bras pour frapper
 pub const EVENT_ARM_SWING: u8 = 4;
 /// Sons d'une créature (LevelSoundEvent) : depuis la 1.26, le son est désigné par son nom
@@ -343,12 +361,35 @@ pub const SOUND_LEASH_BREAK: &str = "leashknot.break";
 /// Disposition relevée auprès du serveur officiel 1.26.65 : nom du son, position, données
 /// en plus, entité, petit, volume relatif, identifiant unique, puis un octet nul.
 pub fn level_sound(sound: &str, pos: (f32, f32, f32), entity: &str, baby: bool, unique_id: i64) -> Vec<u8> {
+    level_sound_with(sound, pos, -1, entity, baby, unique_id)
+}
+
+/// Bloc posé : la donnée en plus désigne le bloc, pour le bruit de sa matière
+pub const SOUND_PLACE: &str = "place";
+/// Outil qui casse
+pub const SOUND_BREAK: &str = "break";
+/// Niveau d'expérience gagné
+pub const SOUND_LEVELUP: &str = "levelup";
+/// LevelEvent : miettes et bruit d'un bloc cassé (donnée : l'état du bloc)
+pub const LEVEL_EVENT_DESTROY: i32 = 2001;
+/// Éclats du bloc qu'on frappe (donnée : l'état du bloc, la face dans l'octet du haut)
+pub const LEVEL_EVENT_PUNCH: i32 = 2014;
+/// Début et fin des fissures d'un bloc qu'on mine (donnée du début : 65535 / durée en ticks)
+pub const LEVEL_EVENT_START_BREAK: i32 = 3600;
+pub const LEVEL_EVENT_STOP_BREAK: i32 = 3601;
+/// Tintement d'une orbe d'expérience ramassée
+pub const LEVEL_EVENT_SOUND_ORB: i32 = 1051;
+/// Valeur d'une orbe d'expérience (donnée d'entité, entier)
+pub const META_EXPERIENCE: u32 = 15;
+
+/// LevelSoundEvent avec sa donnée en plus (un état de bloc pour « place », par exemple).
+pub fn level_sound_with(sound: &str, pos: (f32, f32, f32), data: i32, entity: &str, baby: bool, unique_id: i64) -> Vec<u8> {
     let mut w = W::default();
     w.string(sound);
     w.f32(pos.0);
     w.f32(pos.1);
     w.f32(pos.2);
-    w.vari32(-1); // données en plus : aucune
+    w.vari32(data);
     w.string(entity);
     w.bool(baby);
     w.bool(false); // volume relatif

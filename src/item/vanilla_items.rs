@@ -6,7 +6,8 @@
 //! chaque objet : `iron_pickaxe` est une pioche en fer. Un nom inconnu donne un objet
 //! générique, empilable par 64.
 
-use super::armor::{Armor, Food};
+use super::armor::Armor;
+use super::consumable::Food;
 use super::item::{BaseItem, BlockItem, GenericItem, Item};
 use super::tool::{Tool, ToolTier, ToolType};
 
@@ -23,6 +24,7 @@ fn stack_size(short: &str) -> u8 {
     } else if SINGLE.contains(&short)
         || short.ends_with("_bucket")
         || short.ends_with("_bed")
+        || short == "bed"
         || short.ends_with("_boat")
         || short.ends_with("_minecart")
         || short.ends_with("_horse_armor")
@@ -159,7 +161,17 @@ named_items! {
 
 impl VanillaItems {
     /// Objet vanilla portant ce nom (avec ou sans `minecraft:`).
+    /// Ce que les plugins ont changé sur cet objet est pris en compte (voir `overrides.rs`).
+    /// Un objet créé par un plugin est rendu de la même façon (voir `custom.rs`).
     pub fn get(name: &str) -> Box<dyn Item> {
+        if let Some(custom) = super::custom::get(name) {
+            return super::overrides::apply(custom);
+        }
+        super::overrides::apply(VanillaItems::plain(name))
+    }
+
+    /// L'objet tel que le jeu le définit, sans les modifications des plugins.
+    pub fn plain(name: &str) -> Box<dyn Item> {
         let short = name.strip_prefix("minecraft:").unwrap_or(name);
         if let Some(t) = tool(short) {
             return Box::new(t);
@@ -167,7 +179,7 @@ impl VanillaItems {
         if let Some(a) = Armor::from_name(short) {
             return Box::new(a);
         }
-        if let Some(f) = Food::from_name(short) {
+        if let Some(f) = Food::from_name(short, stack_size(short)) {
             return Box::new(f);
         }
         Box::new(GenericItem { base: BaseItem::new(short, stack_size(short)) })

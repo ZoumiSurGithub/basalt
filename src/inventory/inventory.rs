@@ -84,14 +84,21 @@ pub trait Inventory {
     /// Ajoute des objets : complète d'abord les piles existantes, puis occupe les emplacements
     /// libres. `next_net_id` fournit un numéro pour chaque nouvelle pile. Renvoie ce qui n'a
     /// pas pu entrer.
-    fn add_item(&mut self, id: i16, mut count: u32, next_net_id: &mut dyn FnMut() -> i32) -> u32 {
-        let max = self.max_stack();
+    fn add_item(&mut self, id: i16, count: u32, next_net_id: &mut dyn FnMut() -> i32) -> u32 {
+        self.add_kind(ItemStack::new(id, 0, 0), count, next_net_id)
+    }
+
+    /// Idem pour un objet avec sa variante et son usure (`kind` : seuls ces champs et le type
+    /// comptent). Un outil usé ne rejoint que les piles de même usure — donc aucune.
+    fn add_kind(&mut self, kind: ItemStack, mut count: u32, next_net_id: &mut dyn FnMut() -> i32) -> u32 {
+        let id = kind.id;
+        let max = self.max_stack().min(crate::item::max_stack_of(id));
         for i in 0..self.size() {
             if count == 0 {
                 return 0;
             }
             let s = self.slots()[i];
-            if !s.is_empty() && s.id == id && s.count < max {
+            if !s.is_empty() && s.same_kind(&kind) && s.count < max {
                 let room = (max - s.count) as u32;
                 let moved = room.min(count);
                 self.slots_mut()[i].count += moved as u8;
@@ -102,7 +109,7 @@ pub trait Inventory {
             if count == 0 {
                 return 0;
             }
-            let fresh = ItemStack { id, count: count.min(max as u32) as u8, net_id: 0 };
+            let fresh = ItemStack { id, count: count.min(max as u32) as u8, net_id: 0, meta: kind.meta, damage: kind.damage };
             if self.slots()[i].is_empty() && self.accepts(i, &fresh) {
                 self.slots_mut()[i] = ItemStack { net_id: next_net_id(), ..fresh };
                 count -= fresh.count as u32;

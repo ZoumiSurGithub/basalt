@@ -203,6 +203,16 @@ pub fn placed_state(data: &GameData, default: u32, p: Placement) -> u32 {
                 };
                 changes.push(("direction", Prop::Int(v)));
             }
+            // Lit : le pied est posé devant le joueur, l'oreiller s'en éloigne
+            "direction" if short == "bed" => {
+                let v = match looks {
+                    SOUTH => 0,
+                    WEST => 1,
+                    NORTH => 2,
+                    _ => 3,
+                };
+                changes.push(("direction", Prop::Int(v)));
+            }
             // Autres blocs à « direction » (0 sud, 1 ouest, 2 nord, 3 est) : face au joueur
             "direction" => {
                 let v = match opposite(looks) {

@@ -84,6 +84,86 @@ setmetatable(server, { __index = function(_, key)
   end
 end })
 
+-- Modifier les objets et les blocs du jeu (voir docs/PLUGINS.md, « Modifier objets et blocs »).
+-- Chaque valeur est vérifiée ici, pour que l'erreur désigne la ligne du plugin.
+local modify = server._modify
+server._modify = nil
+local ITEM_KEYS = { food = "number", saturation = "number", leftover = "string", durability = "number", attackDamage = "number" }
+local BLOCK_KEYS = { drops = "table", falls = "boolean", needsFloor = "boolean", breakable = "boolean" }
+local function modifier(kind, keys, usage)
+  local api = {}
+  function api.modify(name, values)
+    if type(name) ~= "string" or type(values) ~= "table" then error(usage, 2) end
+    for key, value in pairs(values) do
+      local expected = keys[key]
+      if not expected then
+        local known = {}
+        for k in pairs(keys) do known[#known + 1] = k end
+        table.sort(known)
+        error("valeur inconnue « " .. tostring(key) .. " » ; valeurs possibles : " .. table.concat(known, ", "), 2)
+      end
+      if type(value) ~= expected then
+        error(key .. " attend " .. expected .. ", reçu " .. type(value), 2)
+      end
+      if key == "drops" then
+        -- { "minecraft:diamond", { "minecraft:stick", 2 } } ou { ["minecraft:diamond"] = 2 }
+        local parts = {}
+        for k, v in pairs(value) do
+          local item, count
+          if type(k) == "string" then item, count = k, v
+          elseif type(v) == "table" then item, count = v[1] or v.item, v[2] or v.count or 1
+          else item, count = v, 1 end
+          if type(item) ~= "string" or type(count) ~= "number" or count < 1 or item:find("[=,]") then
+            error("drops attend des objets et des quantités, par exemple { [\"minecraft:diamond\"] = 2 }", 2)
+          end
+          parts[#parts + 1] = item .. "=" .. math.floor(count)
+        end
+        table.sort(parts)
+        value = table.concat(parts, ",")
+      end
+      modify(kind, name, key, tostring(value))
+    end
+  end
+  function api.reset(name)
+    if type(name) ~= "string" then error(usage, 2) end
+    modify(kind, name, "reset", "")
+  end
+  return api
+end
+server.items = modifier("item", ITEM_KEYS, "server.items.modify(nom, { food = 8, ... })")
+-- Créer un objet (voir docs/PLUGINS.md, « Créer des objets »)
+local NEW_ITEM_KEYS = {
+  name = "string", icon = "string", category = "string", group = "string", creative = "boolean", maxStack = "number", food = "number", saturation = "number", alwaysEdible = "boolean",
+  leftover = "string", durability = "number", attackDamage = "number", handEquipped = "boolean", glint = "boolean",
+}
+function server.items.create(name, values)
+  local usage = "server.items.create(\"monserveur:rubis\", { name = \"Rubis\", icon = \"emerald\" })"
+  if type(name) ~= "string" or (values ~= nil and type(values) ~= "table") then error(usage, 2) end
+  if not name:match("^[a-z0-9_]+:[a-z0-9_]+$") then
+    error("nom invalide « " .. name .. " » : minuscules, chiffres et _ autour de « : », par exemple monserveur:rubis", 2)
+  end
+  if name:match("^minecraft:") then
+    error("l'espace de noms « minecraft » est réservé au jeu : pour changer un objet du jeu, utilisez server.items.modify", 2)
+  end
+  local lines = {}
+  for key, value in pairs(values or {}) do
+    local expected = NEW_ITEM_KEYS[key]
+    if not expected then
+      local known = {}
+      for k in pairs(NEW_ITEM_KEYS) do known[#known + 1] = k end
+      table.sort(known)
+      error("réglage inconnu « " .. tostring(key) .. " » ; réglages possibles : " .. table.concat(known, ", "), 2)
+    end
+    if type(value) ~= expected then
+      error(key .. " attend " .. expected .. ", reçu " .. type(value), 2)
+    end
+    lines[#lines + 1] = key .. "\t" .. tostring(value):gsub("[\t\r\n]", " ")
+  end
+  table.sort(lines)
+  modify("new-item", name, "", table.concat(lines, "\n"))
+end
+server.blocks = modifier("block", BLOCK_KEYS, "server.blocks.modify(nom, { falls = true, ... })")
+
 -- Objet joueur. Il ne contient que le pseudo : chaque lecture interroge le serveur, donc
 -- un objet gardé dans une variable reste juste, et `isOnline` dit si le joueur est là.
 local pget, pset, pdo, kick = server._pget, server._pset, server._pdo, raw_kick
@@ -473,6 +553,15 @@ local EVENTS = {
   PlayerDropItemEvent = { cancellable = true, fields = { { "player", "player" }, { "item", "item" } } },
   EntityItemPickupEvent = { cancellable = true, fields = { { "entity", "player" }, { "item", "item" } } },
   PlayerGameModeChangeEvent = { cancellable = true, fields = { { "player", "player" }, { "newGamemode", "number" } } },
+  PlayerItemUseEvent = { cancellable = true, fields = { { "player", "player" }, { "item", "item" } } },
+  PlayerItemConsumeEvent = { cancellable = true, fields = { { "player", "player" }, { "item", "item" } } },
+  PlayerExhaustEvent = { cancellable = true, fields = { { "player", "player" }, { "amount", "number" } } },
+  PlayerExperienceChangeEvent = { cancellable = true, fields = { { "player", "player" }, { "amount", "number", true } } },
+  PlayerBedEnterEvent = { cancellable = true, fields = { { "player", "player" }, { "bed", "block" } } },
+  PlayerBedLeaveEvent = { fields = { { "player", "player" }, { "bed", "block" } } },
+  LeavesDecayEvent = { cancellable = true, fields = { { "block", "block" } } },
+  BlockFallEvent = { cancellable = true, fields = { { "block", "block" } } },
+  BlockGrowEvent = { cancellable = true, fields = { { "block", "block" } } },
 }
 -- Événements « enfants » : un écouteur de EntityDamageByEntityEvent ne reçoit que les dégâts
 -- causés par un autre joueur (et un écouteur de EntityDamageEvent reçoit tout).

@@ -2,6 +2,8 @@
 
 mod mob_store;
 mod mobs;
+mod nature;
+mod survival;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
@@ -294,6 +296,8 @@ struct Client {
     bytes: usize,
     id: i64,
     pack_responses: u8,
+    /// Son jeu a refusé les packs de ressources : il joue sans
+    without_packs: bool,
     chunks_sent: bool,
     joined: bool,
     /// Monture sur laquelle il est en selle
@@ -352,6 +356,10 @@ struct Client {
     /// Diagnostic : interactions illisibles déjà journalisées
     unread_logged: u8,
     gesture_logged: u8,
+    /// Mise au point (debug=true) : lignes « [trace] » encore permises, et derniers drapeaux
+    /// de mouvement notés
+    trace_left: u16,
+    trace_flags: Vec<i32>,
     last_input: Instant,
     /// Le signal d'apparition reste à envoyer, une fois le terrain initial parti
     spawn_pending: bool,
@@ -363,6 +371,22 @@ struct Client {
     probe: u8,
     probe_tick: u64,
     synced_tick: u64,
+    /// Faim : satiété (réserve invisible), fatigue accumulée, minuterie de la vie regagnée
+    saturation: f32,
+    exhaustion: f32,
+    food_timer: u32,
+    /// Tick du début du repas en cours
+    eating: Option<u64>,
+    /// Lits de couleur déjà annoncés à ce joueur
+    beds_seen: HashSet<(i32, i32, i32)>,
+    /// Lit où le joueur dort, et depuis quel tick
+    sleeping: Option<(i32, i32, i32)>,
+    slept_at: u64,
+    /// Bloc en cours de minage, et tick des derniers éclats montrés
+    mining: Option<(i32, i32, i32)>,
+    punched_at: u64,
+    /// Fin du dernier paquet d'animation reçu de ce joueur (voir `wake`)
+    animate_tail: Vec<u8>,
     /// Distance horizontale encore autorisée (se recharge avec le temps)
     move_budget: f32,
     move_budget_at: Instant,
@@ -424,6 +448,10 @@ pub struct Server {
     captured: HashMap<i32, HashMap<u32, Vec<u8>>>,
     /// Les mêmes, déjà emballés et compressés (protocole, identifiant) : envoyés tels quels
     captured_ready: HashMap<(i32, u32), Arc<Vec<u8>>>,
+    /// Packs de ressources proposés aux joueurs (dossier `resource_packs/`)
+    packs: Vec<crate::utils::packs::ResourcePack>,
+    /// Un joueur qui refuse les packs ne peut pas entrer (`force_resources`)
+    force_packs: bool,
     /// Paquets relevés que le jeu a refusés : ils ne sont plus envoyés
     refused_captured: HashSet<u32>,
     last_save: Instant,
@@ -437,6 +465,14 @@ pub struct Server {
     time_base: i64,
     /// Le jeu a refusé le paquet qui fait apparaître un autre joueur : il n'est plus envoyé
     add_player_refused: bool,
+    /// Couleur des lits posés par les joueurs (rangée aussi avec les données des blocs)
+    bed_colors: HashMap<(i32, i32, i32), u8>,
+    /// Blocs en train de tomber (sable, gravier…)
+    falling: HashSet<(i32, i32, i32)>,
+    /// Feuilles privées de tronc, et le tick où chacune tombera
+    decaying: HashMap<(i32, i32, i32), u64>,
+    /// Orbes d'expérience au sol
+    orbs: HashMap<i64, survival::Orb>,
     /// Départs de joueurs en jeu depuis le démarrage, par cause (pour le rapport de mesures)
     leaves: HashMap<&'static str, u64>,
     /// Le jeu a refusé le paquet de déplacement des autres joueurs : il n'est plus envoyé
@@ -538,6 +574,9 @@ fn experiment_skips_state(exp: u8) -> bool {
 /// Objet posé au sol.
 struct GroundItem {
     item: i16,
+    /// Variante (couleur d'un lit) et usure (outil entamé)
+    meta: u16,
+    damage: u16,
     /// Bloc correspondant à l'objet (pour son affichage)
     block: u32,
     count: u8,
@@ -580,6 +619,19 @@ enum Cause {
     Plugin,
     /// Une créature (son nom pour le message : « une chèvre »)
     Mob(&'static str),
+    /// Le ventre vide
+    Hunger,
+}
+
+/// Sens d'un lit, du pied vers l'oreiller, d'après sa propriété `direction` (numérotation du
+/// jeu : 0 sud, 1 ouest, 2 nord, 3 est).
+fn bed_step(direction: Option<Prop>) -> (i32, i32) {
+    match direction {
+        Some(Prop::Int(1)) => (-1, 0),
+        Some(Prop::Int(2)) => (0, -1),
+        Some(Prop::Int(3)) => (1, 0),
+        _ => (0, 1),
+    }
 }
 
 /// L'événement a-t-il été annulé par un écouteur ?
@@ -725,6 +777,8 @@ impl Server {
             refused_extras: HashSet::new(),
             captured: HashMap::new(),
             captured_ready: HashMap::new(),
+            packs: Vec::new(),
+            force_packs: false,
             refused_captured: HashSet::new(),
             last_save: Instant::now(),
             ops: OpList::default(),
@@ -732,6 +786,10 @@ impl Server {
             time_base: 6000,
             add_player_refused: false,
             leaves: HashMap::new(),
+            orbs: HashMap::new(),
+            decaying: HashMap::new(),
+            falling: HashSet::new(),
+            bed_colors: HashMap::new(),
             move_actor_refused: false,
             equip_refused: false,
             animate_refused: false,
@@ -1048,20 +1106,22 @@ impl Server {
         // Le joueur retrouve le mode de jeu qu'il avait en partant
         let saved_mode = data.game_type;
         // Inventaire : les objets sont retrouvés par leur nom
-        let items: Vec<(String, usize, i16, u8)> = data
+        let items: Vec<(String, usize, inventory::ItemStack)> = data
             .items
             .iter()
             .filter_map(|(container, slot, item, count)| {
                 let id = self.item_id(item)?;
-                Some((container.clone(), *slot as usize, id, *count))
+                // Variante et usure enregistrées avec l'objet
+                let (meta, damage) = data.kinds.iter().find(|k| k.0 == *container && k.1 == *slot).map(|k| (k.2, k.3)).unwrap_or((0, 0));
+                Some((container.clone(), *slot as usize, inventory::ItemStack { id, count: *count, net_id: 0, meta, damage }))
             })
             .collect();
         if let Some(c) = self.clients.get_mut(addr) {
-            for (container, slot, id, count) in items {
+            for (container, slot, stack) in items {
                 // Sac et barre à leur place, armure et seconde main sur le joueur
                 match container.as_str() {
-                    "main" => c.inv.restore(slot, id, count),
-                    other => c.inv.restore_worn(other, slot, id, count),
+                    "main" => c.inv.restore_kind(slot, stack),
+                    other => c.inv.restore_worn_kind(other, slot, stack),
                 }
                 c.inv_touched = true;
             }
@@ -1097,6 +1157,7 @@ impl Server {
         // Dossier du monde, comme PocketMine le note
         d.world = std::path::Path::new(&self.cfg.world_dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         d.items.clear();
+        d.kinds.clear();
         let name_of = |id: i16| self.data.as_ref().and_then(|g| g.item_by_id(id)).map(|i| i.name.clone());
         let groups: [(&str, &[inventory::ItemStack]); 3] =
             [("main", &c.inv.main.slots), ("armor", &c.inv.armor.slots), ("offhand", &c.inv.offhand.slots)];
@@ -1105,6 +1166,9 @@ impl Server {
                 if !s.is_empty() {
                     if let Some(item) = name_of(s.id) {
                         d.items.push((container.to_string(), i as u8, item, s.count));
+                        if s.meta != 0 || s.damage != 0 {
+                            d.kinds.push((container.to_string(), i as u8, s.meta, s.damage));
+                        }
                     }
                 }
             }
@@ -1272,6 +1336,10 @@ impl Server {
                     } else if !c.mode.takes_damage() || footing == Footing::Liquid || riding {
                         c.fall_peak = None;
                     } else if footing == Footing::Air {
+                        // Départ d'un saut : il fatigue (davantage en courant)
+                        if c.fall_peak.is_none() && dy > 0.0 {
+                            c.exhaustion += if c.sprinting { 0.2 } else { 0.05 };
+                        }
                         c.fall_peak = Some(c.fall_peak.map(|p| p.max(feet)).unwrap_or(feet));
                     } else if let Some(peak) = c.fall_peak.take() {
                         let damage = fall_damage(peak - feet);
@@ -1279,6 +1347,10 @@ impl Server {
                             fall = Some(Cause::Fall);
                             fall_amount = damage;
                         }
+                    }
+                    // Courir et nager fatiguent (marcher, non) ; un joueur couché ne bouge pas
+                    if c.mode.takes_damage() && horizontal < MAX_STEP {
+                        c.exhaustion += horizontal * if footing == Footing::Liquid { 0.01 } else if c.sprinting { 0.1 } else { 0.0 };
                     }
                     c.pos = pos;
                     let center = ((pos.0.floor() as i32) >> 4, (pos.2.floor() as i32) >> 4);
@@ -1777,10 +1849,92 @@ impl Server {
         self.apply_actions();
     }
 
+    /// Reconstruit ce qui est calculé d'avance à partir des gabarits (registre des blocs,
+    /// limites des objets), après qu'un plugin en a modifié un.
+    fn refresh_templates(&mut self) {
+        if let Some(d) = self.data.clone() {
+            self.blocks = Some(d.block_registry());
+            crate::item::set_limits(d.items.iter().map(|i| (i.id, i.name.as_str())));
+        }
+    }
+
+    /// Le menu créatif du jeu, complété des objets créés par les plugins. None s'il n'y en a
+    /// pas (le menu relevé part alors tel quel).
+    fn creative_with_plugin_items(&self, addr: &SocketAddr) -> Option<Vec<u8>> {
+        if !crate::item::custom::any() {
+            return None;
+        }
+        let (groups, items) = crate::item::custom::creative_entries();
+        if items.is_empty() {
+            return None;
+        }
+        let body = self.captured(addr, bedrock::ID_CREATIVE_CONTENT)?;
+        bedrock::creative_content_append(&body, &groups, &items)
+    }
+
+    /// Range les objets créés par les plugins parmi les objets connus, avec les composants
+    /// qui seront déclarés aux joueurs. Sans effet tant que les données du jeu manquent.
+    fn register_custom_items(&mut self) {
+        let Some(data) = self.data.as_mut() else { return };
+        for (def, id) in crate::item::custom::all() {
+            let components = crate::nbt::write_network(&def.components());
+            if data.item(&def.name).map(|i| i.id == id && i.components.as_deref() == Some(&components[..])).unwrap_or(false) {
+                continue;
+            }
+            Arc::make_mut(data).add_item(crate::data::ItemDef { name: def.name.clone(), id, version: 1, components: Some(components) });
+        }
+    }
+
     /// Applique ce que les plugins ont demandé pendant leurs appels.
     fn apply_actions(&mut self) {
+        let mut modified = false;
         for a in self.plugins.take_actions() {
             match a {
+                Action::Modify(plugin, kind, name, _, sheet) if kind == "new-item" => {
+                    // Objet créé par le plugin : gabarit côté serveur, et fiche ajoutée aux
+                    // objets connus pour qu'il soit déclaré aux joueurs à leur connexion
+                    // (au démarrage, les plugins sont chargés avant les données du jeu : la fiche
+                    // attend alors dans la table, et rejoint les objets connus au chargement)
+                    let taken = self.data.as_ref().and_then(|d| d.item(&name)).map(|i| i.id < crate::item::custom::FIRST_ID).unwrap_or(false);
+                    let made = if taken {
+                        Err("ce nom est déjà celui d'un objet du jeu".to_string())
+                    } else {
+                        crate::item::custom::CustomDef::parse(&name, &sheet).and_then(crate::item::custom::define)
+                    };
+                    match made {
+                        Ok(_) => {
+                            let icon = sheet.lines().find_map(|l| l.strip_prefix("icon\t")).unwrap_or("");
+                            if let Some(instead) = crate::item::custom::icon_advice(icon) {
+                                warn!("[{}] {} : l'image « {} » n'existe pas seule dans le jeu, l'objet s'affichera vide ; essayez « {} »", plugin, name, icon, instead);
+                            }
+                            self.register_custom_items();
+                            modified = true;
+                            if self.clients.values().any(|c| c.joined) {
+                                warn!("[{}] {} créé alors que des joueurs sont en jeu : ils ne le verront qu'à leur prochaine connexion", plugin, name);
+                            }
+                        }
+                        Err(why) => warn!("[{}] server.items.create(\"{}\") : {}", plugin, name, why),
+                    }
+                }
+                Action::Modify(plugin, kind, name, key, value) => {
+                    // Le nom doit désigner quelque chose du jeu : une faute de frappe se voit
+                    let full = if name.contains(':') { name.clone() } else { format!("minecraft:{}", name) };
+                    let known = match (kind.as_str(), &self.data) {
+                        ("item", Some(d)) => d.item(&full).is_some(),
+                        ("block", Some(_)) => self.blocks.as_ref().map(|b| b.get(&full).is_some()).unwrap_or(true),
+                        _ => true,
+                    };
+                    let done = match (known, kind.as_str()) {
+                        (false, "item") => Err(format!("objet inconnu « {} »", name)),
+                        (false, _) => Err(format!("bloc inconnu « {} »", name)),
+                        (true, "item") => crate::item::overrides::set(&name, &key, &value),
+                        (true, _) => crate::block::overrides::set(&name, &key, &value),
+                    };
+                    match done {
+                        Ok(()) => modified = true,
+                        Err(why) => warn!("[{}] {}.modify : {}", plugin, if kind == "item" { "server.items" } else { "server.blocks" }, why),
+                    }
+                }
                 Action::SetMotd(m) => {
                     self.motd = crate::log::clean(&m, 64);
                     self.update_pong();
@@ -1869,6 +2023,9 @@ impl Server {
                     }
                 }
             }
+        }
+        if modified {
+            self.refresh_templates();
         }
     }
 
@@ -2695,6 +2852,20 @@ impl Server {
         cancelled(&out)
     }
 
+    /// Un plugin refuse-t-il que le joueur utilise l'objet qu'il tient (clic dans le vide) ?
+    fn item_use_cancelled(&mut self, addr: &SocketAddr) -> bool {
+        if !self.plugins.listens("PlayerItemUseEvent") {
+            return false;
+        }
+        let held = match self.clients.get(addr).map(|c| c.inv.held()) {
+            Some(h) if !h.is_empty() => h,
+            _ => return false,
+        };
+        let item = self.item_json(held.id, held.count.min(255) as u8);
+        let out = self.fire("PlayerItemUseEvent", vec![("player", self.name_json(addr)), ("item", item)]);
+        cancelled(&out)
+    }
+
     /// Événement simple vers les plugins (server.on) ; renvoie leurs réponses.
     fn emit(&mut self, event: &str, args: &[LVal]) -> Vec<LVal> {
         // Personne n'écoute : rien à préparer (l'état du serveur à transmettre coûte à lui
@@ -2708,6 +2879,65 @@ impl Server {
         let res = self.plugins.dispatch(event, args);
         self.apply_actions();
         res
+    }
+
+    /// Fixe la couleur d'un lit posé et l'annonce aux joueurs proches.
+    fn set_bed_color(&mut self, pos: (i32, i32, i32), colour: u8) {
+        if let Some(tile) = self.world.tiles.get_mut(pos) {
+            tile.load_extra("color", &crate::nbt::Tag::Byte(colour as i8));
+        }
+        self.world.tiles.dirty = true;
+        self.bed_colors.insert(pos, colour);
+        // (les joueurs le reçoivent au prochain passage de `sync_beds`, après le bloc lui-même)
+        for c in self.clients.values_mut() {
+            c.beds_seen.remove(&pos);
+        }
+    }
+
+    /// Annonce à chaque joueur la couleur des lits posés dans les chunks qu'il a reçus (le
+    /// jeu dessine un lit rouge tant qu'il ne la connaît pas).
+    fn sync_beds(&mut self) {
+        if self.bed_colors.is_empty() {
+            return;
+        }
+        let mut out: Vec<(SocketAddr, Vec<u8>)> = Vec::new();
+        for (addr, c) in self.clients.iter_mut() {
+            if !(c.joined && c.stage == Stage::InGame) {
+                continue;
+            }
+            let delivered = &c.delivered;
+            c.beds_seen.retain(|p| delivered.contains(&(p.0 >> 4, p.2 >> 4)));
+            for (pos, colour) in &self.bed_colors {
+                if c.delivered.contains(&(pos.0 >> 4, pos.2 >> 4)) && c.beds_seen.insert(*pos) {
+                    let tag = crate::nbt::Tag::compound(vec![
+                        ("id", crate::nbt::Tag::string("Bed")),
+                        ("x", crate::nbt::Tag::Int(pos.0)),
+                        ("y", crate::nbt::Tag::Int(pos.1)),
+                        ("z", crate::nbt::Tag::Int(pos.2)),
+                        ("color", crate::nbt::Tag::Byte(*colour as i8)),
+                        ("isMovable", crate::nbt::Tag::Byte(1)),
+                    ]);
+                    out.push((*addr, bedrock::block_actor_data(*pos, &tag)));
+                }
+            }
+        }
+        for (addr, packet) in out {
+            self.send(&addr, bedrock::ID_BLOCK_ACTOR_DATA, &packet);
+        }
+    }
+
+    /// Autre moitié d'un lit (tête pour un pied, pied pour une tête), si elle est bien là.
+    fn bed_other_half(&self, state: u32, (x, y, z): (i32, i32, i32)) -> Option<(i32, i32, i32)> {
+        let d = self.data.as_ref()?;
+        if d.block_name(state) != Some("minecraft:bed") {
+            return None;
+        }
+        let (dx, dz) = bed_step(d.prop(state, "direction"));
+        let head = d.prop(state, "head_piece_bit") == Some(Prop::Int(1));
+        let p = if head { (x - dx, y, z - dz) } else { (x + dx, y, z + dz) };
+        let other = self.world.get(p.0, p.1, p.2);
+        let pairs = d.block_name(other) == Some("minecraft:bed") && d.prop(other, "direction") == d.prop(state, "direction") && (d.prop(other, "head_piece_bit") == Some(Prop::Int(1))) != head;
+        pairs.then_some(p)
     }
 
     /// Envoie un paquet de jeu à un joueur (compressé si sa session le demande).
@@ -2903,6 +3133,11 @@ impl Server {
             }
             _ => return,
         }
+        // Un coup fatigue, et réveille
+        if !matches!(cause, Cause::Hunger) {
+            self.exhaust(addr, 0.1);
+            self.wake(addr);
+        }
         // Écouteurs : annulation, dégâts modifiés
         let mut amount = amount;
         if self.plugins.listens("EntityDamageEvent") {
@@ -2913,6 +3148,7 @@ impl Server {
                 Cause::Command => ("SUICIDE", None),
                 Cause::Plugin => ("CUSTOM", None),
                 Cause::Mob(_) => ("ENTITY_ATTACK", None),
+                Cause::Hunger => ("STARVATION", None),
             };
             let mut fields = vec![("entity", self.name_json(addr)), ("cause", Json::Str(label.into())), ("baseDamage", Json::Num(amount as f64))];
             if let Some(by) = damager {
@@ -2971,6 +3207,8 @@ impl Server {
             Some(c) if c.dead.is_none() => {
                 c.dead = Some(tick);
                 c.fall_peak = None;
+                c.sleeping = None;
+                c.eating = None;
                 if let Some(d) = c.data.as_mut() {
                     d.health = 0.0;
                 }
@@ -2987,6 +3225,7 @@ impl Server {
                 format!("{} a été tué par {}", name, shown)
             }
             Cause::Command | Cause::Plugin => format!("{} est mort", name),
+            Cause::Hunger => format!("{} est mort de faim", name),
             Cause::Mob(by) => format!("{} a été tué par {}", name, by),
         };
         // Écouteurs : message de mort, inventaire gardé
@@ -3000,13 +3239,18 @@ impl Server {
         // Son inventaire tombe au sol autour de lui, sauf avec keep-inventory=true. Si le jeu
         // refuse les objets au sol, il est perdu (comme un objet tombé dans la lave).
         if !keep {
-            let mut stuff: Vec<(i16, u8)> = Vec::new();
+            // L'expérience est perdue avec le reste
+            if let Some(d) = self.clients.get_mut(addr).and_then(|c| c.data.as_mut()) {
+                d.xp_level = 0;
+                d.xp_progress = 0.0;
+            }
+            let mut stuff: Vec<inventory::ItemStack> = Vec::new();
             let at = match self.clients.get_mut(addr) {
                 Some(c) => {
                     for slots in [&mut c.inv.main.slots, &mut c.inv.armor.slots, &mut c.inv.offhand.slots] {
                         for s in slots.iter_mut() {
                             if !s.is_empty() {
-                                stuff.push((s.id, s.count));
+                                stuff.push(*s);
                                 *s = inventory::ItemStack::EMPTY;
                             }
                         }
@@ -3017,11 +3261,11 @@ impl Server {
                 None => return,
             };
             if !stuff.is_empty() {
-                for (n, (item, count)) in stuff.into_iter().enumerate() {
+                for (n, stack) in stuff.into_iter().enumerate() {
                     // Éparpillés autour du corps, avec un petit élan au hasard
                     let spot = (at.0, at.1 - player_eye_height() + 0.5, at.2);
                     let vel = self.scatter(n as u64, 0.2);
-                    self.drop_item(spot, vel, item, count, 40);
+                    self.drop_stack(spot, vel, stack, 40);
                 }
                 self.send_inventory_with(addr, true);
             }
@@ -3172,10 +3416,10 @@ impl Server {
     /// Le joueur a cliqué sur « Réapparaître » : il revient au point de réapparition, en pleine
     /// santé. Ceux qui le voyaient le voient disparaître, puis réapparaître là-bas.
     fn respawn(&mut self, addr: &SocketAddr) {
-        let mut spawn = self.spawn_point();
         if self.clients.get(addr).map(|c| c.dead.is_none()).unwrap_or(true) {
             return;
         }
+        let mut spawn = self.respawn_point(addr);
         // Écouteurs : point de réapparition (aux pieds du joueur, comme dans PocketMine)
         if self.plugins.listens("PlayerRespawnEvent") {
             let feet = Json::Obj(vec![
@@ -3194,10 +3438,14 @@ impl Server {
             Some(c) if c.dead.is_some() => {
                 c.dead = None;
                 c.fall_peak = None;
+                c.saturation = 5.0;
+                c.exhaustion = 0.0;
+                c.food_timer = 0;
                 c.pos = spawn;
                 c.moved_tick = self.tick + 1;
                 if let Some(d) = c.data.as_mut() {
                     d.health = d.max_health;
+                    d.food = 20.0;
                 }
                 c.id
             }
@@ -3240,7 +3488,12 @@ impl Server {
             return;
         }
         // Une créature, un nœud de laisse ?
-        if self.knot_clicked(target as i64) || self.hit_mob(target as i64, (eye.0, eye.1 - EYE, eye.2), damage, mobs::Attacker::Player(*addr)) {
+        if self.knot_clicked(target as i64) {
+            return;
+        }
+        if self.hit_mob(target as i64, (eye.0, eye.1 - EYE, eye.2), damage, mobs::Attacker::Player(*addr)) {
+            // Le coup use l'arme
+            self.wear_held(addr, crate::item::Usage::Strike);
             return;
         }
         let victim = self.clients.iter().find(|(_, c)| c.id as u64 == target && c.id != from && c.joined).map(|(a, c)| (*a, c.pos, !c.mode.takes_damage(), c.id));
@@ -3261,28 +3514,6 @@ impl Server {
         if hit && flat > 0.01 && !self.refused_extras.contains(&bedrock::ID_SET_ACTOR_MOTION) {
             let motion = (dx / flat * 0.4, 0.4, dz / flat * 0.4);
             self.send(&victim, bedrock::ID_SET_ACTOR_MOTION, &bedrock::set_actor_motion(victim_id, motion));
-        }
-    }
-
-    /// Vie regagnée peu à peu, comme dans le jeu quand la barre de faim est presque pleine :
-    /// un demi-cœur toutes les 4 secondes.
-    fn regenerate(&mut self) {
-        let ready: Vec<SocketAddr> = self
-            .clients
-            .iter_mut()
-            .filter(|(_, c)| c.joined && c.dead.is_none())
-            .filter_map(|(a, c)| {
-                let d = c.data.as_mut()?;
-                if d.health < d.max_health && d.food >= 18.0 {
-                    d.heal(1.0);
-                    Some(*a)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        for a in ready {
-            self.sync_attributes(&a);
         }
     }
 
@@ -3337,6 +3568,12 @@ impl Server {
     /// Fait tomber un objet. Faux si le jeu refuse les objets au sol (l'appelant le garde
     /// alors ailleurs). `delay` : ticks avant de pouvoir être ramassé.
     fn drop_item(&mut self, at: (f32, f32, f32), vel: (f32, f32, f32), item: i16, count: u8, delay: u64) -> bool {
+        self.drop_stack(at, vel, inventory::ItemStack::new(item, count, 0), delay)
+    }
+
+    /// Idem pour une pile entière, avec sa variante et son usure.
+    fn drop_stack(&mut self, at: (f32, f32, f32), vel: (f32, f32, f32), stack: inventory::ItemStack, delay: u64) -> bool {
+        let (item, count) = (stack.id, stack.count);
         if self.drops_refused {
             return false;
         }
@@ -3356,7 +3593,7 @@ impl Server {
             info!("[objets] objet {} lâché : objet n°{} ×{} en {:.1} {:.1} {:.1}", id, item, count, at.0, at.1, at.2);
         }
         let body = item_physics::Body { pos: at, vel, on_ground: false };
-        self.ground.insert(id, GroundItem { item, block, count, body, resting: false, sent: at, born: self.tick, age: 0, pickup_at: self.tick + delay });
+        self.ground.insert(id, GroundItem { item, meta: stack.meta, damage: stack.damage, block, count, body, resting: false, sent: at, born: self.tick, age: 0, pickup_at: self.tick + delay });
         self.show_ground_items();
         true
     }
@@ -3401,7 +3638,7 @@ impl Server {
                 let has_chunk = c.delivered.contains(&((g.body.pos.0.floor() as i32) >> 4, (g.body.pos.2.floor() as i32) >> 4));
                 if far < 64.0 * 64.0 && has_chunk {
                     if c.items_seen.insert(*id) {
-                        out.push((*addr, bedrock::ID_ADD_ITEM_ACTOR, bedrock::add_item_actor(*id, g.item, g.count, g.block, g.body.pos, g.body.vel)));
+                        out.push((*addr, bedrock::ID_ADD_ITEM_ACTOR, bedrock::add_item_actor_kind(*id, g.item, g.count, g.block, g.meta, g.damage, g.body.pos, g.body.vel)));
                     }
                 } else if (far > 80.0 * 80.0 || !has_chunk) && c.items_seen.remove(id) {
                     out.push((*addr, bedrock::ID_REMOVE_ACTOR, bedrock::remove_actor(bedrock::item_unique_id(*id))));
@@ -3496,8 +3733,8 @@ impl Server {
             }
         }
         for (addr, id, by) in taken {
-            let (item, count) = match self.ground.get(&id) {
-                Some(g) => (g.item, g.count),
+            let (item, count, kind) = match self.ground.get(&id) {
+                Some(g) => (g.item, g.count, inventory::ItemStack { id: g.item, count: 0, net_id: 0, meta: g.meta, damage: g.damage }),
                 None => continue,
             };
             if self.plugins.listens("EntityItemPickupEvent") {
@@ -3509,7 +3746,7 @@ impl Server {
             let left = match self.clients.get_mut(&addr) {
                 Some(c) => {
                     c.inv_touched = true;
-                    c.inv.add(item, count as u32)
+                    c.inv.add_kind(kind, count as u32)
                 }
                 None => continue,
             };
@@ -3612,6 +3849,8 @@ impl Server {
                 Some(Json::Obj(vec![
                     ("item".into(), Json::Str(name)),
                     ("count".into(), Json::Num(g.count as f64)),
+                    ("meta".into(), Json::Num(g.meta as f64)),
+                    ("damage".into(), Json::Num(g.damage as f64)),
                     ("x".into(), n(g.body.pos.0)),
                     ("y".into(), n(g.body.pos.1)),
                     ("z".into(), n(g.body.pos.2)),
@@ -3664,7 +3903,9 @@ impl Server {
             let block = self.block_for(item).unwrap_or(0);
             let body = item_physics::Body { pos: (x, y, z), vel: (0.0, 0.0, 0.0), on_ground: true };
             let age = num("age").unwrap_or(0.0).max(0.0) as u64;
-            self.ground.insert(id, GroundItem { item, block, count, body, resting: false, sent: (x, y, z), born: self.tick, age, pickup_at: 0 });
+            let meta = num("meta").unwrap_or(0.0).clamp(0.0, 32767.0) as u16;
+            let damage = num("damage").unwrap_or(0.0).clamp(0.0, 65535.0) as u16;
+            self.ground.insert(id, GroundItem { item, meta, damage, block, count, body, resting: false, sent: (x, y, z), born: self.tick, age, pickup_at: 0 });
             loaded += 1;
         }
         if loaded > 0 {
@@ -3720,7 +3961,9 @@ impl Server {
                     .iter()
                     .filter_map(|drop| {
                         // L'objet du même nom d'abord ; à défaut, celui que les données associent au bloc
-                        let id = d.item(&drop.item).map(|i| i.id).or_else(|| if drop.item == block.name() { d.item_for_block_name(name) } else { None });
+                        // (et pour un bloc dont l'objet porte un autre nom — la canne à sucre —,
+                        // celui que rend le bloc lui-même)
+                        let id = d.item(&drop.item).map(|i| i.id).or_else(|| d.item_for_block_name(name)).or_else(|| d.drop_for_block(old));
                         id.map(|id| (id, drop.count))
                     })
                     .collect();
@@ -3736,6 +3979,12 @@ impl Server {
                 self.send(addr, bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, old));
                 return;
             }
+        };
+        // Culture : mûre, elle rend sa récolte (sauf si un plugin a fixé le butin de ce bloc)
+        let fixed = self.data.as_ref().and_then(|d| d.block_name(old)).map(crate::block::overrides::has_drops).unwrap_or(false);
+        let loot = match (survival && !fixed, self.crop_loot(old)) {
+            (true, Some(harvest)) => harvest,
+            _ => loot,
         };
         // Écouteurs : annulation, butin modifié
         let mut loot = loot;
@@ -3769,6 +4018,33 @@ impl Server {
         if self.cfg.debug {
             info!("{} : bloc cassé en {} {} {}", addr, x, y, z);
         }
+        // Casser un bloc fatigue un peu et use l'outil (sauf un bloc qui cède d'un coup) ; un
+        // minerai qui livre son contenu donne de l'expérience
+        if survival {
+            self.exhaust(addr, 0.005);
+            if self.block_at_state(old).map(|b| b.hardness() > 0.0).unwrap_or(false) {
+                self.wear_held(addr, crate::item::Usage::Mine);
+            }
+            let ore = self.data.as_ref().and_then(|d| d.block_name(old)).and_then(survival::ore_xp);
+            if let (Some((lo, hi)), false) = (ore, loot.is_empty()) {
+                let xp = self.xp_between(lo, hi);
+                self.drop_xp((x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5), xp);
+            }
+        }
+        // Ce qui s'appuyait sur ce bloc se décroche, ce qui pesait dessus tombe
+        self.support_check((x, y, z));
+        // Un tronc en moins : les feuilles qu'il nourrissait dépérissent
+        if self.data.as_ref().and_then(|d| d.block_name(old)).map(|n| n.ends_with("_log") || n.ends_with("_wood")).unwrap_or(false) {
+            self.leaves_after_log((x, y, z));
+        }
+        // Miettes et bruit du bloc cassé, pour le joueur et ceux qui sont autour
+        let centre = (x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
+        self.send_near(centre, bedrock::ID_LEVEL_EVENT, &bedrock::level_event(bedrock::LEVEL_EVENT_DESTROY, centre, old as i32));
+        if let Some(c) = self.clients.get_mut(addr) {
+            c.mining = None;
+        }
+        let corner = (x as f32, y as f32, z as f32);
+        self.send_near(corner, bedrock::ID_LEVEL_EVENT, &bedrock::level_event(bedrock::LEVEL_EVENT_STOP_BREAK, corner, 0));
         self.liquid_neighbours((x, y, z));
         self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, after), Some(*addr));
         if after != air {
@@ -3792,6 +4068,12 @@ impl Server {
         if let Some(p) = other_half {
             self.change_block(p, air);
         }
+        // Un lit aussi : la tête part avec le pied (et inversement), pour un seul lit rendu
+        if let Some(p) = self.bed_other_half(old, (x, y, z)) {
+            self.change_block(p, air);
+            self.world.tiles.remove(p);
+            self.bed_colors.remove(&p);
+        }
         // Un coffre ou un four cassé rend ce qu'il contenait
         let mut loot = loot;
         if let Some(kind) = unopened_loot {
@@ -3807,12 +4089,20 @@ impl Server {
                 loot.extend(inv.contents().into_iter().map(|(_, item)| (item.id, item.count)));
             }
         }
+        // Lit : l'objet rendu garde sa couleur
+        let bed_colour = self.bed_colors.remove(&(x, y, z));
+        let bed_item = bed_colour.and_then(|_| self.item_id("bed"));
         // Le butin saute du centre du bloc et retombe (ou va dans l'inventaire si le jeu refuse
         // les objets au sol)
         for (n, (id, count)) in loot.into_iter().enumerate() {
             let vel = self.scatter(n as u64, 0.2);
-            if !self.drop_item((x as f32 + 0.5, y as f32 + 0.25, z as f32 + 0.5), vel, id, count, 10) {
-                self.add_item(addr, id, count as u16);
+            let meta = if Some(id) == bed_item { bed_colour.unwrap_or(0) as u16 } else { 0 };
+            let stack = inventory::ItemStack { id, count, net_id: 0, meta, damage: 0 };
+            if !self.drop_stack((x as f32 + 0.5, y as f32 + 0.25, z as f32 + 0.5), vel, stack, 10) {
+                if let Some(c) = self.clients.get_mut(addr) {
+                    c.inv.add_kind(stack, count as u32);
+                }
+                self.send_inventory(addr);
             }
         }
     }
@@ -3870,7 +4160,7 @@ impl Server {
             // Objets : écriture relevée en 1.26.60 et plus seulement (avant, un objet vide et
             // l'identifiant du conteneur s'écrivent autrement : le jeu 1.26.40 quittait la partie)
             Some(c) if c.protocol >= 2225 => {
-                let of = |slots: &[inventory::ItemStack]| -> Vec<(i16, u8, i32)> { slots.iter().map(|s| (s.id, s.count, s.net_id)).collect() };
+                let of = |slots: &[inventory::ItemStack]| -> Vec<inventory::ItemStack> { slots.to_vec() };
                 let mut windows = vec![(0u32, of(&c.inv.main.slots))];
                 // Armure et seconde main : envoyées seulement si elles portent quelque chose
                 if worn || c.inv.armor.slots.iter().any(|s| !s.is_empty()) {
@@ -3884,8 +4174,7 @@ impl Server {
             _ => return,
         };
         for (window, slots) in windows {
-            let slots: Vec<(i16, u8, i32, u32)> =
-                slots.iter().map(|(id, count, net)| (*id, *count, *net, self.block_for(*id).unwrap_or(0))).collect();
+            let slots: Vec<bedrock::Slot> = slots.iter().map(|s| (s.id, s.count, s.net_id, self.block_for(s.id).unwrap_or(0), s.meta, s.damage)).collect();
             let pk = bedrock::container_items(window, &slots, self.item_net_ids, crate::versions::features(protocol));
             self.send(addr, bedrock::ID_INVENTORY_CONTENT, &pk);
         }
@@ -4033,7 +4322,7 @@ impl Server {
             if crafting && craft.is_none() && trade.is_none() && self.cfg.debug {
                 info!("{} : fabrication refusée ({:?} ×{} ne correspond à aucune recette pour cette grille)", addr, request.created, request.created_count);
             }
-            let mut dropped: Vec<(i16, u8)> = Vec::new();
+            let mut dropped: Vec<inventory::ItemStack> = Vec::new();
             let outcome = match self.clients.get_mut(addr) {
                 Some(c) if c.stage == Stage::InGame => Self::run_stack_request(&mut c.inv, &request, created, craft.as_ref(), trade.as_ref(), &mut dropped),
                 _ => return,
@@ -4042,20 +4331,27 @@ impl Server {
                 // Lancé depuis les yeux du joueur, dans la direction de son regard
                 let at = self.throw_from(addr);
                 if let Some((at, vel)) = at {
-                    for (id, count) in dropped {
+                    for stack in dropped {
+                        let (id, count) = (stack.id, stack.count);
                         // Écouteurs : un objet dont le lâcher est annulé revient dans l'inventaire
                         let out = self.fire("PlayerDropItemEvent", vec![("player", self.name_json(addr)), ("item", self.item_json(id, count))]);
                         if cancelled(&out) {
-                            self.add_item(addr, id, count as u16);
+                            if let Some(c) = self.clients.get_mut(addr) {
+                                c.inv.add_kind(stack, count as u32);
+                            }
+                            self.send_inventory(addr);
                             continue;
                         }
                         // Jeu qui refuse les objets au sol : l'objet est perdu, comme avant
-                        self.drop_item(at, vel, id, count, 40);
+                        self.drop_stack(at, vel, stack, 40);
                     }
                 }
             }
             if let (Some(_), Some(deal)) = (&outcome, &trade) {
                 self.trade_done(deal);
+                // Chaque échange conclu rapporte un peu d'expérience au joueur
+                let xp = self.xp_between(3, 6);
+                self.give_xp(addr, xp);
             }
             if outcome.is_some() {
                 self.store_block_view(addr);
@@ -4115,29 +4411,33 @@ impl Server {
                         if ok {
                             c.inv_touched = true;
                         }
-                        ok
+                        // (la pile jetée garde sa variante et son usure)
+                        ok.then_some(inventory::ItemStack { count: d.count as u8, net_id: 0, ..stack })
                     }
-                    _ => false,
+                    _ => None,
                 }
             }
             _ => return,
         };
-        if !taken {
+        let Some(thrown) = taken else {
             self.send_inventory(addr);
             return;
-        }
+        };
         // Le jeu a déjà retiré l'objet de son côté ; on renvoie l'état du serveur (même
         // contenu, identifiants de piles à jour)
         self.send_inventory(addr);
         self.show_held(addr);
         let out = self.fire("PlayerDropItemEvent", vec![("player", self.name_json(addr)), ("item", self.item_json(d.id, d.count as u8))]);
         if cancelled(&out) {
-            self.add_item(addr, d.id, d.count);
+            if let Some(c) = self.clients.get_mut(addr) {
+                c.inv.add_kind(thrown, thrown.count as u32);
+            }
+            self.send_inventory(addr);
             return;
         }
         let at = self.throw_from(addr);
         if let Some((at, vel)) = at {
-            self.drop_item(at, vel, d.id, d.count as u8, 40);
+            self.drop_stack(at, vel, thrown, 40);
         }
     }
 
@@ -4172,9 +4472,9 @@ impl Server {
 
     /// Applique une demande d'inventaire sur une copie ; le joueur n'est modifié que si
     /// tout est valide.
-    fn run_stack_request(inv: &mut PlayerWindows, request: &bedrock::StackRequest, created: Option<i16>, craft: Option<&crate::data::Craft>, trade: Option<&mobs::TradeDeal>, dropped: &mut Vec<(i16, u8)>) -> Option<Vec<(u8, u8, u8, i32)>> {
+    fn run_stack_request(inv: &mut PlayerWindows, request: &bedrock::StackRequest, created: Option<i16>, craft: Option<&crate::data::Craft>, trade: Option<&mobs::TradeDeal>, dropped: &mut Vec<inventory::ItemStack>) -> Option<Vec<(u8, u8, u8, i32)>> {
         let mut work = inv.clone();
-        let mut thrown: Vec<(i16, u8)> = Vec::new();
+        let mut thrown: Vec<inventory::ItemStack> = Vec::new();
         let mut touched: Vec<(Target, usize)> = Vec::new();
         // Coffre d'une monture : le jeu compte ses cases à partir de 1 (la case 0 est la selle
         // ou le tapis, tenue à part) ; dans l'inventaire de la monture, le coffre commence
@@ -4200,13 +4500,14 @@ impl Server {
                     let slot = at(from)?;
                     let stack = work.get(slot)?;
                     if !stack.is_empty() {
-                        thrown.push((stack.id, (*count).min(stack.count)));
+                        thrown.push(inventory::ItemStack { count: (*count).min(stack.count), ..stack });
                     }
                     inventory::Action::Remove { count: *count, from: slot }
                 }
                 bedrock::StackAction::Destroy { count, from } => inventory::Action::Remove { count: *count, from: at(from)? },
                 bedrock::StackAction::CraftCreative { .. } => {
-                    work.create(created?, inventory::MAX_STACK);
+                    // (avec sa variante : la couleur d'un lit pris au menu créatif)
+                    work.create_kind(created?, request.created_meta, inventory::MAX_STACK);
                     continue;
                 }
                 bedrock::StackAction::CraftRecipe { .. } if trade.is_some() => {
@@ -4292,6 +4593,19 @@ impl Server {
         if self.is_fence(state) && self.tie_to_fence(addr, pos) {
             return true;
         }
+        // Buisson à baies mûres : la cueillette
+        if self.pick_berries(addr, pos) {
+            return true;
+        }
+        // Houe : la terre est labourée
+        if self.till(addr, pos) {
+            return true;
+        }
+        // Lit : point de réapparition, et sommeil la nuit
+        if self.data.as_ref().and_then(|d| d.block_name(state)) == Some("minecraft:bed") {
+            self.use_bed(addr, pos);
+            return true;
+        }
         // Cloche : elle sonne
         if self.data.as_ref().and_then(|d| d.block_name(state)) == Some("minecraft:bell") {
             self.ring_bell(addr, pos);
@@ -4333,7 +4647,7 @@ impl Server {
         if let Some(inv) = tile.inventory_mut() {
             for (slot, id, count) in items {
                 self.tile_net_id = if self.tile_net_id >= i32::MAX - 1 { 1_000_000_000 } else { self.tile_net_id + 1 };
-                inv.set_item(slot, crate::item::ItemStack { id, count, net_id: self.tile_net_id });
+                inv.set_item(slot, crate::item::ItemStack::new(id, count, self.tile_net_id));
             }
         }
         if self.cfg.debug {
@@ -4419,7 +4733,7 @@ impl Server {
             Some(c) => (c.protocol, c.inv.open_window),
             None => return,
         };
-        let list: Vec<(i16, u8, i32, u32)> = slots.iter().map(|s| (s.id, s.count, s.net_id, self.block_for(s.id).unwrap_or(0))).collect();
+        let list: Vec<bedrock::Slot> = slots.iter().map(|s| (s.id, s.count, s.net_id, self.block_for(s.id).unwrap_or(0), s.meta, s.damage)).collect();
         let features = crate::versions::features(protocol);
         let species = self.clients.get(addr).and_then(|c| c.inv.block_mob).and_then(|id| self.mobs.get(&id)).map(|m| m.species);
         // Monture, comme le jeu officiel : chaque partie de l'écran a son conteneur nommé.
@@ -4589,7 +4903,15 @@ impl Server {
         }
         let block = match self.block_for(item.id) {
             Some(b) if item.count > 0 => b,
-            _ => return, // rien de posable en main
+            _ => {
+                // Rien de posable en main. Si le jeu a quand même dessiné un bloc, il
+                // retrouve ce qu'il y a vraiment à cet endroit.
+                if item.count > 0 && near && crate::world::World::in_bounds(y) {
+                    let current = self.world.get(x, y, z);
+                    self.send(addr, bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y, z, current));
+                }
+                return;
+            }
         };
         let air = self.world.air;
         // Orientation selon la face cliquée et le regard du joueur ; une porte prend deux blocs
@@ -4597,6 +4919,10 @@ impl Server {
         let (block, upper) = match (&self.data, self.items_level) {
             (Some(d), 2) => {
                 let mut placed = placement::placed_state(d, default, placement::Placement { face, click, looks });
+                // Feuilles posées à la main : elles ne dépérissent pas
+                if d.block_name(placed).map(|n| n.contains("leaves")).unwrap_or(false) {
+                    placed = d.with_props(placed, &[("persistent_bit", Prop::Int(1))]).unwrap_or(placed);
+                }
                 let mut upper = None;
                 if placement::is_door(d, placed) {
                     // Charnière : à droite si une porte se trouve à gauche (double porte), ou si
@@ -4645,7 +4971,9 @@ impl Server {
         // Posé dans de l'eau : le bloc la garde s'il le peut (dalle, escalier, clôture…)
         let was = self.world.get(x, y, z);
         let soak = self.is_water_source(was) && self.holds_water(block);
-        if refused || !near || !room_above || !self.replaceable(was) || !self.world.set(x, y, z, block) {
+        // Le support que le bloc exige (terre labourée pour une culture, bloc plein pour une torche…)
+        let stands = self.can_stand(block, (x, y, z));
+        if refused || !near || !room_above || !stands || !self.replaceable(was) || !self.world.set(x, y, z, block) {
             // Pose refusée : le joueur retrouve son inventaire exact et le bloc d'origine
             self.send_inventory(addr);
             let current = self.world.get(x, y, z);
@@ -4666,6 +4994,10 @@ impl Server {
             if let Some(new) = tile::create(kind) {
                 self.world.tiles.insert((x, y, z), new);
             }
+            // Lit : il prend la couleur de l'objet posé
+            if kind == crate::block::TileType::Bed {
+                self.set_bed_color((x, y, z), item.meta.min(15) as u8);
+            }
         }
         if self.cfg.debug {
             let name = self.data.as_ref().and_then(|d| d.block_name(block)).unwrap_or("?").to_string();
@@ -4682,9 +5014,30 @@ impl Server {
         }
         self.settle_stairs((x, y, z));
         self.settle_links((x, y, z));
+        self.placed_may_fall((x, y, z), block);
+        // Bruit de la matière posée
+        let centre = (x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
+        self.send_near(centre, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound_with(bedrock::SOUND_PLACE, centre, block as i32, "", false, -1));
         if let Some(upper) = upper {
             if self.world.set(x, y + 1, z, upper) {
                 self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(x, y + 1, z, upper), None);
+            }
+        }
+        // Lit : le pied vient d'être posé, la tête le prolonge dans le sens du lit
+        let head = self.data.as_ref().and_then(|d| {
+            if d.block_name(block) != Some("minecraft:bed") {
+                return None;
+            }
+            let (dx, dz) = bed_step(d.prop(block, "direction"));
+            Some(((x + dx, y, z + dz), d.with_props(block, &[("head_piece_bit", Prop::Int(1))])?))
+        });
+        if let Some((at, state)) = head {
+            if self.replaceable(self.world.get(at.0, at.1, at.2)) && self.world.set(at.0, at.1, at.2, state) {
+                self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(at.0, at.1, at.2, state), None);
+                if let Some(new) = tile::create(crate::block::TileType::Bed) {
+                    self.world.tiles.insert(at, new);
+                }
+                self.set_bed_color(at, item.meta.min(15) as u8);
             }
         }
         // Citrouille posée sur un T de blocs de fer : un golem
@@ -4985,6 +5338,9 @@ impl Server {
         if self.world.set(pos.0, pos.1, pos.2, state) {
             self.liquid_neighbours(pos);
             self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(pos.0, pos.1, pos.2, state), None);
+            if state == self.world.air {
+                self.support_check(pos);
+            }
         }
     }
 
@@ -5233,7 +5589,12 @@ impl Server {
     /// Login accepté : début des packs de ressources.
     fn send_login_success(&mut self, addr: &SocketAddr, _protocol: i32) {
         self.send(addr, bedrock::ID_PLAY_STATUS, &bedrock::play_status(bedrock::STATUS_LOGIN_SUCCESS));
-        self.send(addr, bedrock::ID_RESOURCE_PACKS_INFO, &bedrock::resource_packs_info());
+        let info = bedrock::resource_packs_info(&self.packs, self.force_packs);
+        if self.cfg.debug && !self.packs.is_empty() {
+            let hex: String = info.iter().take(200).map(|b| format!("{:02x}", b)).collect();
+            info!("{} : packs de ressources proposés ({} octets) — {}", addr, info.len(), hex);
+        }
+        self.send(addr, bedrock::ID_RESOURCE_PACKS_INFO, &info);
     }
 
     /// Traite les logins analysés et vérifiés en arrière-plan.
@@ -5425,6 +5786,17 @@ impl Server {
                 }
                 continue;
             }
+            // Mise au point : tout ce que le jeu envoie en dehors du mouvement, du chat et des
+            // commandes (400 lignes au plus par joueur)
+            if self.cfg.debug && stage == Stage::InGame && !matches!(id, 144 | 9 | 77) {
+                if let Some(c) = self.clients.get_mut(&addr) {
+                    if c.trace_left > 0 {
+                        c.trace_left -= 1;
+                        let hex: String = body.iter().take(110).map(|b| format!("{:02x}", b)).collect();
+                        info!("[trace] {} : paquet {} ({} octets) {}", addr, id, body.len(), hex);
+                    }
+                }
+            }
             match (stage, id) {
                 (Stage::Handshake, bedrock::ID_REQUEST_NETWORK_SETTINGS) => {
                     let proto = match body.get(..4) {
@@ -5495,6 +5867,23 @@ impl Server {
                     return;
                 }
                 // Le client répond deux fois : « j'ai tous les packs », puis « terminé ».
+                // Le jeu demande un morceau d'un pack
+                (Stage::Packs, bedrock::ID_RESOURCE_PACK_CHUNK_REQUEST) => {
+                    if let Some((id, index)) = bedrock::read_pack_chunk_request(&body) {
+                        let chunk = self.packs.iter().find(|p| p.wire_id() == id || p.uuid == id).and_then(|p| p.chunk(index).map(|(offset, data)| bedrock::resource_pack_chunk_data(&id, index, offset, data)));
+                        match chunk {
+                            Some(packet) => self.send(&addr, bedrock::ID_RESOURCE_PACK_CHUNK_DATA, &packet),
+                            None => {
+                                if self.cfg.debug {
+                                    info!("{} : morceau {} du pack {} demandé, mais il n'existe pas", addr, index, id);
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+                // Sans pack, le client répond deux fois : « j'ai tous les packs », puis « terminé ».
+                // Avec des packs, il peut d'abord les demander, ou les refuser.
                 (Stage::Packs, bedrock::ID_RESOURCE_PACK_RESPONSE) => {
                     let (n, id, features) = match self.clients.get_mut(&addr) {
                         Some(c) => {
@@ -5503,8 +5892,49 @@ impl Server {
                         }
                         None => return,
                     };
-                    if n == 1 {
-                        self.send(&addr, bedrock::ID_RESOURCE_PACK_STACK, &bedrock::resource_pack_stack());
+                    let stack_first = if self.packs.is_empty() {
+                        n == 1
+                    } else {
+                        let (status, wanted) = bedrock::read_pack_response(&body).unwrap_or((bedrock::PACKS_HAVE_ALL, Vec::new()));
+                        if self.cfg.debug {
+                            let hex: String = body.iter().take(120).map(|b| format!("{:02x}", b)).collect();
+                            info!("{} : réponse aux packs de ressources : état {}, demandés {:?} — {}", addr, status, wanted, hex);
+                        }
+                        match status {
+                            // Refusés. S'ils sont obligatoires, le joueur ne peut pas entrer ;
+                            // sinon il entre sans, comme s'il n'y en avait pas
+                            bedrock::PACKS_REFUSED if self.force_packs => {
+                                self.kick(&addr, "Ce serveur demande d'accepter ses packs de ressources.");
+                                continue;
+                            }
+                            bedrock::PACKS_REFUSED => {
+                                info!("{} joue sans les packs de ressources (refusés par son jeu)", self.name_at(&addr));
+                                if let Some(c) = self.clients.get_mut(&addr) {
+                                    c.without_packs = true;
+                                }
+                                true
+                            }
+                            bedrock::PACKS_SEND => {
+                                // Annonce de chaque pack demandé ; le jeu réclame ensuite ses morceaux
+                                let announces: Vec<Vec<u8>> = self
+                                    .packs
+                                    .iter()
+                                    .filter(|p| wanted.is_empty() || wanted.iter().any(|w| *w == p.wire_id() || w.to_lowercase().starts_with(&p.uuid)))
+                                    .map(bedrock::resource_pack_data_info)
+                                    .collect();
+                                for announce in announces {
+                                    self.send(&addr, bedrock::ID_RESOURCE_PACK_DATA_INFO, &announce);
+                                }
+                                continue;
+                            }
+                            bedrock::PACKS_COMPLETED => false,
+                            _ => true,
+                        }
+                    };
+                    if stack_first {
+                        let none = self.clients.get(&addr).map(|c| c.without_packs).unwrap_or(false);
+                        let stack = bedrock::resource_pack_stack(if none { &[] } else { &self.packs }, self.force_packs);
+                        self.send(&addr, bedrock::ID_RESOURCE_PACK_STACK, &stack);
                         continue;
                     }
                     // Le joueur est chargé dès maintenant : il apparaît directement là où il
@@ -5571,7 +6001,26 @@ impl Server {
                     }
                     if !experiment_skips_items(exp) {
                         let level = if features.editor_migration_version { self.items_level } else { 0 };
-                        let sent = self.send_captured(&addr, bedrock::ID_ITEM_REGISTRY);
+                        // Objets créés par les plugins : ajoutés à la liste du jeu
+                        let custom: Vec<(String, i16, i32, Option<Vec<u8>>)> = match (&self.data, level) {
+                            (Some(d), 2) if crate::item::custom::any() => {
+                                d.items.iter().filter(|i| i.id >= crate::item::custom::FIRST_ID).map(|i| (i.name.clone(), i.id, i.version, i.components.clone())).collect()
+                            }
+                            _ => Vec::new(),
+                        };
+                        let extended = if custom.is_empty() {
+                            None
+                        } else {
+                            let list: Vec<(&str, i16, i32, Option<&[u8]>)> = custom.iter().map(|(n, id, v, c)| (n.as_str(), *id, *v, c.as_deref())).collect();
+                            self.captured(&addr, bedrock::ID_ITEM_REGISTRY).and_then(|body| bedrock::item_registry_append(&body, &list))
+                        };
+                        let sent = match extended {
+                            Some(body) => {
+                                self.send(&addr, bedrock::ID_ITEM_REGISTRY, &body);
+                                true
+                            }
+                            None => self.send_captured(&addr, bedrock::ID_ITEM_REGISTRY),
+                        };
                         let registry = match (level, &self.data) {
                             _ if sent => Vec::new(),
                             (2, Some(d)) => {
@@ -5698,6 +6147,24 @@ impl Server {
                     if self.cfg.debug {
                         // Mise au point : gestes sur les blocs (35) et demandes d'objets (36) joints au mouvement
                         let flags = bedrock::input_flags(&body);
+                        // … et chaque changement des drapeaux du mouvement (début d'un geste, d'un repas)
+                        if let Some(c) = self.clients.get_mut(&addr) {
+                            if c.trace_left > 0 && c.trace_flags != flags {
+                                c.trace_left -= 1;
+                                c.trace_flags = flags.clone();
+                                let hex: String = body.iter().skip(32).take(160).map(|b| format!("{:02x}", b)).collect();
+                                info!("[trace] {} : mouvement, drapeaux {:?} ({} octets) {}", addr, flags, body.len(), hex);
+                            }
+                        }
+                        if flags.contains(&35) && !flags.contains(&34) && !flags.contains(&36) {
+                            if let Some(c) = self.clients.get_mut(&addr) {
+                                if c.gesture_logged < 12 {
+                                    c.gesture_logged += 1;
+                                    let hex: String = body.iter().skip(32).take(120).map(|b| format!("{:02x}", b)).collect();
+                                    info!("{} : minage, drapeaux {:?}, lu comme {:?} ({} octets) {}", addr, flags, bedrock::read_block_actions(&body), body.len(), hex);
+                                }
+                            }
+                        }
                         if flags.contains(&34) || flags.contains(&36) {
                             if let Some(c) = self.clients.get_mut(&addr) {
                                 if c.gesture_logged < 12 {
@@ -5708,6 +6175,7 @@ impl Server {
                             }
                         }
                     }
+                    self.on_mining(&addr, &body);
                     if bedrock::input_has_interaction(&body) {
                         // Lecture directe, puis recherche du geste par la position du joueur qu'il
                         // contient : avec un outil en main, le début du geste varie.
@@ -5736,6 +6204,10 @@ impl Server {
                 (Stage::InGame, 77) => self.on_command_request(&addr, &body),
                 (Stage::InGame, bedrock::ID_MOB_EQUIPMENT) => {
                     if let (Some(slot), Some(c)) = (bedrock::read_selected_slot(&body), self.clients.get_mut(&addr)) {
+                        // (changer d'objet abandonne le repas en cours)
+                        if c.inv.selected != slot {
+                            c.eating = None;
+                        }
                         c.inv.selected = slot;
                     }
                     self.show_held(&addr);
@@ -5747,6 +6219,10 @@ impl Server {
                     let relayed = match self.clients.get_mut(&addr) {
                         Some(c) if !self.animate_refused && now.saturating_sub(c.last_swing) >= 5 => {
                             c.last_swing = now;
+                            // (la fin du paquet sert de modèle pour l'animation du réveil)
+                            if let Some(tail) = bedrock::animate_tail(&body) {
+                                c.animate_tail = tail;
+                            }
                             bedrock::relay_arm_swing(&body, c.id).map(|p| (c.id, p))
                         }
                         _ => None,
@@ -5789,15 +6265,35 @@ impl Server {
                         self.on_key_drop(&addr, d);
                     }
                 }
+                (Stage::InGame, bedrock::ID_ACTOR_EVENT) => self.relay_eating(&addr, &body),
+                (Stage::InGame, bedrock::ID_LEVEL_SOUND_EVENT) => self.relay_hit_sound(&addr, &body),
                 (Stage::InGame, bedrock::ID_PLAYER_ACTION) => {
-                    if let Some((_, bedrock::ACTION_RESPAWN)) = bedrock::read_player_action(&body) {
-                        self.respawn(&addr);
+                    match bedrock::read_player_action(&body) {
+                        Some((_, bedrock::ACTION_RESPAWN)) => self.respawn(&addr),
+                        Some((_, bedrock::ACTION_STOP_SLEEPING)) => self.wake(&addr),
+                        _ => {}
                     }
                 }
                 (Stage::InGame, bedrock::ID_RESPAWN) => {
                     // Le joueur a cliqué sur « Réapparaître »
                     if bedrock::read_respawn_state(&body) == Some(bedrock::RESPAWN_CLIENT_READY) {
                         self.respawn(&addr);
+                    }
+                }
+                (Stage::InGame, bedrock::ID_INVENTORY_TRANSACTION) if bedrock::read_item_gesture(&body).is_some() => {
+                    // Geste fait avec l'objet tenu, sans viser de bloc
+                    match bedrock::read_item_gesture(&body) {
+                        Some(bedrock::ItemGesture::ClickAir) => {
+                            // Écouteurs : l'objet utilisé, et la possibilité de l'empêcher
+                            if self.item_use_cancelled(&addr) {
+                                self.send_inventory(&addr);
+                            } else if !self.eat_in_air(&addr) && !self.boost_mount(&addr) {
+                                // (manger, accélérer sa monture, remplir un seau à une source)
+                                self.bucket_in_air(&addr);
+                            }
+                        }
+                        Some(bedrock::ItemGesture::Release) => self.stop_eating(&addr),
+                        None => {}
                     }
                 }
                 (Stage::InGame, bedrock::ID_INVENTORY_TRANSACTION) => {
@@ -5862,13 +6358,15 @@ impl Server {
                                     let current = self.world.get(target.0, target.1, target.2);
                                     self.send(&addr, bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(target.0, target.1, target.2, current));
                                 } else {
-                                    self.on_place(&addr, target, u.face, u.click);
+                                    if !self.grow_patch(&addr, u.pos) {
+                                        self.on_place(&addr, target, u.face, u.click);
+                                    }
                                 }
                             }
                         } else if u.action == 1 {
                             // Clic dans le vide : un seau vide peut viser une source d'eau ou de lave ;
                             // en selle sur un cochon, la carotte sur un bâton l'accélère
-                            if !self.boost_mount(&addr) {
+                            if !self.eat_in_air(&addr) && !self.boost_mount(&addr) {
                                 self.bucket_in_air(&addr);
                             }
                         }
@@ -5940,6 +6438,7 @@ impl Server {
                         bytes: 0,
                         id: self.next_id,
                         pack_responses: 0,
+                        without_packs: false,
                         chunks_sent: false,
                         joined: false,
                         pos: self.spawn_point(),
@@ -5980,6 +6479,18 @@ impl Server {
                         probe: 0,
                         probe_tick: 0,
                         synced_tick: 0,
+                        saturation: 5.0,
+                        exhaustion: 0.0,
+                        food_timer: 0,
+                        eating: None,
+                        beds_seen: HashSet::new(),
+                        sleeping: None,
+                        slept_at: 0,
+                        mining: None,
+                        punched_at: 0,
+                        animate_tail: Vec::new(),
+                        trace_left: 400,
+                        trace_flags: Vec::new(),
                         move_budget: 0.0,
                         move_budget_at: Instant::now(),
                         corrections: 0,
@@ -6186,6 +6697,15 @@ impl Server {
             "reload" => {
                 self.plugins.unload_all();
                 self.npcs.clear();
+                // Objets et blocs retrouvent les règles du jeu ; les plugins rechargés
+                // refont leurs modifications
+                crate::item::overrides::clear();
+                crate::block::overrides::clear();
+                crate::item::custom::clear();
+                if let Some(data) = self.data.as_mut() {
+                    Arc::make_mut(data).remove_items_from(crate::item::custom::FIRST_ID);
+                }
+                self.refresh_templates();
                 self.load_plugins();
                 info!("Plugins rechargés");
             }
@@ -6311,7 +6831,11 @@ impl Server {
             (bedrock::ID_UPDATE_ABILITIES, Some(bedrock::update_abilities(id, mode))),
             (bedrock::ID_SET_ACTOR_DATA, Some(bedrock::set_actor_data_player(id as u64))),
             (bedrock::ID_SET_TIME, Some(bedrock::set_time(self.world_time() as i32))),
-            (bedrock::ID_CREATIVE_CONTENT, if self.has_captured(addr, bedrock::ID_CREATIVE_CONTENT) { None } else { Some(bedrock::creative_content_empty()) }),
+            (bedrock::ID_CREATIVE_CONTENT, match self.creative_with_plugin_items(addr) {
+                Some(menu) => Some(menu),
+                None if self.has_captured(addr, bedrock::ID_CREATIVE_CONTENT) => None,
+                None => Some(bedrock::creative_content_empty()),
+            }),
             (bedrock::ID_INVENTORY_CONTENT, Some(bedrock::inventory_content_empty(0, 36, features))),
             (bedrock::ID_PLAYER_HOTBAR, Some(bedrock::player_hotbar(0))),
             (bedrock::ID_SET_PLAYER_GAME_TYPE, Some(bedrock::set_time(mode.bedrock_id()))),
@@ -6693,12 +7217,17 @@ impl Server {
                 info!("Données du jeu chargées : {} objets, {} blocs ({} états)", d.items.len(), d.block_count(), d.state_count());
                 self.blocks = Some(d.block_registry());
                 self.plugin_blocks = Some(Arc::new(d.block_names_for_plugins()));
+                crate::item::set_limits(d.items.iter().map(|i| (i.id, i.name.as_str())));
                 self.data = Some(Arc::new(d));
                 self.items_level = 2;
+                // Objets créés par les plugins, chargés juste avant
+                self.register_custom_items();
+                self.refresh_templates();
             }
             Err(e) => warn!("Données du jeu absentes ({}) : seuls quelques blocs sont disponibles. Placez le dossier « data » à côté du serveur.", e),
         }
         self.load_captured(std::path::Path::new("data"));
+        (self.packs, self.force_packs) = crate::utils::packs::load_dir(std::path::Path::new("resource_packs"));
         self.load_ops();
         self.open_world();
         if let Some(d) = &self.data {
@@ -6707,6 +7236,13 @@ impl Server {
                 Ok(0) => {}
                 Ok(n) => info!("Coffres, fours et panneaux rechargés : {}", n),
                 Err(e) => warn!("Contenu des coffres et des fours non rechargé : {}", e),
+            }
+        }
+        // Couleur des lits posés, retrouvée dans les données des blocs
+        for pos in self.world.tiles.positions() {
+            if let Some(tile) = self.world.tiles.get(pos).filter(|t| t.tile_type() == crate::block::TileType::Bed) {
+                let colour = tile.save_extra().into_iter().find(|(k, _)| *k == "color").and_then(|(_, v)| v.as_i64()).unwrap_or(14);
+                self.bed_colors.insert(pos, colour.clamp(0, 15) as u8);
             }
         }
         self.load_ground_items();
@@ -6787,9 +7323,26 @@ impl Server {
                     let _t = timings::scope("Tick — objets au sol (affichage)");
                     self.show_ground_items();
                 }
-                if self.tick % 80 == 0 {
-                    let _t = timings::scope("Tick — vie regagnée");
-                    self.regenerate();
+                {
+                    let _t = timings::scope("Tick — faim et sommeil");
+                    self.hunger_tick();
+                    if self.tick % 20 == 0 {
+                        self.sleep_tick();
+                    }
+                    if self.tick % 2 == 0 {
+                        self.orb_tick();
+                        self.fall_tick();
+                    }
+                    if self.tick % 5 == 0 {
+                        self.decay_tick();
+                    }
+                    if self.tick % 10 == 0 {
+                        self.sync_beds();
+                    }
+                }
+                {
+                    let _t = timings::scope("Tick — croissance (ticks aléatoires)");
+                    self.random_ticks();
                 }
                 {
                     let _t = timings::scope("Tick — eau et lave");
@@ -6941,6 +7494,7 @@ mod tests {
             ],
             created: None,
             created_count: 0,
+            created_meta: 0,
         };
         let mut inv = PlayerWindows::new();
         inv.add(500, 5);

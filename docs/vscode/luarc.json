@@ -1,0 +1,4 @@
+{
+  "workspace.library": ["../../docs/vscode/basalt-api.lua"],
+  "diagnostics.globals": ["server", "GameMode", "EventPriority", "TextFormat", "PlayerInteractEvent", "EntityDamageEvent"]
+}

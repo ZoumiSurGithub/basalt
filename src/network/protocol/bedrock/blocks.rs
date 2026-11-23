@@ -95,6 +95,84 @@ pub fn input_flags(body: &[u8]) -> Vec<i32> {
     (0..count).filter_map(|_| read_vari32(body, &mut pos)).collect()
 }
 
+/// Gestes de minage joints à PlayerAuthInput (drapeau 35) : (action, bloc visé, face).
+/// Actions : 0 début, 1 abandon, 2 fin, 18 le joueur continue de frapper.
+///
+/// Disposition relevée avec le jeu 1.26.65 : après la vitesse viennent trois octets de
+/// présence — interaction, demande d'objets, gestes sur les blocs — puis, pour ces derniers,
+/// leur nombre et pour chacun l'action, le bloc et la face (des zéros pour « fin »). Lu
+/// seulement quand le paquet ne porte ni interaction ni demande d'objets, qui précèdent.
+pub fn read_block_actions(body: &[u8]) -> Option<Vec<(i32, (i32, i32, i32), i32)>> {
+    let mut pos = 32;
+    let count = read_varu32(body, &mut pos)? as usize;
+    if count > 96 {
+        return None;
+    }
+    let mut mines = false;
+    for _ in 0..count {
+        mines |= read_vari32(body, &mut pos)? == 35;
+    }
+    if !mines {
+        return None;
+    }
+    read_varu32(body, &mut pos)?; // mode de saisie
+    read_varu32(body, &mut pos)?; // mode de jeu
+    read_vari32(body, &mut pos)?; // modèle d'interaction
+    pos = pos.checked_add(8)?; // rotation d'interaction
+    read_varu64(body, &mut pos)?; // tick
+    pos = pos.checked_add(12)?; // vitesse
+    if body.get(pos..pos + 3)? != [0, 0, 1] {
+        return None;
+    }
+    pos += 3;
+    let n = read_varu32(body, &mut pos)?;
+    if !(1..=16).contains(&n) {
+        return None;
+    }
+    let mut out = Vec::new();
+    for _ in 0..n {
+        let action = read_vari32(body, &mut pos)?;
+        let x = read_vari32(body, &mut pos)?;
+        let y = read_vari32(body, &mut pos)?;
+        let z = read_vari32(body, &mut pos)?;
+        let face = read_vari32(body, &mut pos)?;
+        if !(0..=40).contains(&action) {
+            return None;
+        }
+        out.push((action, (x, y, z), face));
+    }
+    Some(out)
+}
+
+/// Geste fait avec l'objet tenu, sans viser de bloc (transaction d'inventaire à part).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ItemGesture {
+    /// Clic dans le vide : début d'un repas, et fin du précédent si le bouton reste tenu
+    ClickAir,
+    /// Bouton relâché avant la fin (repas abandonné, arc détendu)
+    Release,
+}
+
+/// Lit une transaction d'inventaire sans objets déplacés. Disposition relevée avec le jeu
+/// 1.26.65 : identifiant (0), octet « cases jointes » (0), type (2 objet utilisé, 4 objet
+/// relâché), nombre d'actions (0), puis pour un objet utilisé le geste (1 : dans le vide).
+pub fn read_item_gesture(body: &[u8]) -> Option<ItemGesture> {
+    let mut pos = 0;
+    if read_vari32(body, &mut pos)? != 0 || *body.get(pos)? != 0 {
+        return None;
+    }
+    pos += 1;
+    let kind = read_varu32(body, &mut pos)?;
+    if read_varu32(body, &mut pos)? != 0 {
+        return None;
+    }
+    match kind {
+        2 => (read_vari32(body, &mut pos)? == 1).then_some(ItemGesture::ClickAir),
+        4 => Some(ItemGesture::Release),
+        _ => None,
+    }
+}
+
 /// Vrai si PlayerAuthInput annonce une interaction (sert au diagnostic).
 pub fn input_has_interaction(body: &[u8]) -> bool {
     let mut pos = 32;
@@ -108,6 +186,34 @@ pub fn input_has_interaction(body: &[u8]) -> bool {
 #[cfg(test)]
 mod chat_tests {
     use super::*;
+
+    fn hex(text: &str) -> Vec<u8> {
+        (0..text.len() / 2).map(|i| u8::from_str_radix(&text[2 * i..2 * i + 2], 16).unwrap()).collect()
+    }
+
+    /// Paquets relevés dans le journal d'un vrai jeu 1.26.65 (sans la position du joueur).
+    #[test]
+    fn gestures_of_the_real_game_are_read() {
+        // Début de minage : « début » puis « continue » sur le bloc 181 63 294, face du dessus
+        let input = |tail: &str| {
+            let mut body = vec![0u8; 32];
+            body.extend(hex(tail));
+            body
+        };
+        let start = input("034660640102008a12114294f62cc382070f298e332e90a0bdd8f305b60000010200ea027ecc040224ea027ecc0402000000000000000000004651ca3d3a7217bfb3d74cbf0000000000000000");
+        assert_eq!(read_block_actions(&start), Some(vec![(0, (181, 63, 294), 1), (18, (181, 63, 294), 1)]));
+        // La suite : « continue », tick après tick
+        let go = input("034660640102008a12114294f62cc38307000000002e90a0bdb34692b50000010124ea027ecc0402000000000000000000004851ca3d397217bfb3d74cbf0000000000000000");
+        assert_eq!(read_block_actions(&go), Some(vec![(18, (181, 63, 294), 1)]));
+        // Un simple mouvement n'en porte pas
+        let walk = input("0260640102008262d74108e394c1970847922c3d2e90a0bd344c85bc000000000000000000000000004529903ef725e9be3038583f0000000000000000");
+        assert_eq!(read_block_actions(&walk), None);
+        // Clic dans le vide avec un aliment, puis bouton relâché
+        assert_eq!(read_item_gesture(&hex("000002000200000000ff0400080140000000000a00000000000000000000000000000000000000000000000000000000000000000000000000")), Some(ItemGesture::ClickAir));
+        assert_eq!(read_item_gesture(&hex("000004000004080140000000000a0000000000000000000000000000000000000000000000")), Some(ItemGesture::Release));
+        // Un bloc posé (cases jointes) n'est pas un geste dans le vide
+        assert_eq!(read_item_gesture(&hex("877401011d010002010001000000840103000000000a00000000000000000000")), None);
+    }
 
     #[test]
     fn chat_roundtrip_and_limits() {

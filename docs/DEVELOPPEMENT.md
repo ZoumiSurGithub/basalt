@@ -1,6 +1,8 @@
 # Développement
 
-Organisation du code, tests et publication des versions.
+Organisation du code, tests et publication des versions. Les gabarits d'objets et de blocs
+(où se trouve chaque règle, comment en ajouter une) ont leur page :
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Organisation du code
 
@@ -11,9 +13,9 @@ Organisation du code, tests et publication des versions.
 | `src/player/` | `Player` : un joueur, sa sauvegarde et son chargement (hérite de `Human`) |
 | `src/entity/` | `Entity` → `Living` → `Human` : la hiérarchie des entités ; physique des objets au sol (`item_physics.rs`) |
 | `src/inventory/` | `Inventory` (base commune), `BaseInventory`, puis `PlayerInventory`, `ArmorInventory`, `ChestInventory`, `FurnaceInventory`, `CraftingGrid` ; `PlayerWindows` (tous les inventaires d'un joueur) ; `transaction.rs` (demandes du jeu) |
-| `src/block/` | `Block` (base de tous les blocs), types de blocs (`types.rs`), registre `VanillaBlocks` couvrant tous les blocs du jeu |
+| `src/block/` | `Block` (base de tous les blocs), types de blocs (`types.rs`), comportements dans le monde (`behavior.rs` : chute, appui, cultures, feuilles), registre `VanillaBlocks` couvrant tous les blocs du jeu |
 | `src/tile/` | `Tile` (base des données attachées aux blocs), `ContainerTile`, `FurnaceTile`, `SignTile`, `TileMap` et sa sauvegarde |
-| `src/item/` | `Item` (base de tous les objets), `Tool`, `Armor`, `Food`, `VanillaItems` ; `ItemStack` (une pile) |
+| `src/item/` | `Item` (base de tous les objets), `Tool`, `Armor`, `Food` (`consumable.rs`), usure (`durable.rs`), `VanillaItems` ; `ItemStack` (une pile) |
 | `src/world/` | `World` : le monde, ses blocs modifiés et leur sauvegarde ; `vanilla.rs` : terrain à la manière du jeu ; `structures.rs` : villages, temples, mines, avant-postes, cités antiques, ruines de piste, chambres des épreuves, butin, `/locate` ; `liquid.rs` : écoulement de l'eau et de la lave ; `generator.rs` : terrain plat, premier terrain, choix du générateur |
 | `src/permission/` | `Permission`, règles par défaut, liste des opérateurs |
 | `src/utils/` | journal (`log.rs`), `server.properties` (`config.rs`), JSON et base64 (`json.rs`), YAML (`yaml.rs`), compression et décompression (`deflate.rs`, `inflate.rs`) |

@@ -11,7 +11,9 @@
 //! et à redéfinir, dans son `impl Block`, les seules méthodes qui le distinguent.
 
 #[allow(clippy::module_inception)]
+pub mod behavior;
 mod block;
+pub mod overrides;
 pub mod placement;
 mod types;
 mod vanilla_blocks;

@@ -10,17 +10,53 @@
 //! et à redéfinir, dans son `impl Item`, les seules méthodes qui le distinguent.
 
 mod armor;
+mod consumable;
+pub mod custom;
+mod durable;
+pub mod overrides;
 mod vanilla_items;
 #[allow(clippy::module_inception)]
 mod item;
 mod stack;
 mod tool;
 
-pub use self::armor::{Armor, Food};
+pub use self::armor::Armor;
+pub use self::consumable::{Food, EAT_TICKS};
+pub use self::durable::{apply_wear, Usage};
 pub use self::vanilla_items::VanillaItems;
 pub use self::item::{BaseItem, BlockItem, FoodValues, GenericItem, Item};
 pub use self::stack::{ItemStack, MAX_STACK};
 pub use self::tool::{Tool, ToolTier, ToolType};
+
+use std::collections::HashMap;
+use std::sync::RwLock;
+
+/// Par objet du jeu chargé : (taille de pile, usure maximale). Rempli au chargement des
+/// données ; sans données, tout s'empile par 64 et rien ne s'use.
+static LIMITS: RwLock<Option<HashMap<i16, (u8, u16)>>> = RwLock::new(None);
+
+/// Enregistre les limites de chaque objet d'après son nom (voir `VanillaItems`).
+pub fn set_limits<'a>(items: impl Iterator<Item = (i16, &'a str)>) {
+    let table: HashMap<i16, (u8, u16)> = items
+        .map(|(id, name)| {
+            let item = VanillaItems::get(name);
+            (id, (item.max_stack_size(), item.max_durability().min(u16::MAX as u32) as u16))
+        })
+        .collect();
+    if let Ok(mut limits) = LIMITS.write() {
+        *limits = Some(table);
+    }
+}
+
+/// Taille de pile d'un objet (64 s'il est inconnu).
+pub fn max_stack_of(id: i16) -> u8 {
+    LIMITS.read().ok().and_then(|l| l.as_ref().and_then(|t| t.get(&id).map(|v| v.0))).unwrap_or(MAX_STACK)
+}
+
+/// Usure qu'un outil supporte avant de casser (0 : l'objet ne s'use pas).
+pub fn max_durability_of(id: i16) -> u16 {
+    LIMITS.read().ok().and_then(|l| l.as_ref().and_then(|t| t.get(&id).map(|v| v.1))).unwrap_or(0)
+}
 
 #[cfg(test)]
 mod tests {

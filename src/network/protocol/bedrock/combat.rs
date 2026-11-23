@@ -24,6 +24,8 @@ pub const RESPAWN_CLIENT_READY: u8 = 2;
 
 /// Action « réapparaître » de PlayerAction.
 pub const ACTION_RESPAWN: i32 = 7;
+/// Le joueur quitte son lit (bouton « Quitter le lit »)
+pub const ACTION_STOP_SLEEPING: i32 = 6;
 
 /// ActorEvent : l'entité rougit (dégât), tombe (mort), se relève…
 pub fn actor_event(runtime_id: i64, event: u8, data: i32) -> Vec<u8> {

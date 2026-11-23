@@ -2,6 +2,7 @@
 //! fournit sa fiche `BaseItem` et redéfinit seulement ce qui le distingue ; tout le reste est
 //! hérité d'ici.
 
+use super::durable::Usage;
 use super::tool::{ToolTier, ToolType};
 
 /// Ce que tout objet possède.
@@ -26,6 +27,12 @@ pub struct FoodValues {
     /// Points de faim rendus
     pub hunger: u8,
     pub saturation: f32,
+    /// Se mange même le ventre plein (pomme dorée, fruit de chorus…)
+    pub always_edible: bool,
+    /// Durée du repas, en ticks
+    pub eat_ticks: u32,
+    /// Ce qui reste en main après le repas (nom court : `bowl`, `glass_bottle`)
+    pub leftover: Option<&'static str>,
 }
 
 pub trait Item {
@@ -52,6 +59,11 @@ pub trait Item {
 
     /// Nombre d'utilisations avant de casser (0 : l'objet ne s'use pas).
     fn max_durability(&self) -> u32 {
+        0
+    }
+
+    /// Usure que coûte un usage (0 : aucun). Voir `durable.rs`.
+    fn wear(&self, _usage: Usage) -> u16 {
         0
     }
 

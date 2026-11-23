@@ -1671,6 +1671,12 @@ impl Server {
     }
 
     /// Retire une créature (chez tous les joueurs qui la voient).
+    /// Un villageois dort-il dans ce bloc de lit ?
+    pub(super) fn mob_sleeps_in(&self, (x, y, z): (i32, i32, i32)) -> bool {
+        let centre = (x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
+        self.mobs.values().filter_map(|m| m.asleep).any(|p| (p.0 - centre.0).abs() < 1.2 && (p.1 - centre.1).abs() < 1.2 && (p.2 - centre.2).abs() < 1.2)
+    }
+
     pub(super) fn remove_mob(&mut self, id: i64) {
         self.mobs.remove(&id);
         self.mobs_dirty = true;
@@ -3056,6 +3062,13 @@ impl Server {
                     self.mob_changed(id);
                 }
                 let at = ((a.2 .0 + b.2 .0) / 2.0, a.2 .1.max(b.2 .1), (a.2 .2 + b.2 .2) / 2.0);
+                // L'éleveur (le joueur le plus proche, à 10 blocs au plus) y gagne de l'expérience
+                let near = |c: &Client| (c.pos.0 - at.0).powi(2) + (c.pos.1 - at.1).powi(2) + (c.pos.2 - at.2).powi(2);
+                let breeder = self.clients.iter().filter(|(_, c)| c.joined && c.dead.is_none() && near(c) < 100.0).min_by(|x, y| near(x.1).total_cmp(&near(y.1))).map(|(a, _)| *a);
+                if breeder.is_some() {
+                    let xp = self.xp_between(1, 7);
+                    self.drop_xp((at.0, at.1 + 0.5, at.2), xp);
+                }
                 // Le petit tient de l'un de ses parents (couleur de laine, pelage, robe) ; le motif
                 // de la robe d'un poulain vient de l'un ou l'autre
                 let (color, mut variant) = self.mobs.get(&if self.mob_rng.below(2) == 0 { a.0 } else { b.0 }).map(|m| (m.color, m.variant)).unwrap_or((0, 0));
@@ -3332,6 +3345,16 @@ impl Server {
             }
             self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_DEATH, 0));
             self.mob_loot(id);
+            // Tuée par un joueur : un peu d'expérience (rien pour un petit)
+            if let Attacker::Player(a) = by {
+                if !self.mobs.get(&id).map(|m| m.baby()).unwrap_or(true) {
+                    let xp = self.xp_between(1, 3);
+                    let _ = a;
+                    if let Some(at) = self.mobs.get(&id).map(|m| m.pos) {
+                        self.drop_xp((at.0, at.1 + 0.5, at.2), xp);
+                    }
+                }
+            }
         }
         // Aucun son envoyé : le jeu joue lui-même les cris, les bruits de coup et de mort
         true

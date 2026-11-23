@@ -126,8 +126,13 @@ impl PlayerWindows {
 
     /// Ajoute des objets au sac. Renvoie ce qui n'a pas pu entrer.
     pub fn add(&mut self, id: i16, count: u32) -> u32 {
+        self.add_kind(ItemStack::new(id, 0, 0), count)
+    }
+
+    /// Idem avec la variante et l'usure de l'objet (portées par `kind`).
+    pub fn add_kind(&mut self, kind: ItemStack, count: u32) -> u32 {
         let mut next = self.next_net_id;
-        let left = self.main.add_item(id, count, &mut || {
+        let left = self.main.add_kind(kind, count, &mut || {
             let id = next;
             next = if next >= i32::MAX - 1 { 1 } else { next + 1 };
             id
@@ -138,22 +143,32 @@ impl PlayerWindows {
 
     /// Remet un objet sauvegardé à sa place dans le sac (ou ailleurs dans le sac si la place est prise).
     pub fn restore(&mut self, slot: usize, id: i16, count: u8) {
-        let count = count.min(MAX_STACK);
+        self.restore_kind(slot, ItemStack::new(id, count, 0));
+    }
+
+    /// Idem avec la variante et l'usure de l'objet.
+    pub fn restore_kind(&mut self, slot: usize, stack: ItemStack) {
+        let count = stack.count.min(MAX_STACK);
         if count == 0 {
             return;
         }
         if slot < self.main.size() && self.main.slots[slot].is_empty() {
             let net_id = self.fresh_net_id();
-            self.main.set_item(slot, ItemStack { id, count, net_id });
+            self.main.set_item(slot, ItemStack { count, net_id, ..stack });
         } else {
-            self.add(id, count as u32);
+            self.add_kind(stack, count as u32);
         }
     }
 
     /// Remet un objet sauvegardé dans l'armure ou la seconde main. Si la place est prise (ou
     /// le numéro invalide), l'objet va dans le sac, pour ne jamais être perdu.
     pub fn restore_worn(&mut self, container: &str, slot: usize, id: i16, count: u8) {
-        let count = count.min(MAX_STACK);
+        self.restore_worn_kind(container, slot, ItemStack::new(id, count, 0));
+    }
+
+    /// Idem avec la variante et l'usure de l'objet.
+    pub fn restore_worn_kind(&mut self, container: &str, slot: usize, stack: ItemStack) {
+        let count = stack.count.min(MAX_STACK);
         if count == 0 {
             return;
         }
@@ -161,23 +176,28 @@ impl PlayerWindows {
         let placed = match container {
             "armor" if slot < self.armor.size() && free(&self.armor) => {
                 let net_id = self.fresh_net_id();
-                self.armor.set_item(slot, ItemStack { id, count, net_id })
+                self.armor.set_item(slot, ItemStack { count, net_id, ..stack })
             }
             "offhand" if slot < self.offhand.size() && free(&self.offhand) => {
                 let net_id = self.fresh_net_id();
-                self.offhand.set_item(slot, ItemStack { id, count, net_id })
+                self.offhand.set_item(slot, ItemStack { count, net_id, ..stack })
             }
             _ => false,
         };
         if !placed {
-            self.add(id, count as u32);
+            self.add_kind(stack, count as u32);
         }
     }
 
     /// Place un objet tout neuf dans l'emplacement de création (menu créatif, fabrication).
     pub fn create(&mut self, id: i16, count: u8) {
+        self.create_kind(id, 0, count);
+    }
+
+    /// Idem avec la variante de l'objet (la couleur d'un lit pris au menu créatif).
+    pub fn create_kind(&mut self, id: i16, meta: u16, count: u8) {
         let net_id = self.fresh_net_id();
-        self.created.set_item(0, ItemStack { id, count: count.min(MAX_STACK), net_id });
+        self.created.set_item(0, ItemStack { id, count: count.min(MAX_STACK).min(crate::item::max_stack_of(id)), net_id, meta, damage: 0 });
     }
 
     /// Jette ce qui reste dans l'emplacement de création.
@@ -196,7 +216,7 @@ impl PlayerWindows {
         let slot = (self.selected as usize).min(8);
         if self.held().count <= 1 {
             let net_id = self.fresh_net_id();
-            self.main.set_item(slot, ItemStack { id, count: 1, net_id });
+            self.main.set_item(slot, ItemStack::new(id, 1, net_id));
         } else {
             self.consume_held();
             self.add(id, 1);
@@ -222,14 +242,15 @@ impl PlayerWindows {
                     return None;
                 }
                 let max = self.inventory(to.0)?.max_stack();
-                if !dst.is_empty() && (dst.id != src.id || dst.count as u16 + count as u16 > max as u16) {
+                let max = max.min(crate::item::max_stack_of(src.id));
+                if !dst.is_empty() && (!dst.same_kind(&src) || dst.count as u16 + count as u16 > max as u16) {
                     return None;
                 }
                 let moved_all = src.count == count;
                 let new_dst = if dst.is_empty() {
                     // Une pile déplacée en entier garde son numéro ; une pile coupée en reçoit un nouveau
                     let net_id = if moved_all { src.net_id } else { self.fresh_net_id() };
-                    ItemStack { id: src.id, count, net_id }
+                    ItemStack { count, net_id, ..src }
                 } else {
                     ItemStack { count: dst.count + count, ..dst }
                 };
@@ -269,6 +290,22 @@ impl PlayerWindows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Deux lits de couleurs différentes ne se mélangent pas ; un outil usé reste seul.
+    #[test]
+    fn variants_and_worn_tools_keep_to_themselves() {
+        let mut inv = PlayerWindows::new();
+        let red = ItemStack { id: 700, count: 0, net_id: 0, meta: 14, damage: 0 };
+        let blue = ItemStack { meta: 11, ..red };
+        assert_eq!(inv.add_kind(red, 1), 0);
+        assert_eq!(inv.add_kind(blue, 1), 0);
+        let filled: Vec<ItemStack> = inv.main.slots.iter().copied().filter(|s| !s.is_empty()).collect();
+        assert_eq!(filled.iter().map(|s| (s.meta, s.count)).collect::<Vec<_>>(), vec![(14, 1), (11, 1)]);
+        // Le même objet sans variante s'empile toujours
+        assert_eq!(inv.add(5, 10), 0);
+        assert_eq!(inv.add(5, 10), 0);
+        assert_eq!(inv.main.slots.iter().filter(|s| s.id == 5).map(|s| s.count).collect::<Vec<_>>(), vec![20]);
+    }
 
     #[test]
     fn worn_items_come_back_on_the_player() {

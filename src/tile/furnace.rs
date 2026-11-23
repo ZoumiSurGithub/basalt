@@ -182,7 +182,7 @@ impl Tile for FurnaceTile {
                         let input = self.inventory.smelting();
                         self.inventory.set_item(0, ItemStack { count: input.count - 1, ..input });
                         let out = self.inventory.result();
-                        let new = if out.is_empty() { ItemStack { id, count: 1, net_id: ctx.next_net_id() } } else { ItemStack { count: out.count + 1, ..out } };
+                        let new = if out.is_empty() { ItemStack::new(id, 1, ctx.next_net_id()) } else { ItemStack { count: out.count + 1, ..out } };
                         self.inventory.set_item(2, new);
                     }
                 }

@@ -61,7 +61,7 @@ pub struct Craft {
     pub consumed: Vec<(usize, u8)>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Recipes {
     by_output: HashMap<String, Vec<Recipe>>,
 }

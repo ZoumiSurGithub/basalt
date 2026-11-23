@@ -121,6 +121,8 @@ pub enum TileType {
     Dropper,
     BrewingStand,
     Sign,
+    /// Lit : sa couleur
+    Bed,
     /// Bloc qui a des données propres que le serveur ne gère pas encore en détail
     /// (lit, bannière, tête, pot de fleurs, balise, générateur…)
     Other,
@@ -187,6 +189,38 @@ pub trait Block {
     /// La lumière passe-t-elle ?
     fn is_transparent(&self) -> bool {
         self.base().props.opacity < 1.0
+    }
+
+    // ---- comportements dans le monde (voir `behavior.rs`) --------------------------
+
+    /// Tombe-t-il quand rien ne le porte (sable, gravier) ?
+    fn falls(&self) -> bool {
+        super::behavior::falls(self.name())
+    }
+
+    /// Lui faut-il un bloc dessous pour tenir (fleur, rail, porte) ?
+    fn needs_floor(&self) -> bool {
+        super::behavior::needs_floor(self.name())
+    }
+
+    /// Est-il fait de deux moitiés, qui partent ensemble (porte, tournesol) ?
+    fn two_halves(&self) -> bool {
+        super::behavior::two_halves(self.name())
+    }
+
+    /// Tronc ou bois, qui nourrit les feuilles alentour ?
+    fn is_log(&self) -> bool {
+        super::behavior::is_log(self.name())
+    }
+
+    /// Feuillage, qui dépérit sans tronc à portée ?
+    fn is_leaves(&self) -> bool {
+        super::behavior::is_leaves(self.name())
+    }
+
+    /// Culture semée sur terre labourée ?
+    fn is_crop(&self) -> bool {
+        super::behavior::is_crop(self.name())
     }
 
     /// Données attachées au bloc, s'il en a.

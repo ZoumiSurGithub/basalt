@@ -348,6 +348,9 @@ pub enum Action {
     SetBlocks(Vec<(i32, i32, i32, u32)>),
     /// Personnage non joueur (PNJ) : (plugin, ordre)
     Npc(String, NpcOrder),
+    /// Modifie un objet ou un bloc du jeu : (plugin, `item` ou `block`, nom, valeur changée,
+    /// nouvelle valeur en texte). Voir `item/overrides.rs` et `block/overrides.rs`.
+    Modify(String, String, String, String, String),
 }
 
 /// Ordres donnés aux PNJ d'un plugin (voir `server.spawnNpc`).
@@ -541,6 +544,20 @@ unsafe extern "C" fn l_after(l: L) -> c_int {
 
 unsafe extern "C" fn l_every(l: L) -> c_int {
     add_timer(l, true)
+}
+
+/// server._modify(sorte, nom, clé, valeur) : derrière `server.items.modify` et
+/// `server.blocks.modify` (le préambule a déjà vérifié les types).
+unsafe extern "C" fn l_modify(l: L) -> c_int {
+    let c = ctx(l);
+    if c.actions.len() >= 4096 {
+        return 0;
+    }
+    match (arg_str(c, l, 1), arg_str(c, l, 2), arg_str(c, l, 3), arg_str(c, l, 4)) {
+        (Some(kind), Some(name), Some(key), Some(value)) => c.actions.push(Action::Modify(c.name.clone(), kind, name, key, value)),
+        _ => return bad_call(c, "server.items.modify(nom, valeurs)"),
+    }
+    0
 }
 
 /// server.setMotd(texte) / server.getMotd()
@@ -1294,7 +1311,7 @@ impl PluginManager {
             let plugin = Plugin { name: name.to_string(), manifest: found.manifest.clone(), api, state, ctx, mem, strikes: std::cell::Cell::new(0) };
 
             (api.createtable)(state, 0, 24);
-            let funcs: [(&str, CFn); 25] = [
+            let funcs: [(&str, CFn); 26] = [
                 ("spawnNpc\0", l_npc_spawn),
                 ("walkNpc\0", l_npc_walk),
                 ("teleportNpc\0", l_npc_teleport),
@@ -1309,6 +1326,7 @@ impl PluginManager {
                 ("_pget\0", l_pget),
                 ("_pset\0", l_pset),
                 ("_pdo\0", l_pdo),
+                ("_modify\0", l_modify),
                 ("log\0", l_log),
                 ("warn\0", l_warn),
                 ("on\0", l_on),

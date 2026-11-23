@@ -120,6 +120,16 @@ impl Item for Tool {
             _ => 0,
         }
     }
+    /// Un cran pour l'usage de l'outil, deux pour l'autre : une épée s'use en frappant,
+    /// les autres outils en minant.
+    fn wear(&self, usage: super::durable::Usage) -> u16 {
+        let own = if self.kind == ToolType::Sword { super::durable::Usage::Strike } else { super::durable::Usage::Mine };
+        if usage == own {
+            1
+        } else {
+            2
+        }
+    }
     /// Sorte et matériau de l'outil.
     fn tool_type(&self) -> ToolType {
         self.kind

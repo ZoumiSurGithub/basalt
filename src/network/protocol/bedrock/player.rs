@@ -238,6 +238,32 @@ pub fn relay_arm_swing(body: &[u8], id: i64) -> Option<Vec<u8>> {
     Some(w.0)
 }
 
+/// Ce qui suit l'identifiant dans un paquet d'animation reçu du jeu (None si anormal).
+pub fn animate_tail(body: &[u8]) -> Option<Vec<u8>> {
+    if body.is_empty() || body.len() > 48 {
+        return None;
+    }
+    let mut pos = 1;
+    read_varu64(body, &mut pos)?;
+    Some(body[pos..].to_vec())
+}
+
+/// Animation « se lève du lit » pour ce joueur. `tail` : la fin d'un paquet d'animation
+/// reçu du jeu, reprise telle quelle pour respecter la disposition de sa version ; vide,
+/// une donnée nulle et pas de précision.
+pub fn animate_wake(id: i64, tail: &[u8]) -> Vec<u8> {
+    let mut w = W::default();
+    w.u8(3);
+    w.varu64(id as u64);
+    if tail.is_empty() {
+        w.f32(0.0);
+        w.u8(0);
+    } else {
+        w.0.extend_from_slice(tail);
+    }
+    w.0
+}
+
 /// Déplace une entité (ici un autre joueur) chez un client : position absolue et angles
 /// arrondis sur un octet. `pos` est la position des yeux pour un joueur.
 pub fn move_actor_absolute(id: i64, pos: (f32, f32, f32), pitch: f32, yaw: f32, head_yaw: f32, on_ground: bool) -> Vec<u8> {

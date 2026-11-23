@@ -348,6 +348,8 @@ pub struct StackRequest {
     pub created: Option<String>,
     /// Quantité annoncée pour cet objet
     pub created_count: u16,
+    /// Variante de l'objet créé (la couleur d'un lit)
+    pub created_meta: u16,
 }
 
 fn read_slot_ref(d: &[u8], pos: &mut usize) -> Option<SlotRef> {
@@ -388,6 +390,7 @@ pub fn read_stack_requests(body: &[u8]) -> Option<Vec<StackRequest>> {
         let mut complete = true;
         let mut created = None;
         let mut created_count = 0u16;
+        let mut created_meta = 0u16;
         for _ in 0..n {
             // Chaque action commence par son rang dans la liste des variantes, puis son type
             read_varu32(body, &mut pos)?;
@@ -457,7 +460,8 @@ pub fn read_stack_requests(body: &[u8]) -> Option<Vec<StackRequest>> {
                         }
                     }
                     created = Some(name?);
-                    read_varu32(body, &mut pos)?;
+                    // (entier signé en zigzag : le rose, 6, s'écrit 12)
+                    created_meta = read_vari32(body, &mut pos)?.clamp(0, 32767) as u16;
                     let q = body.get(pos..pos.checked_add(2)?)?;
                     created_count = u16::from_le_bytes([q[0], q[1]]);
                     pos += 2;
@@ -479,7 +483,7 @@ pub fn read_stack_requests(body: &[u8]) -> Option<Vec<StackRequest>> {
                 break;
             }
         }
-        out.push(StackRequest { id, actions, created, created_count });
+        out.push(StackRequest { id, actions, created, created_count, created_meta });
         if !complete {
             return Some(out); // la suite du paquet n'est plus lisible
         }
@@ -892,16 +896,102 @@ pub fn item_registry_full(items: &[(&str, i16, i32, Option<&[u8]>)]) -> Vec<u8> 
     w.0
 }
 
+/// Ajoute des objets à une liste déjà encodée (celle relevée auprès du serveur officiel) :
+/// le nombre en tête est corrigé, les nouveaux objets suivent. None si la liste est illisible.
+pub fn item_registry_append(body: &[u8], items: &[(&str, i16, i32, Option<&[u8]>)]) -> Option<Vec<u8>> {
+    let mut pos = 0;
+    let count = read_varu32(body, &mut pos)?;
+    let mut w = W::default();
+    w.varu32(count + items.len() as u32);
+    w.0.extend_from_slice(&body[pos..]);
+    // (les entrées s'écrivent comme dans `item_registry_full`, sans son nombre en tête)
+    let extra = item_registry_full(items);
+    let mut skip = 0;
+    read_varu32(&extra, &mut skip)?;
+    w.0.extend_from_slice(&extra[skip..]);
+    Some(w.0)
+}
+
+/// Objet tel que le menu créatif le décrit : identifiant, quantité, variante, bloc, données.
+fn creative_item(w: &mut W, id: i16) {
+    w.vari32(id as i32);
+    if id == 0 {
+        w.0.extend_from_slice(&[0, 0, 0, 0, 0]);
+        return;
+    }
+    w.0.extend_from_slice(&1u16.to_le_bytes());
+    w.varu32(0); // variante
+    w.varu32(0); // bloc posé : aucun
+    w.varu32(10); // données : aucune (marqueur, « peut poser sur », « peut casser »)
+    w.0.extend_from_slice(&[0u8; 10]);
+}
+
+/// Saute un objet du menu créatif.
+fn skip_creative_item(d: &[u8], pos: &mut usize) -> Option<()> {
+    read_vari32(d, pos)?;
+    *pos = pos.checked_add(2)?;
+    read_varu32(d, pos)?;
+    read_varu32(d, pos)?;
+    let extra = read_varu32(d, pos)? as usize;
+    *pos = pos.checked_add(extra)?;
+    (*pos <= d.len()).then_some(())
+}
+
+/// Ajoute des groupes et des objets au menu créatif relevé auprès du serveur officiel.
+/// `groups` : (onglet de 1 à 4, nom affiché ou vide, objet qui sert d'image ou 0) ;
+/// `items` : (objet, rang de son groupe dans `groups`). None si le menu est illisible.
+///
+/// Disposition du paquet, lue dans le relevé : nombre de groupes, puis pour chacun onglet,
+/// nom et objet-image ; nombre d'objets, puis pour chacun son numéro dans le menu (de 1 en
+/// 1), l'objet et le rang de son groupe.
+pub fn creative_content_append(body: &[u8], groups: &[(u8, String, i16)], items: &[(i16, usize)]) -> Option<Vec<u8>> {
+    let mut pos = 0;
+    let group_count = read_varu32(body, &mut pos)?;
+    let groups_start = pos;
+    for _ in 0..group_count {
+        read_varu32(body, &mut pos)?;
+        let len = read_varu32(body, &mut pos)? as usize;
+        pos = pos.checked_add(len)?;
+        skip_creative_item(body, &mut pos)?;
+    }
+    let groups_end = pos;
+    let item_count = read_varu32(body, &mut pos)?;
+    let mut w = W::default();
+    w.varu32(group_count + groups.len() as u32);
+    w.0.extend_from_slice(&body[groups_start..groups_end]);
+    for (category, name, icon) in groups {
+        w.varu32(*category as u32);
+        w.string(name);
+        creative_item(&mut w, *icon);
+    }
+    w.varu32(item_count + items.len() as u32);
+    w.0.extend_from_slice(&body[pos..]);
+    for (rank, (id, group)) in items.iter().enumerate() {
+        w.varu32(item_count + 1 + rank as u32);
+        creative_item(&mut w, *id);
+        w.varu32(group_count + *group as u32);
+    }
+    Some(w.0)
+}
+
 /// Description d'une pile quelconque. `block` : identifiant réseau du bloc que l'objet
 /// pose (0 si ce n'est pas un bloc).
 pub fn item_stack(w: &mut W, id: i16, count: u8, net_id: i32, block: u32) {
+    item_stack_full(w, id, count, net_id, block, 0, 0);
+}
+
+/// Case d'un conteneur : (objet, quantité, numéro de pile, bloc posé, variante, usure).
+pub type Slot = (i16, u8, i32, u32, u16, u16);
+
+/// Idem avec la variante de l'objet (la couleur d'un lit) et son usure (un outil entamé).
+pub fn item_stack_full(w: &mut W, id: i16, count: u8, net_id: i32, block: u32, meta: u16, damage: u16) {
     if count == 0 {
         w.0.extend_from_slice(&[0u8; 8]);
         return;
     }
     w.i16(id);
     w.0.extend_from_slice(&(count as u16).to_le_bytes());
-    w.varu32(0); // variante de l'objet
+    w.varu32(meta as u32); // variante de l'objet
     if net_id != 0 {
         w.bool(true);
         w.vari32(net_id);
@@ -909,11 +999,32 @@ pub fn item_stack(w: &mut W, id: i16, count: u8, net_id: i32, block: u32) {
         w.bool(false);
     }
     w.varu32(block);
-    w.varu32(0); // données supplémentaires : aucune
+    let extra = item_extra(damage);
+    w.varu32(extra.len() as u32);
+    w.0.extend_from_slice(&extra);
+}
+
+/// Données annexes d'un objet. Disposition du jeu : un marqueur (0 : rien ; -1 : des données
+/// NBT suivent, précédées de leur version), puis le nombre de blocs « peut être posé sur » et
+/// « peut casser ». L'usure d'un outil y est notée dans l'étiquette « Damage ». Sans usure,
+/// rien du tout (comme le jeu l'accepte dans les inventaires).
+pub fn item_extra(damage: u16) -> Vec<u8> {
+    if damage == 0 {
+        return Vec::new();
+    }
+    let mut out = vec![0xff, 0xff, 0x01];
+    out.extend_from_slice(&[0x0a, 0x00, 0x00]); // document sans nom
+    out.push(0x03); // entier
+    out.extend_from_slice(&6u16.to_le_bytes());
+    out.extend_from_slice(b"Damage");
+    out.extend_from_slice(&(damage as i32).to_le_bytes());
+    out.push(0x00); // fin du document
+    out.extend_from_slice(&[0u8; 8]); // aucun bloc « posé sur » ni « peut casser »
+    out
 }
 
 /// Contenu d'un conteneur : (identifiant d'objet, quantité, numéro de pile, bloc posé).
-pub fn container_items(window: u32, slots: &[(i16, u8, i32, u32)], net_ids: bool, f: crate::versions::Features) -> Vec<u8> {
+pub fn container_items(window: u32, slots: &[Slot], net_ids: bool, f: crate::versions::Features) -> Vec<u8> {
     container_items_named(window, 0, slots, net_ids, f)
 }
 
@@ -924,12 +1035,12 @@ pub const CONTAINER_LEVEL_ENTITY: u8 = 7;
 
 /// Idem, en nommant le conteneur visé : l'écran d'une monture montre sa selle et son armure
 /// d'après le conteneur « équipement de monture », à part du coffre.
-pub fn container_items_named(window: u32, name: u8, slots: &[(i16, u8, i32, u32)], net_ids: bool, f: crate::versions::Features) -> Vec<u8> {
+pub fn container_items_named(window: u32, name: u8, slots: &[Slot], net_ids: bool, f: crate::versions::Features) -> Vec<u8> {
     let mut w = W::default();
     w.varu32(window);
     w.varu32(slots.len() as u32);
-    for (id, count, net_id, block) in slots {
-        item_stack(&mut w, *id, *count, if net_ids { *net_id } else { 0 }, *block);
+    for (id, count, net_id, block, meta, damage) in slots {
+        item_stack_full(&mut w, *id, *count, if net_ids { *net_id } else { 0 }, *block, *meta, *damage);
     }
     w.u8(name);
     if f.editor_migration_version {
@@ -956,6 +1067,11 @@ mod data_item_tests {
         assert_eq!(empty.0, vec![0u8; 8]);
         // registre : nom, identifiant, indicateur, version, composants
         let reg = item_registry_full(&[("minecraft:stick", 323, 2, None)]);
+        // Ajouter à une liste déjà encodée revient à tout encoder d'un coup
+        let more = [("essai:rubis", 20000i16, 1, Some(&[0x0a, 0x00, 0x00][..]))];
+        let both = item_registry_full(&[("minecraft:stick", 323, 2, None), more[0]]);
+        assert_eq!(item_registry_append(&reg, &more), Some(both));
+        assert_eq!(item_registry_append(&[], &more), None);
         assert_eq!(reg[0], 1);
         assert_eq!(&reg[reg.len() - 7..], &[0x43, 0x01, 0, 4, 0x0a, 0, 0]);
     }
@@ -967,6 +1083,46 @@ mod creative_tests {
 
     fn unhex(s: &str) -> Vec<u8> {
         (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect()
+    }
+
+    #[test]
+    fn plugin_items_join_the_creative_menu() {
+        // Un menu d'un groupe et d'un objet, à la manière du relevé
+        let mut w = W::default();
+        w.varu32(1);
+        w.varu32(1);
+        w.string("itemGroup.name.planks");
+        creative_item(&mut w, 5);
+        w.varu32(1);
+        w.varu32(1);
+        creative_item(&mut w, 5);
+        w.varu32(0);
+        let menu = w.0;
+        let groups = vec![(3u8, "Gemmes".to_string(), 20000i16), (4, String::new(), 0)];
+        let more = creative_content_append(&menu, &groups, &[(20000, 0), (20001, 0), (20002, 1)]).unwrap();
+        // Relu : 3 groupes, 4 objets numérotés de 1 à 4, les nôtres rangés dans les nouveaux groupes
+        let mut pos = 0;
+        assert_eq!(read_varu32(&more, &mut pos), Some(3));
+        let mut names = Vec::new();
+        for _ in 0..3 {
+            let category = read_varu32(&more, &mut pos).unwrap();
+            let len = read_varu32(&more, &mut pos).unwrap() as usize;
+            names.push((category, String::from_utf8(more[pos..pos + len].to_vec()).unwrap()));
+            pos += len;
+            skip_creative_item(&more, &mut pos).unwrap();
+        }
+        assert_eq!(names, vec![(1, "itemGroup.name.planks".to_string()), (3, "Gemmes".to_string()), (4, String::new())]);
+        assert_eq!(read_varu32(&more, &mut pos), Some(4));
+        let mut rows = Vec::new();
+        for _ in 0..4 {
+            let number = read_varu32(&more, &mut pos).unwrap();
+            let id = read_vari32(&more, &mut { pos }).unwrap();
+            skip_creative_item(&more, &mut pos).unwrap();
+            rows.push((number, id, read_varu32(&more, &mut pos).unwrap()));
+        }
+        assert_eq!(rows, vec![(1, 5, 0), (2, 20000, 1), (3, 20001, 1), (4, 20002, 2)]);
+        assert_eq!(pos, more.len());
+        assert_eq!(creative_content_append(&[0x05], &groups, &[]), None);
     }
 
     #[test]

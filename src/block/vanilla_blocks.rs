@@ -313,7 +313,13 @@ impl VanillaBlocks {
     }
 
     /// Bloc vanilla portant ce nom, avec les propriétés physiques des données du jeu.
+    /// Ce que les plugins ont changé sur ce bloc est pris en compte (voir `overrides.rs`).
     pub fn with_props(name: &str, props: Option<BlockProps>) -> Box<dyn Block> {
+        super::overrides::apply(VanillaBlocks::plain(name, props))
+    }
+
+    /// Le bloc tel que le jeu le définit, sans les modifications des plugins.
+    pub fn plain(name: &str, props: Option<BlockProps>) -> Box<dyn Block> {
         let short = name.strip_prefix("minecraft:").unwrap_or(name);
         let tool = tool_for(short);
         let mut required = if tool == ToolType::Pickaxe { Some(tier_for(short)) } else { None };
@@ -367,6 +373,9 @@ impl VanillaBlocks {
         // Panneaux, puis les autres blocs porteurs de données
         if short.ends_with("_sign") {
             return Box::new(WithTile { base, tile: TileType::Sign, item: renamed });
+        }
+        if short == "bed" {
+            return Box::new(WithTile { base, tile: TileType::Bed, item: renamed });
         }
         if has_other_tile(short) {
             return Box::new(WithTile { base, tile: TileType::Other, item: renamed });

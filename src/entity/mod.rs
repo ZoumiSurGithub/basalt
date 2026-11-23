@@ -18,7 +18,7 @@ mod human;
 mod living;
 
 pub use self::entity::Entity;
-pub use self::human::Human;
+pub use self::human::{Human, MAX_XP_LEVEL};
 pub use self::living::Living;
 
 /// Donne à `$child` l'accès direct aux données et méthodes de `$parent` (champ `$field`).
