@@ -219,4 +219,4 @@ fi
 ok "Basalt $VERSION est prêt."
 say "Démarrer le serveur :   ./start.sh"
 say "Mettre à jour plus tard : ./update.sh"
-say "Ports à ouvrir : 19132/udp, 19132/tcp et 19140/udp"
+say "Ports à ouvrir : 19132/tcp et 19140/udp"

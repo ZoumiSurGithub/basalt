@@ -18,8 +18,31 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub use crate::crypto::Crypt;
 use crate::crypto::{sha256, EcKey, EcSecret};
 use crate::json::{base64_decode, base64_encode};
-use crate::raknet::{put_addr, MAGIC};
 use crate::tools::capture::{build_login_as, Capture, Stage};
+
+/// Marque des messages RakNet hors session.
+const MAGIC: [u8; 16] = [0x00, 0xff, 0xff, 0x00, 0xfe, 0xfe, 0xfe, 0xfe, 0xfd, 0xfd, 0xfd, 0xfd, 0x12, 0x34, 0x56, 0x78];
+
+/// Adresse au format RakNet : version IP, puis adresse et port (IPv4 inversée bit à bit).
+fn put_addr(buf: &mut Vec<u8>, a: &SocketAddr) {
+    match a.ip() {
+        std::net::IpAddr::V4(ip) => {
+            buf.push(4);
+            for b in ip.octets().iter() {
+                buf.push(!b);
+            }
+            buf.extend_from_slice(&a.port().to_be_bytes());
+        }
+        std::net::IpAddr::V6(ip) => {
+            buf.push(6);
+            buf.extend_from_slice(&23u16.to_le_bytes());
+            buf.extend_from_slice(&a.port().to_be_bytes());
+            buf.extend_from_slice(&[0; 4]);
+            buf.extend_from_slice(&ip.octets());
+            buf.extend_from_slice(&[0; 4]);
+        }
+    }
+}
 
 const GUID: i64 = 0x4261_7361_6c74_0001;
 

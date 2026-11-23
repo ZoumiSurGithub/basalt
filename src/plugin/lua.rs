@@ -389,17 +389,19 @@ pub struct PlayerSnap {
     pub perms: Vec<(String, bool)>,
 }
 
-/// Informations du serveur visibles depuis les plugins.
+/// Informations du serveur visibles depuis les plugins. Les listes sont partagées (Arc) :
+/// cet état est recopié à chaque événement, pour chaque plugin, et le recopier pour de bon
+/// coûtait plus d'une milliseconde par événement avec quelques centaines de joueurs.
 #[derive(Clone, Default)]
 pub struct Info {
     pub motd: String,
-    pub players: Vec<String>,
+    pub players: std::sync::Arc<Vec<String>>,
     /// Position de chaque joueur, dans le même ordre que `players`.
-    pub positions: Vec<(f32, f32, f32)>,
+    pub positions: std::sync::Arc<Vec<(f32, f32, f32)>>,
     /// Données des joueurs en jeu
-    pub pdata: Vec<PlayerSnap>,
+    pub pdata: std::sync::Arc<Vec<PlayerSnap>>,
     /// Permissions déclarées par les plugins, avec leur règle par défaut
-    pub perms: Vec<(String, PermDefault)>,
+    pub perms: std::sync::Arc<Vec<(String, PermDefault)>>,
     /// Vue du monde, le temps d'un appel (lecture des blocs)
     pub world: Option<crate::world::WorldView>,
     /// Noms des blocs et de leurs états
@@ -698,7 +700,7 @@ unsafe extern "C" fn l_pset(l: L) -> c_int {
         },
         _ => return 0,
     };
-    if let Some(p) = c.info.pdata.iter_mut().find(|p| p.name == name) {
+    if let Some(p) = std::sync::Arc::make_mut(&mut c.info.pdata).iter_mut().find(|p| p.name == name) {
         match (key.as_str(), &value) {
             ("display", LVal::Str(s)) => p.display_name = s.clone(),
             ("tag", LVal::Str(s)) => p.name_tag = s.clone(),
@@ -879,7 +881,7 @@ unsafe extern "C" fn l_pdo(l: L) -> c_int {
             (Some(x), Some(y), Some(z)) => {
                 // Le plugin donne les pieds ; le serveur place les yeux au-dessus
                 let eye = y as f32 + crate::player::EYE_HEIGHT;
-                if let Some(p) = c.info.pdata.iter_mut().find(|p| p.name == name) {
+                if let Some(p) = std::sync::Arc::make_mut(&mut c.info.pdata).iter_mut().find(|p| p.name == name) {
                     p.pos = (x as f32, eye, z as f32);
                 }
                 c.actions.push(Action::PlayerTeleport(name, x as f32, eye, z as f32))

@@ -18,7 +18,7 @@ Organisation du code, tests et publication des versions.
 | `src/permission/` | `Permission`, règles par défaut, liste des opérateurs |
 | `src/utils/` | journal (`log.rs`), `server.properties` (`config.rs`), JSON et base64 (`json.rs`), YAML (`yaml.rs`), compression et décompression (`deflate.rs`, `inflate.rs`) |
 | `src/security/` | authentification Xbox (`auth.rs`), SHA-2 et signatures (`crypto.rs`), clé du serveur (`identity.rs`) |
-| `src/network/` | RakNet (`raknet.rs`), signalisation HTTP (`signaling.rs`), liaison WebRTC (`nethernet.rs`, sur son propre fil : `nethernet_thread.rs`), fragments (`framing.rs`) |
+| `src/network/` | NetherNet : signalisation HTTP (`signaling.rs`), liaison WebRTC (`nethernet.rs`, sur son propre fil : `nethernet_thread.rs`), côté joueur pour les outils (`nethernet_client.rs`) ; transport de test (`transport.rs`) ; fragments (`framing.rs`) |
 | `src/network/protocol/versions.rs` | versions acceptées et différences entre protocoles |
 | `src/network/protocol/bedrock/` | paquets Bedrock, un fichier par thème : `codec`, `login`, `spawn`, `chunk`, `player`, `state`, `chat`, `blocks`, `items` |
 | `src/data/` | chargement des données du jeu : objets, blocs et états, recettes (`recipes.rs`), NBT, gzip |

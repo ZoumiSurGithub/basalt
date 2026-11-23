@@ -74,6 +74,8 @@ pub struct PluginHost {
     tick: u64,
     /// Gestionnaires enregistrés (« nom » ou « nom#PRIORITÉ »)
     listening: Vec<String>,
+    /// La liste ci-dessus a-t-elle déjà été reçue du fil des plugins ?
+    listening_known: bool,
 }
 
 /// Ce que le serveur peut savoir des plugins sans attendre leur fil.
@@ -164,6 +166,7 @@ impl PluginHost {
             info: Info::default(),
             tick: 0,
             listening: Vec::new(),
+            listening_known: false,
         };
         host.wait_for(0, Duration::from_secs(5));
         host
@@ -178,6 +181,7 @@ impl PluginHost {
         }
         if d.id != 0 {
             self.listening = d.listening;
+            self.listening_known = true;
         }
         if self.pending == 0 {
             if let Some(since) = self.late_since.take() {
@@ -312,12 +316,61 @@ impl PluginHost {
         self.call(Job::Unload, WAIT_UNLOAD);
     }
 
+    /// Arrêt du serveur : attend que les plugins aient fini ce qu'ils faisaient, puis qu'ils
+    /// soient tous désactivés (événement disable compris), comme PocketMine. Sans limite de
+    /// temps : un plugin qui enregistre ses données n'est jamais interrompu. Faux seulement
+    /// si le fil des plugins a disparu.
+    pub fn shutdown(&mut self) -> bool {
+        let started = Instant::now();
+        // La file peut être pleine : on laisse le fil avancer avant de redemander
+        let id = loop {
+            self.drain();
+            if let Some(id) = self.submit(Job::Unload) {
+                break id;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        loop {
+            match self.rx.recv_timeout(Duration::from_secs(10)) {
+                Ok(d) => {
+                    if self.absorb(d).0 == id {
+                        return true;
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    let culprit = lua::current_plugin();
+                    info!(
+                        "Toujours en attente des plugins{} ({} s)…",
+                        if culprit.is_empty() { String::new() } else { format!(" (« {} »)", culprit) },
+                        started.elapsed().as_secs()
+                    );
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    self.pending = 0;
+                    return false;
+                }
+            }
+        }
+    }
+
     /// Événement dont le serveur n'attend pas de réponse.
     pub fn dispatch(&mut self, event: &str, args: &[LVal]) -> Vec<LVal> {
         // Événements dont le serveur lit la réponse (refus, annulation)
+        // Personne n'écoute : inutile de réveiller le fil des plugins. Chaque appel coûte plus
+        // d'une milliseconde d'attente ; avec mille joueurs, l'événement « save » de chacun
+        // figeait le serveur près d'une seconde à chaque sauvegarde.
+        if !self.hears(event) {
+            return Vec::new();
+        }
         let wait = if matches!(event, "login" | "block_break" | "block_click") { WAIT_ANSWER } else { WAIT };
         let info = self.job_info();
         self.call(Job::Event(event.to_string(), args.to_vec(), info, self.tick), wait).unwrap_or_default()
+    }
+
+    /// Un plugin a-t-il une fonction `server.on` pour cet événement ? (Vrai tant que la
+    /// liste des écouteurs n'est pas encore connue.)
+    pub fn hears(&self, event: &str) -> bool {
+        !self.listening_known || self.listening.iter().any(|k| k == event)
     }
 
     /// Minuteries : rien n'est envoyé tant que le fil est occupé (elles se rattrapent ensuite).

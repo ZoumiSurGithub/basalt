@@ -12,6 +12,12 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Ajouté
 
+- Rapport de mesures : une ligne « Départs depuis le démarrage » compte les joueurs partis, par cause (partis d'eux-mêmes, liaison perdue, jeu figé, données non lues…).
+- `nethernet-threads` (1 par défaut, 16 au plus) : répartit les liaisons NetherNet des joueurs sur plusieurs fils, sans changer de port. Un seul fil plafonnait vers un millier de joueurs.
+- Côté joueur de NetherNet (`src/network/nethernet_client.rs`) : une liaison vers un serveur
+  Basalt pour les joueurs simulés. Avec `local-bots=true`, les joueurs simulés de cette
+  machine entrent aussi par NetherNet (sans compte, pseudo en « Bot… », sans limite de
+  connexions par adresse).
 - Villageois, la vie du village : la nuit ils se couchent dans un lit libre de leur maison
   et se lèvent au matin (un coup les réveille) ; leur métier vient du poste de travail
   libre le plus proche de chez eux (composteur, pupitre, tonneau…), un poste cassé le leur
@@ -51,10 +57,9 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
   apprivoisent une fois sur trois : collier (à teindre), assis ou debout d'un clic, ils
   suivent leur maître ; le poisson les soigne et les rend amoureux (chaton apprivoisé).
   `/summon cat`.
-- Villageois (première étape) : les villages sont habités, près des lits, au costume du
+- Villageois : les villages sont habités, près des lits, au costume du
   biome et avec un métier (ou « nigaud ») ; ils se promènent sans quitter leur village,
-  regardent les joueurs, fuient sous les coups. Pas encore de reproduction ni
-  d'échange avec eux. Ils ouvrent les portes en bois devant eux, qui se referment après
+  regardent les joueurs, fuient sous les coups. Ils ouvrent les portes en bois devant eux, qui se referment après
   leur passage (avec leur bruit), et vont régulièrement passer la porte la plus proche
   pour sortir de chez eux ou y rentrer. `/summon villager`.
 - Jour et nuit : l'heure avance chez les joueurs (une journée dure 20 minutes, comme dans
@@ -65,6 +70,14 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Modifié
 
+- `max-visible-players` vaut 0 par défaut, et 0 retire le plafond : chacun voit tous les joueurs à portée de vue (avant, le défaut était 48 et 0 n'affichait personne). Un `server.properties` existant garde sa valeur.
+- Arrêt du serveur dans l'ordre de PocketMine : les joueurs sont enregistrés, puis les plugins désactivés et attendus (sans limite de temps ; 2 s avant, et sans attente s'ils étaient occupés), puis le monde écrit et l'écriture sur le disque attendue jusqu'au bout (60 s au plus avant). Ce qu'un plugin demande en se désactivant est encore appliqué et enregistré.
+- Windows : Ctrl+C arrête le serveur proprement, comme la commande `stop` (avant, Windows tuait le processus sans rien enregistrer). Fermer la fenêtre déclenche aussi l'enregistrement, dans les quelques secondes que Windows accorde.
+- Plugins : l'état du serveur transmis à chaque événement (liste des joueurs) n'est plus recopié pour chaque plugin, ce qui coûtait plus d'une milliseconde par événement avec plusieurs centaines de joueurs.
+- Foules : la position de chaque joueur est mise en forme une seule fois par tick au lieu d'une fois par spectateur, et les rafraîchissements sont étalés sur plusieurs ticks (fin des à-coups à plusieurs centaines de joueurs regroupés).
+- Tests de bout en bout : ils passent par un transport de test (`src/network/transport.rs`,
+  TCP, cette machine seulement, ouvert par programme uniquement) au lieu de RakNet.
+- Outil de charge (`examples/stress.rs`) : les joueurs simulés se connectent par NetherNet.
 - Documentation : le README est refait (pourquoi choisir Basalt, fonctions, installation,
   crédits, téléchargements et Discord). Ses longues sections partent dans `docs/` : le monde,
   le réseau et la sécurité, les performances, la console, le développement, et une feuille
@@ -72,12 +85,32 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Retiré
 
+- RakNet : l'ancien transport du jeu (avant la 1.26.60) est retiré du serveur, avec son
+  chiffrement, son écoute IPv6 (`server-portv6`), sa réponse aux pings et l'auto-test du
+  démarrage. Les joueurs n'entrent plus que par NetherNet ; le port 19132 en UDP ne sert
+  plus (restent 19132 en TCP et 19140 en UDP). Seul l'outil de capture parle encore RakNet,
+  au serveur officiel, qui n'accepte pas autrement un joueur sans compte.
 - Ménage du code : environ 310 lignes jamais appelées supprimées (anciens essais d'écriture
   des chunks, chunk plat de test, fonctions de protocole remplacées depuis), ainsi que les
   variables et imports devenus inutiles. Aucun changement de comportement.
 
 ### Corrigé
 
+- Après une coupure pour « jeu figé » (ou un départ juste après l'apparition), le serveur se rabattait sur une liste d'objets vide jusqu'au redémarrage : plus de menu créatif ni d'échanges avec les villageois, pour tout le monde. Ce repli automatique est retiré, et un joueur n'est tenu pour figé qu'après 60 secondes sans mouvement (15 avant).
+- `/timings on` ne ralentit plus le serveur sous forte charge : chaque fil compte dans son coin et verse ses mesures dix fois par seconde, au lieu de prendre un verrou commun à chaque mesure (les fils du réseau se le disputaient, et les temps mesurés en étaient gonflés).
+- Villages : devant les portes, les deux marches qui encadrent celle du milieu forment de nouveau des coins. La marche du milieu est un point d'attache du plan, que le calcul des coins ne voyait pas comme un escalier.
+- Villageois : le réassort des échanges n'était pas retenu quand le villageois était déchargé (redémarrage, joueur parti puis revenu) ; il restait alors épuisé à la première visite suivante. Le dernier réassort est enregistré avec le villageois.
+- L'heure du monde (jours écoulés compris) est enregistrée et reprise au démarrage : chaque redémarrage ramenait le monde au premier matin.
+- L'avertissement « le jeu s'est figé » n'est plus écrit à chaque tick pour le même joueur en attendant sa coupure.
+- Charge : l'arrivée d'un joueur n'attend plus la fin de toutes les écritures en cours sur le
+  disque, seulement celle de sa propre sauvegarde. Pendant la sauvegarde périodique de 500
+  joueurs, chaque arrivée figeait le serveur une demi-seconde.
+- Charge : un événement de plugin que personne n'écoute (`save`, `connect`, `login`, `load`,
+  `join`…) ne réveille plus le fil des plugins. Avec 1 250 joueurs simulés, la sauvegarde
+  périodique figeait le serveur 0,8 s en moyenne (2 s au pire) à cause de l'événement `save`
+  envoyé pour chaque joueur, et chaque arrivée coûtait 5 ms d'attente.
+- Créatures dans l'eau : contre une berge de la hauteur de l'eau, elles se hissent dessus au
+  lieu d'y buter sans fin (villageois, golems et animaux restaient coincés dans les mares).
 - Portillons : ils s'ouvrent toujours en s'éloignant du joueur, quel que soit le côté d'où
   on clique.
 - Lapins et chats sauvages ne fuient plus un joueur en créatif ou spectateur.

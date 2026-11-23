@@ -1,0 +1,24 @@
+Outils de test privés (non publiés sur GitHub)
+==============================================
+
+1. basalt-bots : de vrais joueurs simulés (Linux x86_64)
+   Ils se connectent comme un vrai jeu, reçoivent le terrain et se promènent :
+   marche, course, sauts de marches, contournement des arbres et des murs,
+   pas de falaises ni de lave, pauses pour regarder autour d'eux.
+
+   Sur le serveur Debian :
+     - dans server.properties : local-bots=true   (puis redémarrer Basalt)
+     - copier basalt-bots dans le dossier de Basalt (à côté du dossier data)
+     - chmod +x basalt-bots
+     - ./basalt-bots 20                 (20 joueurs)
+       ./basalt-bots 50 127.0.0.1:19132 300   (nombre, adresse, rayon de promenade)
+     - Ctrl+C pour les arrêter (ils quittent le serveur au bout de quelques secondes)
+
+   Ils doivent tourner sur la même machine que le serveur : sans compte Xbox, ils ne
+   sont acceptés que depuis 127.x.x.x, avec un pseudo qui commence par « Bot ».
+   max-players doit laisser la place (20 par défaut).
+
+2. Bots/ : le plugin des PNJ (/bots <nombre>), à mettre dans plugins/.
+
+bots.rs : le code source de basalt-bots (à placer dans examples/ pour le recompiler :
+cargo build --release --example bots).

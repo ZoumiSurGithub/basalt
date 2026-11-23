@@ -29,7 +29,7 @@ use crate::plugin::host::PluginHost;
 use crate::inventory::{self, PlayerWindows, Target};
 use crate::data::GameData;
 use crate::nethernet::NetherNet;
-use crate::raknet::{RakEvent, RakServer};
+use crate::transport::{LocalServer, NetEvent};
 use crate::signaling::{json_string, sdp_fingerprints, sdp_identity, sdp_without_identity, Request, Signaling};
 
 const TICK: Duration = Duration::from_millis(50);
@@ -147,6 +147,9 @@ const MAX_STEP: f32 = 5.0;
 const MAX_STEP_VERTICAL: f32 = 8.0;
 /// Les listes de joueurs visibles sont recalculées tous les N ticks.
 const VISIBILITY_EVERY: u64 = 5;
+/// Sans aucun mouvement reçu pendant ce temps, un joueur en jeu est tenu pour figé et coupé.
+/// Large : un jeu mis en pause ou réduit dans la barre des tâches se tait un moment.
+const FREEZE_AFTER: Duration = Duration::from_secs(60);
 /// Logins en attente de vérification ; au-delà, les nouveaux sont refusés poliment.
 const MAX_PENDING_LOGINS: usize = 512;
 
@@ -282,10 +285,7 @@ enum Stage {
 struct Client {
     stage: Stage,
     compression: bool,
-    /// Chiffrement de la session (joueurs en RakNet ; NetherNet est déjà chiffré par DTLS)
-    crypt: Option<crate::crypto::Crypt>,
     /// Jeton de chiffrement envoyé, réponse du jeu attendue : rien d'autre n'est accepté
-    handshake_pending: bool,
     name: Option<String>,
     protocol: i32,
     connected_at: Instant,
@@ -385,7 +385,8 @@ struct Client {
 
 pub struct Server {
     pub cfg: Config,
-    rak: RakServer,
+    /// Transport de test (fermé hors des tests) ; les joueurs entrent par NetherNet
+    local: LocalServer,
     clients: HashMap<SocketAddr, Client>,
     plugins: PluginHost,
     motd: String,
@@ -436,6 +437,8 @@ pub struct Server {
     time_base: i64,
     /// Le jeu a refusé le paquet qui fait apparaître un autre joueur : il n'est plus envoyé
     add_player_refused: bool,
+    /// Départs de joueurs en jeu depuis le démarrage, par cause (pour le rapport de mesures)
+    leaves: HashMap<&'static str, u64>,
     /// Le jeu a refusé le paquet de déplacement des autres joueurs : il n'est plus envoyé
     move_actor_refused: bool,
     /// Idem pour l'objet tenu en main et pour le geste du bras des autres joueurs
@@ -447,6 +450,8 @@ pub struct Server {
     releases: Vec<(u64, (i32, i32, i32), u32)>,
     /// Portes ouvertes par un villageois : (position, tick où la refermer)
     open_doors: Vec<((i32, i32, i32), u64)>,
+    /// Joueurs dont la sauvegarde est en cours d'écriture (pseudos en minuscules)
+    saving: Arc<std::sync::Mutex<HashSet<String>>>,
     started: Instant,
     world: crate::world::World,
     /// Point d'apparition du monde (bloc où se tiennent les pieds)
@@ -499,7 +504,7 @@ struct Perf {
     worst_late: Duration,
     /// Dernière fenêtre terminée : (ticks par seconde, pire retard d'un tick)
     last: (f32, Duration),
-    traffic: crate::raknet::Traffic,
+    traffic: crate::transport::Traffic,
     /// Trafic par seconde sur la dernière fenêtre
     rates: (u64, u64, u64, u64),
     warned: Option<Instant>,
@@ -686,26 +691,16 @@ fn bedrock_extra(id: u32) -> bool {
 impl Server {
     /// Ouvre le réseau, charge les données du jeu et le monde, puis les plugins.
     pub fn new(cfg: Config) -> std::io::Result<Server> {
-        let rak = RakServer::bind(
-            &format!("{}:{}", cfg.ip, cfg.port),
-            cfg.max_players as usize + 8,
-            Duration::from_secs(cfg.timeout_secs),
-        )?;
-        let mut rak = rak;
-        rak.max_sessions = cfg.max_players as usize + 32;
-        rak.max_per_ip = cfg.max_per_ip;
-        if cfg.port6 != 0 && cfg.port != 0 {
-            rak.listen_v6(cfg.port6);
-        }
-        rak.debug = cfg.debug;
-        rak.max_new_sessions = (cfg.max_players / 8).max(40);
+        // Les joueurs entrent par NetherNet. Le transport de test (TCP, cette machine
+        // seulement) ne s'ouvre que par programme, pour les tests de bout en bout.
+        let rak = if cfg.test_transport { LocalServer::bind_local(cfg.max_players as usize + 32)? } else { LocalServer::off() };
         let plugins = PluginHost::new(Path::new(&cfg.plugins_dir), cfg.plugin_sandbox, &cfg.plugin_trusted, cfg.plugin_memory_mb);
         let (locate_tx, locate_rx) = std::sync::mpsc::channel();
         bedrock::COMPRESS.store(cfg.network_compression, std::sync::atomic::Ordering::Relaxed);
         let mut s = Server {
             motd: cfg.server_name.clone(),
             cfg,
-            rak,
+            local: rak,
             clients: HashMap::new(),
             plugins,
             tick: 0,
@@ -736,12 +731,14 @@ impl Server {
             whitelist: NameList::default(),
             time_base: 6000,
             add_player_refused: false,
+            leaves: HashMap::new(),
             move_actor_refused: false,
             equip_refused: false,
             animate_refused: false,
             player_list_refused: false,
             releases: Vec::new(),
             open_doors: Vec::new(),
+            saving: Arc::new(std::sync::Mutex::new(HashSet::new())),
             started: Instant::now(),
             world: crate::world::World::new(),
             spawn: (0, -60, 0),
@@ -836,9 +833,9 @@ impl Server {
         }
     }
 
-    /// Adresse réellement ouverte (utile quand le port 0 laisse le système choisir).
+    /// Adresse du transport de test, s'il est ouvert (tests de bout en bout).
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
-        self.rak.socket.local_addr()
+        self.local.local_addr().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotConnected, "transport de test fermé"))
     }
 
     /// Pseudos des joueurs connectés.
@@ -848,22 +845,14 @@ impl Server {
 
     /// Photo de l'état du serveur donnée aux plugins à chaque appel.
     fn info(&self) -> Info {
-        let mut info = Info {
-            motd: self.motd.clone(),
-            players: Vec::new(),
-            positions: Vec::new(),
-            pdata: Vec::new(),
-            perms: self.plugins.permissions(),
-            world: Some(self.world.view()),
-            blocks: self.plugin_blocks.clone(),
-        };
+        let (mut players, mut positions, mut pdata) = (Vec::new(), Vec::new(), Vec::new());
         for c in self.clients.values() {
             if let Some(n) = &c.name {
-                info.players.push(n.clone());
-                info.positions.push(c.pos);
+                players.push(n.clone());
+                positions.push(c.pos);
             }
             if let Some(d) = &c.data {
-                info.pdata.push(PlayerSnap {
+                pdata.push(PlayerSnap {
                     name: d.name.clone(),
                     display_name: d.display_name.clone(),
                     name_tag: d.name_tag.clone(),
@@ -883,6 +872,15 @@ impl Server {
                 });
             }
         }
+        let info = Info {
+            motd: self.motd.clone(),
+            players: Arc::new(players),
+            positions: Arc::new(positions),
+            pdata: Arc::new(pdata),
+            perms: Arc::new(self.plugins.permissions()),
+            world: Some(self.world.view()),
+            blocks: self.plugin_blocks.clone(),
+        };
         info
     }
 
@@ -999,7 +997,10 @@ impl Server {
         let now = Self::now_unix();
         // Sa dernière sauvegarde (départ juste avant) peut être encore en cours d'écriture :
         // on l'attend, pour ne pas relire un fichier dépassé
-        if crate::background::DISK.pending() > 0 {
+        // (seulement si c'est bien la sienne qui attend : patienter derrière la sauvegarde
+        // périodique de tous les joueurs figeait le serveur une demi-seconde à chaque arrivée)
+        let mine = self.saving.lock().map(|s| s.contains(&name.to_lowercase())).unwrap_or(true);
+        if mine && crate::background::DISK.pending() > 0 {
             let _t = timings::scope("Connexion — attente d'une sauvegarde en cours");
             crate::background::DISK.flush(Duration::from_secs(5));
         }
@@ -1115,9 +1116,19 @@ impl Server {
     fn store_player(&self, c: &Client) {
         if let Some(d) = self.snapshot_player(c) {
             let root = self.cfg.root.clone();
+            // Noté « en cours d'écriture » jusqu'à la fin : s'il revient entre-temps, son
+            // chargement attendra ce fichier
+            let key = d.name.to_lowercase();
+            let saving = self.saving.clone();
+            if let Ok(mut s) = saving.lock() {
+                s.insert(key.clone());
+            }
             crate::background::DISK.run(move || {
                 if let Err(e) = d.save(&root) {
                     warn!("Sauvegarde de {} impossible : {}", d.name, e);
+                }
+                if let Ok(mut s) = saving.lock() {
+                    s.remove(&key);
                 }
             });
         }
@@ -1461,7 +1472,6 @@ impl Server {
             /// En selle : la monture, la position du siège et celle de la monture
             riding: Option<(i64, (f32, f32, f32), (f32, f32, f32))>,
         }
-        let refresh = self.tick % VISIBILITY_EVERY == 0;
         let mut players: Vec<Seen> = Vec::new();
         // Joueurs connectés, même morts : seuls ceux qui ont quitté le serveur sortent de la liste
         let online: HashSet<i64> = self.clients.values().filter(|c| c.joined && c.stage == Stage::InGame).map(|c| c.id).collect();
@@ -1478,10 +1488,10 @@ impl Server {
                     yaw: c.yaw,
                     head_yaw: c.head_yaw,
                     moved_tick: c.moved_tick,
-                    name: if refresh { c.name.clone().unwrap_or_default() } else { String::new() },
+                    name: c.name.clone().unwrap_or_default(),
                     sneaking: c.sneaking,
                     sprinting: c.sprinting,
-                    skin: if refresh { c.skin.clone() } else { None },
+                    skin: c.skin.clone(),
                     mode: c.mode.bedrock_id(),
                     npc: false,
                     riding: c.riding.and_then(|m| self.mob_seat(m).map(|(seat, at)| (m, seat, at))),
@@ -1504,7 +1514,7 @@ impl Server {
                 head_yaw: n.yaw,
                 moved_tick: n.moved_tick,
                 riding: None,
-                name: if refresh { n.name.clone() } else { String::new() },
+                name: n.name.clone(),
                 sneaking: false,
                 sprinting: false,
                 // Pas d'entrée dans la liste des joueurs : le jeu refuse un skin fabriqué
@@ -1516,17 +1526,18 @@ impl Server {
                 held: (0, 0, 0),
             });
         }
-        if players.len() < 2 && !refresh {
+        if players.is_empty() {
             return;
         }
         let tick = self.tick;
         let by_id: HashMap<i64, usize> = players.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
         let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
-        if refresh {
-            for (i, p) in players.iter().enumerate() {
-                grid.entry(p.chunk).or_insert_with(Vec::new).push(i);
-            }
+        for (i, p) in players.iter().enumerate() {
+            grid.entry(p.chunk).or_insert_with(Vec::new).push(i);
         }
+        // Déplacement de chaque joueur, mis en forme une seule fois (à la première demande)
+        // puis recopié dans le lot de tous ceux qui le voient : [format joueur, format entité]
+        let mut moves: Vec<[Option<Vec<u8>>; 2]> = (0..players.len()).map(|_| [None, None]).collect();
         let range = self.cfg.player_view;
         let cap = self.cfg.max_visible;
         let hidden = self.add_player_refused;
@@ -1539,8 +1550,12 @@ impl Server {
                 continue;
             }
             let mut packets: Vec<(u32, Vec<u8>)> = Vec::new();
+            let mut tail: Vec<u8> = Vec::new();
             let me = ((c.pos.0.floor() as i32) >> 4, (c.pos.2.floor() as i32) >> 4);
-            if refresh {
+            // Chaque joueur a son propre tour (d'après son numéro) : dans une foule, les
+            // listes ne sont pas toutes refaites au même tick
+            let phase = tick.wrapping_add(c.id as u64);
+            if phase % VISIBILITY_EVERY == 0 {
                 // Retire ceux qui sont partis ou trop loin (avec une marge pour éviter le clignotement)
                 let gone: Vec<i64> = c
                     .visible
@@ -1620,37 +1635,37 @@ impl Server {
                 17..=32 => 2,
                 _ => 3,
             };
-            if tick >= c.synced_tick + every {
+            // (même principe : à cadence réduite, chacun son tick, sinon toutes les positions
+            // de tout le monde partiraient au même tick et rien aux suivants)
+            if tick > c.synced_tick && (phase % every == 0 || tick >= c.synced_tick + every + 1) {
+                let format = if move_player_known(c.protocol) { 0 } else { 1 };
                 for id in c.visible.iter() {
                     if let Some(&i) = by_id.get(id) {
                         let o = &players[i];
-                        // En selle, la position que donne son jeu le placerait sous sa monture :
-                        // il est montré sur le siège de celle-ci
-                        let pos = match o.riding {
-                            Some((_, seat, at)) => (at.0, at.1 + seat.1, at.2),
-                            None => o.pos,
-                        };
-                        if o.moved_tick > c.synced_tick {
-                            if move_player_known(c.protocol) {
-                                packets.push((
-                                    bedrock::ID_MOVE_PLAYER,
-                                    bedrock::move_player(o.id, pos, o.pitch, o.yaw, o.head_yaw, false),
-                                ));
-                            } else if !still {
-                                // Jeux récents : le paquet de déplacement des joueurs a changé de
-                                // format ; celui des entités, plus simple, déplace aussi les joueurs
-                                packets.push((
-                                    bedrock::ID_MOVE_ACTOR_ABSOLUTE,
-                                    bedrock::move_actor_absolute(o.id, pos, o.pitch, o.yaw, o.head_yaw, true),
-                                ));
-                            }
+                        if o.moved_tick > c.synced_tick && (format == 0 || !still) {
+                            let framed = moves[i][format].get_or_insert_with(|| {
+                                // En selle, la position que donne son jeu le placerait sous sa
+                                // monture : il est montré sur le siège de celle-ci
+                                let pos = match o.riding {
+                                    Some((_, seat, at)) => (at.0, at.1 + seat.1, at.2),
+                                    None => o.pos,
+                                };
+                                if format == 0 {
+                                    bedrock::frame_packet(bedrock::ID_MOVE_PLAYER, &bedrock::move_player(o.id, pos, o.pitch, o.yaw, o.head_yaw, false))
+                                } else {
+                                    // Jeux récents : le paquet de déplacement des joueurs a changé de
+                                    // format ; celui des entités, plus simple, déplace aussi les joueurs
+                                    bedrock::frame_packet(bedrock::ID_MOVE_ACTOR_ABSOLUTE, &bedrock::move_actor_absolute(o.id, pos, o.pitch, o.yaw, o.head_yaw, true))
+                                }
+                            });
+                            tail.extend_from_slice(framed);
                         }
                     }
                 }
                 c.synced_tick = tick;
             }
-            if !packets.is_empty() {
-                out.push((*addr, bedrock::encode_batch(&packets, c.compression)));
+            if !packets.is_empty() || !tail.is_empty() {
+                out.push((*addr, bedrock::encode_batch_with(&packets, &tail, c.compression)));
             }
         }
         for (addr, batch) in out {
@@ -1732,22 +1747,20 @@ impl Server {
         }
     }
 
-    /// Réponse au ping de la liste des serveurs (nom, joueurs, version).
+    /// État du serveur rendu par le transport de test (nom, version, joueurs).
     fn update_pong(&mut self) {
         let clean = |s: &str| s.replace(';', ",").replace('\n', " ");
-        let port = self.local_addr().map(|a| a.port()).unwrap_or(self.cfg.port);
-        self.rak.pong = format!(
-            "MCPE;{};{};{};{};{};{};{};{};1;{};{};",
+        self.local.status = format!(
+            "MCPE;{};{};{};{};{};0;{};{};1;{};{};",
             clean(&self.motd),
             self.cfg.protocol,
             clean(&self.cfg.game_version),
             self.players().len(),
             self.cfg.max_players,
-            self.rak.guid,
             clean(&self.cfg.sub_motd),
             clean(&self.cfg.gamemode),
-            port,
-            if self.rak.has_v6() { self.cfg.port6 } else { port }
+            self.cfg.port,
+            self.cfg.port
         );
     }
 
@@ -2420,12 +2433,12 @@ impl Server {
                     (d, h, m, _) => format!("{} j {} h {} min", d, h, m),
                 };
                 let rates = self.perf.rates;
-                let sessions = (self.rak.sessions.len(), self.nether.as_ref().map(|n| n.len()).unwrap_or(0));
+                let sessions = (self.local.len(), self.nether.as_ref().map(|n| n.len()).unwrap_or(0));
                 let lines = vec![
                     "§2---- §fÉtat du serveur §2----".to_string(),
                     format!("§6En marche depuis : §f{}", uptime),
                     format!("§6Charge : {}{:.1} ticks/s §7(objectif 20, pire retard {} ms)", color, tps, worst),
-                    format!("§6Joueurs : §f{}/{} §7({} sessions RakNet, {} NetherNet)", self.players().len(), self.cfg.max_players, sessions.0, sessions.1),
+                    format!("§6Joueurs : §f{}/{} §7({} sessions de test, {} NetherNet)", self.players().len(), self.cfg.max_players, sessions.0, sessions.1),
                     format!("§6Réseau : §f{} Ko/s reçus, {} Ko/s envoyés §7({} et {} datagrammes/s)", rates.2 / 1024, rates.3 / 1024, rates.0, rates.1),
                     match memory_mb() {
                         Some(mb) => format!("§6Mémoire : §f{} Mo", mb),
@@ -2488,6 +2501,12 @@ impl Server {
                         format!("Système : {} {} — mémoire : {}", std::env::consts::OS, std::env::consts::ARCH, memory_mb().map(|m| format!("{} Mo", m)).unwrap_or_else(|| "non mesurée".into())),
                         format!("Joueurs : {}/{} — plugins : {} — blocs modifiés : {}", self.players().len(), self.cfg.max_players, self.plugins.catalog().plugins.len(), self.world.edit_count()),
                         format!("Mesures {}", if timings::is_enabled() { "en cours" } else { "arrêtées" }),
+                        {
+                            let mut causes: Vec<(&&'static str, &u64)> = self.leaves.iter().collect();
+                            causes.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+                            let list: Vec<String> = causes.iter().map(|(why, n)| format!("{} × {}", n, why)).collect();
+                            format!("Départs depuis le démarrage : {}", if list.is_empty() { "aucun".to_string() } else { list.join(" ; ") })
+                        },
                     ];
                     let (text, top) = match (timings::report(&header), timings::snapshot()) {
                         (Some(t), Some(s)) if !s.2.is_empty() => (t, s),
@@ -2678,6 +2697,11 @@ impl Server {
 
     /// Événement simple vers les plugins (server.on) ; renvoie leurs réponses.
     fn emit(&mut self, event: &str, args: &[LVal]) -> Vec<LVal> {
+        // Personne n'écoute : rien à préparer (l'état du serveur à transmettre coûte à lui
+        // seul un parcours de tous les joueurs)
+        if !self.plugins.hears(event) {
+            return Vec::new();
+        }
         let _t = timings::scope_with(|| format!("Plugins — événement {}", event));
         let info = self.info();
         self.plugins.set_info(&info, self.tick);
@@ -3596,6 +3620,17 @@ impl Server {
             })
             .collect();
         Some(Json::Arr(list).to_json())
+    }
+
+    /// Reprend l'heure du monde là où le dernier enregistrement l'a laissée (jours écoulés
+    /// compris) : sans cela chaque redémarrage ramenait le monde au premier matin.
+    fn load_world_time(&mut self) {
+        let path = std::path::Path::new(&self.cfg.world_dir).join("time.txt");
+        if let Some(time) = std::fs::read_to_string(&path).ok().and_then(|t| t.trim().parse::<i64>().ok()) {
+            if (0..i64::MAX / 4).contains(&time) {
+                self.time_base = time - (self.started.elapsed().as_millis() / 50) as i64;
+            }
+        }
     }
 
     /// Recharge les objets au sol enregistrés.
@@ -5074,7 +5109,7 @@ impl Server {
             if c.protocol < 2225 || c.inputs == 0 || !(c.stage == Stage::Spawning || c.stage == Stage::InGame) {
                 continue;
             }
-            if now.duration_since(c.last_input) > Duration::from_secs(15) {
+            if now.duration_since(c.last_input) > FREEZE_AFTER {
                 frozen.push((*addr, c.inputs));
             }
         }
@@ -5083,15 +5118,19 @@ impl Server {
                 "{} : le jeu s'est figé après {} mouvements — expérience {} ({})",
                 addr, inputs, self.experiment, experiment_name(self.experiment)
             );
-            if self.items_level > 0 && inputs < 200 {
-                self.items_level -= 1;
-                warn!("Gel juste après l'apparition : retour à la liste d'objets vide. Reconnectez-vous.");
-            }
+            // (Un gel ne dit rien de sa cause : ne plus en déduire que la liste d'objets est
+            // fautive. Ce repli valait pour tout le serveur jusqu'au redémarrage et privait
+            // tout le monde du menu créatif et des échanges après un simple jeu en pause.)
             if !self.experiment_locked && self.cfg.debug {
                 self.experiment = (self.experiment + 1) % EXPERIMENTS;
                 warn!("Prochaine connexion : expérience {} ({}). Relancez le jeu et reconnectez-vous.", self.experiment, experiment_name(self.experiment));
             }
             self.net_abort(&addr, "jeu figé");
+            // (la coupure met quelques ticks à revenir du fil réseau : sans cela le même
+            // avertissement était écrit à chaque tick d'ici là)
+            if let Some(c) = self.clients.get_mut(&addr) {
+                c.last_input = now;
+            }
         }
     }
 
@@ -5186,50 +5225,12 @@ impl Server {
         }
         self.net_set_game_limits(&addr);
         self.update_pong();
-        // Chiffrement (RakNet seulement : NetherNet passe déjà par une liaison DTLS chiffrée).
-        // Il prouve aussi que le joueur possède la clé de son jeton : un login intercepté puis
-        // rejoué ne mène à rien. Un joueur authentifié a toujours une clé ; sans
-        // authentification (xbox-auth=false), un client sans clé reste en clair.
-        let raknet = !self.nether.as_ref().map(|n| n.has(&addr)).unwrap_or(false);
-        if raknet {
-            let key = if authenticated {
-                login.token.as_deref().and_then(auth::token_client_key)
-            } else {
-                auth::client_data_key(&login.client_jwt)
-            };
-            match key.as_ref().map(auth::server_handshake) {
-                Some(Some((jwt, session_key))) => {
-                    let mut body = Vec::with_capacity(jwt.len() + 3);
-                    let mut w = bedrock::W::default();
-                    w.varu32(jwt.len() as u32);
-                    body.extend_from_slice(&w.0);
-                    body.extend_from_slice(jwt.as_bytes());
-                    self.send(&addr, bedrock::ID_SERVER_TO_CLIENT_HANDSHAKE, &body);
-                    if let Some(c) = self.clients.get_mut(&addr) {
-                        c.crypt = Some(crate::crypto::Crypt::new(session_key));
-                        c.handshake_pending = true;
-                    }
-                    if self.cfg.debug {
-                        info!("{} : chiffrement proposé, réponse du jeu attendue", addr);
-                    }
-                    return;
-                }
-                Some(None) => {
-                    warn!("{} : chiffrement impossible (aléa du système indisponible ou clé du joueur inutilisable)", addr);
-                    self.kick(&addr, "Connexion sécurisée impossible.");
-                    return;
-                }
-                None if authenticated => {
-                    self.kick(&addr, "Clé du joueur illisible.");
-                    return;
-                }
-                None => {}
-            }
-        }
+        // (pas de chiffrement propre au jeu : la liaison NetherNet est déjà chiffrée par DTLS,
+        // et l'offre de connexion prouve que le joueur possède la clé de son jeton)
         self.send_login_success(&addr, login.protocol);
     }
 
-    /// Login accepté (et chiffrement en place s'il y en a un) : début des packs de ressources.
+    /// Login accepté : début des packs de ressources.
     fn send_login_success(&mut self, addr: &SocketAddr, _protocol: i32) {
         self.send(addr, bedrock::ID_PLAY_STATUS, &bedrock::play_status(bedrock::STATUS_LOGIN_SUCCESS));
         self.send(addr, bedrock::ID_RESOURCE_PACKS_INFO, &bedrock::resource_packs_info());
@@ -5306,26 +5307,11 @@ impl Server {
             return;
         }
         let max = if stage == Stage::Login {
-            crate::raknet::MAX_PACKET_LOGIN
+            crate::transport::MAX_PACKET_LOGIN
         } else {
-            crate::raknet::MAX_PACKET_GAME
+            crate::transport::MAX_PACKET_GAME
         };
-        // Session chiffrée : déchiffrement et somme de contrôle (un lot altéré, rejoué ou
-        // envoyé en clair est refusé)
-        let opened = match self.clients.get_mut(&addr).and_then(|c| c.crypt.as_mut()) {
-            Some(crypt) => match data.get(1..).map(|d| crypt.open(d)) {
-                Some(Ok(plain)) => Some(plain),
-                _ => {
-                    self.violation(&addr, "lot chiffré invalide");
-                    return;
-                }
-            },
-            None => None,
-        };
-        let batch: &[u8] = match &opened {
-            Some(p) => p,
-            None => &data[1..],
-        };
+        let batch: &[u8] = &data[1..];
         let packets = match bedrock::decode_batch(batch, compression, max) {
             Ok(p) => p,
             Err(_) => {
@@ -5356,23 +5342,6 @@ impl Server {
                 } else {
                     info!("[paquets] <- {} : id {} ({} octets)", addr, id, body.len());
                 }
-            }
-            // Chiffrement proposé : seule la réponse du jeu est attendue
-            if self.clients.get(&addr).map(|c| c.handshake_pending).unwrap_or(false) {
-                if id == bedrock::ID_CLIENT_TO_SERVER_HANDSHAKE {
-                    let protocol = match self.clients.get_mut(&addr) {
-                        Some(c) => {
-                            c.handshake_pending = false;
-                            c.protocol
-                        }
-                        None => return,
-                    };
-                    if self.cfg.debug {
-                        info!("{} : chiffrement en place", addr);
-                    }
-                    self.send_login_success(&addr, protocol);
-                }
-                continue;
             }
             if id == 156 {
                 // PacketViolationWarning : le jeu signale qu'il n'a pas pu lire un de nos paquets.
@@ -5509,7 +5478,9 @@ impl Server {
                         body,
                         keys: self.auth_keys.clone(),
                         xbox_auth: self.cfg.xbox_auth,
-                        local_bot: self.cfg.local_bots && addr.ip().is_loopback() && !self.nether.as_ref().map(|n| n.has(&addr)).unwrap_or(false),
+                        // Joueur simulé : depuis cette machine, et par NetherNet seulement si son
+                        // offre est arrivée sans identité Xbox (sinon c'est un vrai jeu local)
+                        local_bot: self.cfg.local_bots && addr.ip().is_loopback() && self.nether.as_ref().map(|n| !n.has(&addr) || n.bound_cpk(&addr).is_none()).unwrap_or(true),
                         now,
                         bound_cpk: self.nether.as_ref().and_then(|n| n.bound_cpk(&addr)),
                     };
@@ -5943,19 +5914,24 @@ impl Server {
         }
     }
 
-    /// Événements réseau RakNet : connexion, paquet, déconnexion.
-    fn on_event(&mut self, ev: RakEvent) {
+    /// Événements réseau : connexion, paquet, déconnexion.
+    fn on_event(&mut self, ev: NetEvent) {
         match ev {
-            RakEvent::Connected(addr) => {
+            NetEvent::Connected(addr) => {
                 if self.cfg.debug {
                     info!("{} : connexion réseau établie", addr);
+                }
+                // Transport de test : la limite de connexions par adresse s'y applique aussi
+                // (NetherNet l'applique dès la demande d'entrée)
+                let nether = self.nether.as_ref().map(|n| n.has(&addr)).unwrap_or(false);
+                if !nether && self.clients.keys().filter(|a| a.ip() == addr.ip()).count() >= self.cfg.max_per_ip {
+                    self.local.abort(&addr, "trop de connexions depuis cette adresse");
+                    return;
                 }
                 self.clients
                     .insert(addr, Client {
                         stage: Stage::Handshake,
                         compression: false,
-                        crypt: None,
-                        handshake_pending: false,
                         name: None,
                         protocol: 0,
                         connected_at: Instant::now(),
@@ -6019,27 +5995,19 @@ impl Server {
                 self.next_id += 1;
                 self.emit("connect", &[LVal::Str(addr.ip().to_string())]);
             }
-            RakEvent::Packet(addr, data) => self.on_packet(addr, data),
-            RakEvent::Disconnected(addr, fault) => {
+            NetEvent::Packet(addr, data) => self.on_packet(addr, data),
+            NetEvent::Disconnected(addr, fault) => {
                 let _t = timings::scope("Départ d'un joueur (sauvegarde, annonce)");
                 if let Some(c) = self.clients.remove(&addr) {
+                    if c.joined {
+                        *self.leaves.entry(fault.unwrap_or("parti de lui-même (liaison fermée par le joueur)")).or_insert(0) += 1;
+                    }
                     // En selle : la monture est libérée
                     if let Some(mob) = c.riding {
                         self.release_mount(mob, c.id);
                     }
                     // Mise au point : le jeu est parti de lui-même juste après l'apparition
                     // (écran d'erreur « Block ») : on passe à l'expérience suivante.
-                    if self.items_level > 0
-                        && fault.is_none()
-                        && c.protocol >= 2225
-                        && !c.inv_touched
-                        && !c.reported_error
-                        && c.inputs < 200
-                        && (c.stage == Stage::Spawning || (c.stage == Stage::InGame && c.inputs > 0))
-                    {
-                        self.items_level -= 1;
-                        warn!("Le jeu est parti juste après l'apparition : retour à la liste d'objets vide. Reconnectez-vous.");
-                    }
                     if self.cfg.debug
                         && !self.experiment_locked
                         && fault.is_none()
@@ -6258,10 +6226,7 @@ impl Server {
         if !self.cfg.http_signaling {
             return;
         }
-        let port = match self.local_addr() {
-            Ok(a) => a.port(),
-            Err(_) => return,
-        };
+        let port = self.cfg.port;
         match Signaling::bind(&self.cfg.ip, port) {
             Ok(mut sig) => {
                 sig.debug = self.cfg.debug;
@@ -6293,30 +6258,18 @@ impl Server {
                     n.key_fingerprint()
                 );
                 // La liaison WebRTC tourne sur son propre fil (voir nethernet_thread)
-                self.nether = Some(crate::network::nethernet_thread::NetherNetHandle::start(n));
+                self.nether = Some(crate::network::nethernet_thread::NetherNetHandle::start(n, c.nethernet_threads));
             }
             Err(e) => error!("Transport NetherNet indisponible : {}", e),
         }
     }
 
-    /// Envoi par RakNet ou NetherNet, selon la connexion du joueur.
+    /// Envoi par NetherNet, ou par le transport de test.
     fn net_send(&mut self, addr: &SocketAddr, packet: &[u8]) {
-        // Session chiffrée : le lot (après l'octet 0xfe) reçoit sa somme de contrôle puis est
-        // chiffré. Tous les envois passent par ici, dans l'ordre : le flux reste cohérent.
-        let sealed = match self.clients.get_mut(addr).and_then(|c| c.crypt.as_mut()) {
-            Some(crypt) if packet.first() == Some(&0xfe) => {
-                let mut out = Vec::with_capacity(packet.len() + 9);
-                out.push(0xfe);
-                out.extend_from_slice(&crypt.seal(&packet[1..]));
-                Some(out)
-            }
-            _ => None,
-        };
-        let packet: &[u8] = sealed.as_deref().unwrap_or(packet);
         match self.nether.as_mut() {
-            // NetherNet transporte le même contenu que RakNet, sans l'octet 0xfe de tête
+            // NetherNet transporte les lots sans leur octet 0xfe de tête
             Some(n) if n.has(addr) => n.send(addr, &packet[1..]),
-            _ => self.rak.send(addr, packet),
+            _ => self.local.send(addr, packet),
         }
     }
 
@@ -6324,21 +6277,21 @@ impl Server {
     fn net_close(&mut self, addr: &SocketAddr, delay: Duration) {
         match self.nether.as_mut() {
             Some(n) if n.has(addr) => n.close(addr, delay),
-            _ => self.rak.close(addr, delay),
+            _ => self.local.close(addr, delay),
         }
     }
 
     fn net_abort(&mut self, addr: &SocketAddr, reason: &'static str) {
         match self.nether.as_mut() {
             Some(n) if n.has(addr) => n.abort(addr, reason),
-            _ => self.rak.abort(addr, reason),
+            _ => self.local.abort(addr, reason),
         }
     }
 
     fn net_set_game_limits(&mut self, addr: &SocketAddr) {
         match self.nether.as_mut() {
             Some(n) if n.has(addr) => n.set_game_limits(addr),
-            _ => self.rak.set_game_limits(addr),
+            _ => self.local.set_game_limits(addr),
         }
     }
 
@@ -6406,9 +6359,11 @@ impl Server {
             info!("{} : demande de connexion NetherNet refusée (transport indisponible)", req.addr);
             return req.respond(503, "text/plain", b"NetherNet transport not available");
         }
-        // Limite de connexions par adresse, comme pour RakNet
+        // Joueurs simulés (local-bots=true) : ils arrivent tous de cette machine, sans compte
+        let local_bots = self.cfg.local_bots && req.addr.ip().is_loopback();
+        // Limite de connexions par adresse
         let same_ip = self.clients.keys().filter(|a| a.ip() == req.addr.ip()).count();
-        if same_ip >= self.cfg.max_per_ip {
+        if same_ip >= self.cfg.max_per_ip && !local_bots {
             return req.respond(503, "text/plain", b"too many connections");
         }
         let now = std::time::SystemTime::now()
@@ -6418,7 +6373,9 @@ impl Server {
 
         // Identité : le jeton Xbox et la signature qui le lie à la liaison chiffrée
         let mut cpk = None;
-        if self.cfg.xbox_auth {
+        // (un joueur simulé local n'a pas d'identité : son offre passe sans, et son login
+        // sera traité comme celui d'un bot — pseudo en « Bot… » exigé)
+        if self.cfg.xbox_auth && !(local_bots && sdp_identity(&offer).is_none()) {
             let keys = match &self.auth_keys {
                 Some(k) => k.clone(),
                 None => return req.respond(503, "text/plain", b"authentication keys not ready"),
@@ -6549,39 +6506,6 @@ impl Server {
     }
 
     /// Auto-test au démarrage : un ping envoyé au serveur depuis cette machine.
-    /// S'il obtient une réponse, le serveur reçoit et émet correctement ; si un jeu
-    /// lancé sur le même ordinateur ne le joint pas, la cause est donc ailleurs.
-    fn self_test(&self) {
-        let port = match self.local_addr() {
-            Ok(a) => a.port(),
-            Err(_) => return,
-        };
-        let debug = self.cfg.debug;
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(400));
-            let run = || -> std::io::Result<bool> {
-                let sock = std::net::UdpSocket::bind("127.0.0.1:0")?;
-                sock.set_read_timeout(Some(Duration::from_secs(2)))?;
-                let mut ping = vec![0x01];
-                ping.extend_from_slice(&0i64.to_be_bytes());
-                ping.extend_from_slice(&crate::raknet::MAGIC);
-                ping.extend_from_slice(&0i64.to_be_bytes());
-                sock.send_to(&ping, ("127.0.0.1", port))?;
-                let mut buf = [0u8; 1024];
-                let (n, _) = sock.recv_from(&mut buf)?;
-                Ok(n > 0 && buf[0] == 0x1c)
-            };
-            match run() {
-                Ok(true) if !debug => {}
-                Ok(true) => info!("Auto-test réseau réussi : le serveur répond sur 127.0.0.1:{}", port),
-                Ok(false) => warn!("Auto-test réseau : réponse inattendue sur 127.0.0.1:{}", port),
-                Err(e) => warn!(
-                    "Auto-test réseau ÉCHOUÉ sur 127.0.0.1:{} ({}) : le serveur ne reçoit pas les paquets de cette machine",
-                    port, e
-                ),
-            }
-        });
-    }
 
     /// Tient les statistiques de charge et avertit si le serveur ne suit plus.
     fn measure(&mut self, now: Instant, late: Duration) {
@@ -6594,7 +6518,7 @@ impl Server {
         }
         let secs = elapsed.as_secs_f32();
         p.last = (p.ticks as f32 / secs, p.worst_late);
-        let t = self.rak.traffic;
+        let t = self.local.traffic;
         let per = |a: u64, b: u64| ((a - b) as f32 / secs) as u64;
         p.rates = (
             per(t.datagrams_in, p.traffic.datagrams_in),
@@ -6613,7 +6537,7 @@ impl Server {
                 "Serveur en surcharge : {:.1} ticks/s au lieu de 20 (pire retard {} ms, {} sessions)",
                 p.last.0,
                 p.last.1.as_millis(),
-                self.rak.sessions.len()
+                self.local.len() + self.nether.as_ref().map(|n| n.len()).unwrap_or(0)
             );
         }
     }
@@ -6716,6 +6640,17 @@ impl Server {
                 }
             });
         }
+        // Heure du monde (jours écoulés compris)
+        {
+            let (path, time) = (dir.join("time.txt"), self.world_time());
+            crate::background::DISK.run(move || {
+                let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
+                let tmp = path.with_extension("txt.tmp");
+                if let Err(e) = std::fs::write(&tmp, time.to_string()).and_then(|_| std::fs::rename(&tmp, &path)) {
+                    warn!("Heure du monde non enregistrée : {}", e);
+                }
+            });
+        }
         // Animaux : les régions changées (toutes à l'arrêt)
         let last = !self.running;
         self.save_mobs(last);
@@ -6749,11 +6684,9 @@ impl Server {
     /// Fait tourner le serveur jusqu'à `stop`, la commande `stop` ou un plugin.
     pub fn run(&mut self, stop: &AtomicBool, console: &Receiver<String>) {
         self.load_plugins();
+        info!("Serveur prêt — tapez « help » pour l'aide");
         if let Ok(a) = self.local_addr() {
-            info!("Serveur prêt sur {} (UDP) — tapez « help » pour l'aide", a);
-            if self.rak.has_v6() {
-                info!("Écoute IPv6 active sur le port {}", self.cfg.port6);
-            }
+            info!("Transport de test ouvert sur {} (cette machine seulement)", a);
         }
         match GameData::load(std::path::Path::new("data")) {
             Ok(d) => {
@@ -6777,16 +6710,16 @@ impl Server {
             }
         }
         self.load_ground_items();
+        self.load_world_time();
         self.load_mobs();
-        self.self_test();
         self.start_signaling();
         let mut events = Vec::new();
         let mut next_tick = Instant::now() + TICK;
         while self.running && !stop.load(Ordering::Relaxed) {
             let read = {
                 let mut read = {
-                    let _t = timings::scope("Réseau — lecture RakNet");
-                    self.rak.poll(&mut events)
+                    let _t = timings::scope("Réseau — lecture du transport de test");
+                    self.local.poll(&mut events)
                 };
                 if let Some(n) = self.nether.as_mut() {
                     let _t = timings::scope("Réseau — lecture NetherNet");
@@ -6797,7 +6730,7 @@ impl Server {
             let _received = if events.is_empty() { None } else { Some(timings::scope("Paquets reçus — traitement")) };
             for ev in events.drain(..).collect::<Vec<_>>() {
                 let addr = match &ev {
-                    RakEvent::Connected(a) | RakEvent::Packet(a, _) | RakEvent::Disconnected(a, _) => *a,
+                    NetEvent::Connected(a) | NetEvent::Packet(a, _) | NetEvent::Disconnected(a, _) => *a,
                 };
                 // Filet de sécurité : un bug déclenché par un paquet ne ferme que ce joueur.
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.on_event(ev)));
@@ -6932,7 +6865,7 @@ impl Server {
             }
             {
                 let _t = timings::scope("Réseau — envoi");
-                self.rak.flush();
+                self.local.flush();
                 if let Some(n) = self.nether.as_mut() {
                     n.flush(&mut events);
                 }
@@ -6945,20 +6878,41 @@ impl Server {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
-        // Arrêt (commande ou signal) : l'enregistrement qui suit est le dernier
+        // Arrêt (commande ou signal), dans l'ordre de PocketMine : les données des joueurs
+        // sont enregistrées, les plugins désactivés (et attendus), puis le monde écrit.
         self.running = false;
+        info!("Enregistrement des joueurs…");
+        self.save_players();
+        // Les plugins finissent ce qu'ils faisaient et reçoivent leur événement disable ; ce
+        // qu'ils demandent à ce moment-là (messages, données des joueurs) est encore appliqué
+        let count = self.plugins.catalog().plugins.len();
+        if count > 0 {
+            info!("Désactivation des plugins ({})…", count);
+            if self.plugins.shutdown() {
+                info!("Plugins désactivés");
+            } else {
+                warn!("Le fil des plugins s'est arrêté avant la fin de leur désactivation");
+            }
+            self.apply_actions();
+            // Un plugin a pu modifier un joueur en se désactivant : dernière écriture
+            let names: Vec<String> = self.clients.values().filter(|c| c.joined && c.data.is_some()).filter_map(|c| c.name.clone()).collect();
+            for name in names {
+                if let Some(c) = self.addr_of(&name).and_then(|a| self.clients.get(&a)) {
+                    self.store_player(c);
+                }
+            }
+        }
         let addrs: Vec<SocketAddr> = self.clients.keys().copied().collect();
         for a in addrs {
             self.send(&a, bedrock::ID_DISCONNECT, &bedrock::disconnect("Serveur arrêté."));
         }
+        info!("Enregistrement du monde…");
         self.save_world();
-        self.save_players();
-        // Tout ce qui attend d'être écrit sur le disque l'est avant de s'arrêter
-        if !crate::background::DISK.flush(Duration::from_secs(60)) {
-            warn!("Certaines sauvegardes n'ont pas pu être terminées à temps");
-        }
-        self.plugins.unload_all();
-        self.rak.shutdown();
+        // Tout ce qui attend d'être écrit sur le disque l'est avant de s'arrêter, sans limite
+        // de temps : rien ne doit rester à moitié enregistré
+        crate::background::DISK.flush_all(|secs| info!("Écriture sur le disque en cours ({} s)…", secs));
+        info!("Tout est enregistré");
+        self.local.shutdown();
         if let Some(n) = self.nether.as_mut() {
             n.shutdown();
         }

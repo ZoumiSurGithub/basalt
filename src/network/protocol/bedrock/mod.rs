@@ -64,6 +64,16 @@ mod tests {
     }
 
     #[test]
+    fn a_framed_packet_gives_the_same_batch() {
+        let body = remove_actor(-3);
+        for id in [ID_REMOVE_ACTOR, 300, 20_000] {
+            let usual = encode_batch(&[(ID_MOVE_PLAYER, vec![1, 2]), (id, body.clone())], false);
+            let framed = encode_batch_with(&[(ID_MOVE_PLAYER, vec![1, 2])], &frame_packet(id, &body), false);
+            assert_eq!(usual, framed);
+        }
+    }
+
+    #[test]
     fn batch_of_several_packets() {
         let b = encode_batch(&[(ID_MOVE_PLAYER, vec![1, 2]), (ID_REMOVE_ACTOR, remove_actor(-3))], true);
         let pk = decode_batch(&b[1..], true, 1024).unwrap();

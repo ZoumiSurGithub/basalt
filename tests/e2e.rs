@@ -1,7 +1,7 @@
-//! Test de bout en bout : un faux client parle au serveur en UDP
-//! (ping, poignée de main RakNet, réglages réseau, login, plugin Lua).
+//! Tests de bout en bout : un faux client parle au serveur par le transport de test (TCP,
+//! cette machine seulement) : état du serveur, réglages réseau, login, jeu, plugins Lua.
 
-use std::net::{SocketAddr, UdpSocket};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
@@ -10,7 +10,7 @@ use std::time::Duration;
 use basalt::bedrock::{read_varu32, write_varu32};
 use basalt::config::Config;
 use basalt::lua::PluginManager;
-use basalt::raknet::MAGIC;
+use basalt::transport::LocalClient;
 use basalt::server::Server;
 
 const PLUGIN: &str = r#"
@@ -39,204 +39,43 @@ fn b64(data: &[u8]) -> String {
 }
 
 struct Client {
-    sock: UdpSocket,
-    seq: u32,
-    ridx: u32,
-    oidx: u32,
+    sock: LocalClient,
     inbox: std::collections::VecDeque<Vec<u8>>,
-    parts: std::collections::HashMap<u16, Vec<Option<Vec<u8>>>>,
     games: std::collections::VecDeque<(u32, Vec<u8>)>,
-    /// Datagrammes reçus pas encore acquittés (acquittés par lots, comme un vrai client)
-    to_ack: Vec<[u8; 3]>,
 }
 
 impl Client {
     fn new(server: SocketAddr) -> Client {
-        let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
-        sock.connect(server).unwrap();
-        sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-        Client { sock, seq: 0, ridx: 0, oidx: 0, inbox: Default::default(), parts: Default::default(), games: Default::default(), to_ack: Vec::new() }
+        Client { sock: LocalClient::connect(server).unwrap(), inbox: Default::default(), games: Default::default() }
     }
 
-    fn recv_raw(&self) -> Vec<u8> {
-        let mut buf = [0u8; 2048];
-        let n = self.sock.recv(&mut buf).expect("pas de réponse du serveur");
-        buf[..n].to_vec()
-    }
-
-    fn ping(&self) -> String {
-        let mut p = vec![0x01];
-        p.extend_from_slice(&7i64.to_be_bytes());
-        p.extend_from_slice(&MAGIC);
-        p.extend_from_slice(&1i64.to_be_bytes());
-        // Le serveur limite les pings par adresse : on réessaie après la fenêtre d'une seconde
-        self.sock.set_read_timeout(Some(Duration::from_millis(1200))).unwrap();
-        let mut buf = [0u8; 2048];
-        let mut r = Vec::new();
-        'retry: for _ in 0..4 {
-            self.sock.send(&p).unwrap();
-            while let Ok(n) = self.sock.recv(&mut buf) {
-                if buf[0] == 0x1c {
-                    r = buf[..n].to_vec();
-                    break 'retry;
-                }
-            }
-        }
-        self.sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-        assert!(!r.is_empty(), "le serveur ne répond plus aux pings");
-        assert_eq!(&r[1..9], &7i64.to_be_bytes());
-        let len = u16::from_be_bytes([r[33], r[34]]) as usize;
-        String::from_utf8(r[35..35 + len].to_vec()).unwrap()
-    }
-
-    fn handshake(&mut self) {
-        let mut p = vec![0x05];
-        p.extend_from_slice(&MAGIC);
-        p.push(11);
-        p.resize(1200, 0);
-        self.sock.send(&p).unwrap();
-        assert_eq!(self.recv_raw()[0], 0x06);
-
-        let mut p = vec![0x07];
-        p.extend_from_slice(&MAGIC);
-        p.extend_from_slice(&[4, 0x80, 0xff, 0xff, 0xfe, 0x4a, 0xbc]);
-        p.extend_from_slice(&1228u16.to_be_bytes());
-        p.extend_from_slice(&99i64.to_be_bytes());
-        self.sock.send(&p).unwrap();
-        // Un port réutilisé par le système peut encore recevoir les derniers datagrammes
-        // d'une session précédente : on les ignore
+    /// État du serveur (nom, version, joueurs), comme la liste des serveurs le lirait.
+    fn ping(&mut self) -> String {
+        self.sock.send(&[0x01]).unwrap();
         loop {
-            let r = self.recv_raw();
-            if r[0] & 0x80 != 0 || r[0] == 0xc0 || r[0] == 0xa0 {
-                continue;
+            let m = self.sock.recv(Duration::from_secs(3)).expect("liaison perdue").expect("le serveur ne répond plus");
+            if m.first() == Some(&0x1c) {
+                return String::from_utf8(m[1..].to_vec()).unwrap();
             }
-            assert_eq!(r[0], 0x08);
-            break;
+            // Un lot du jeu arrivé entre-temps : gardé pour la suite
+            self.inbox.push_back(m);
         }
-
-        let mut p = vec![0x09];
-        p.extend_from_slice(&99i64.to_be_bytes());
-        p.extend_from_slice(&1234i64.to_be_bytes());
-        p.push(0);
-        self.send(&p);
-        let r = self.recv();
-        assert_eq!(r[0], 0x10, "ConnectionRequestAccepted attendu");
-        self.send(&[0x13, 0, 0, 0]);
     }
 
-    fn frame(&mut self, body: &[u8], order: u32, split: Option<(u32, u32)>) {
-        let mut d = vec![0x84];
-        d.extend_from_slice(&self.seq.to_le_bytes()[..3]);
-        self.seq += 1;
-        d.push(0x60 | if split.is_some() { 0x10 } else { 0 });
-        d.extend_from_slice(&((body.len() * 8) as u16).to_be_bytes());
-        d.extend_from_slice(&self.ridx.to_le_bytes()[..3]);
-        self.ridx += 1;
-        d.extend_from_slice(&order.to_le_bytes()[..3]);
-        d.push(0);
-        if let Some((count, index)) = split {
-            d.extend_from_slice(&count.to_be_bytes());
-            d.extend_from_slice(&5u16.to_be_bytes());
-            d.extend_from_slice(&index.to_be_bytes());
-        }
-        d.extend_from_slice(body);
-        self.sock.send(&d).unwrap();
-    }
+    /// La liaison est établie dès la connexion : rien à négocier.
+    fn handshake(&mut self) {}
 
-    /// Envoi fiable et ordonné, fragmenté au besoin (fragments envoyés dans le désordre).
     fn send(&mut self, payload: &[u8]) {
-        let order = self.oidx;
-        self.oidx += 1;
-        if payload.len() <= 1000 {
-            self.frame(payload, order, None);
-        } else {
-            let chunks: Vec<&[u8]> = payload.chunks(1000).collect();
-            let count = chunks.len() as u32;
-            for (i, c) in chunks.iter().enumerate().rev() {
-                self.frame(c, order, Some((count, i as u32)));
-            }
-        }
+        // (une liaison déjà fermée par le serveur : l'erreur se verra à la lecture)
+        let _ = self.sock.send(payload);
     }
 
-    /// Attend le prochain paquet utile (acquitte, réassemble les fragments).
+    /// Attend le prochain lot du serveur.
     fn recv(&mut self) -> Vec<u8> {
-        loop {
-            if let Some(p) = self.inbox.pop_front() {
-                return p;
-            }
-            // S'il reste des datagrammes déjà arrivés, on les lit d'abord ; sinon tout ce qui
-            // a été reçu est acquitté avant d'attendre la suite
-            let mut buf = [0u8; 2048];
-            self.sock.set_nonblocking(true).unwrap();
-            let ready = self.sock.recv(&mut buf).ok();
-            self.sock.set_nonblocking(false).unwrap();
-            let r = match ready {
-                Some(n) => buf[..n].to_vec(),
-                None => {
-                    self.flush_acks();
-                    self.recv_raw()
-                }
-            };
-            self.feed(&r);
+        if let Some(p) = self.inbox.pop_front() {
+            return p;
         }
-    }
-
-    /// Envoie en un seul datagramme les accusés de réception en attente.
-    fn flush_acks(&mut self) {
-        if self.to_ack.is_empty() {
-            return;
-        }
-        let mut ack = vec![0xc0];
-        ack.extend_from_slice(&(self.to_ack.len() as u16).to_be_bytes());
-        for seq in self.to_ack.drain(..) {
-            ack.push(1); // un seul numéro
-            ack.extend_from_slice(&seq);
-        }
-        self.sock.send(&ack).unwrap();
-    }
-
-    /// Traite un datagramme reçu : acquitte et range les paquets complets.
-    fn feed(&mut self, r: &[u8]) {
-        {
-            if r[0] & 0x40 != 0 || r[0] & 0x20 != 0 {
-                return;
-            }
-            // Un accusé par datagramme ferait dépasser la limite de débit du serveur pendant
-            // l'envoi des grosses listes (recettes, objets) : on les regroupe
-            self.to_ack.push([r[1], r[2], r[3]]);
-            if self.to_ack.len() >= 32 {
-                self.flush_acks();
-            }
-            let mut pos = 4;
-            while pos < r.len() {
-                let flags = r[pos];
-                // En-tête selon la fiabilité : non fiable (déplacements), fiable, fiable ordonnée
-                let header = match flags >> 5 {
-                    0 => 3,
-                    2 => 6,
-                    3 => 10,
-                    other => panic!("fiabilité {} inattendue (position {} sur {}, début {:02x?})", other, pos, r.len(), &r[..r.len().min(24)]),
-                };
-                let len = (u16::from_be_bytes([r[pos + 1], r[pos + 2]]) as usize) / 8;
-                pos += header;
-                if flags & 0x10 != 0 {
-                    let count = u32::from_be_bytes([r[pos], r[pos + 1], r[pos + 2], r[pos + 3]]) as usize;
-                    let id = u16::from_be_bytes([r[pos + 4], r[pos + 5]]);
-                    let index = u32::from_be_bytes([r[pos + 6], r[pos + 7], r[pos + 8], r[pos + 9]]) as usize;
-                    pos += 10;
-                    let slot = self.parts.entry(id).or_insert_with(|| vec![None; count]);
-                    slot[index] = Some(r[pos..pos + len].to_vec());
-                    if slot.iter().all(|p| p.is_some()) {
-                        let whole: Vec<u8> = self.parts.remove(&id).unwrap().into_iter().flatten().flatten().collect();
-                        self.inbox.push_back(whole);
-                    }
-                } else if r[pos] == 0xfe || flags >> 5 != 0 {
-                    // (Les trames non fiables hors jeu sont des pings RakNet : ignorées)
-                    self.inbox.push_back(r[pos..pos + len].to_vec());
-                }
-                pos += len;
-            }
-        }
+        self.sock.recv(Duration::from_secs(3)).expect("liaison perdue").expect("pas de réponse du serveur")
     }
 
     fn game(&mut self, id: u32, body: &[u8], header: Option<u8>) {
@@ -289,14 +128,9 @@ impl Client {
                 self.unpack(&p, true);
                 continue;
             }
-            self.flush_acks();
-            self.sock.set_read_timeout(Some(wait)).unwrap();
-            let mut buf = [0u8; 2048];
-            let got = self.sock.recv(&mut buf).ok().map(|n| buf[..n].to_vec());
-            self.sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-            match got {
-                Some(d) => self.feed(&d),
-                None => return None,
+            match self.sock.recv(wait) {
+                Ok(Some(d)) => self.unpack(&d, true),
+                _ => return None,
             }
         }
     }
@@ -339,14 +173,9 @@ impl Client {
 
     /// Ramasse tous les paquets de jeu jusqu'à ce que le serveur se taise pendant `quiet`.
     fn drain_games(&mut self, quiet: Duration) -> Vec<(u32, Vec<u8>)> {
-        self.sock.set_read_timeout(Some(quiet)).unwrap();
-        let mut buf = [0u8; 2048];
-        while let Ok(n) = self.sock.recv(&mut buf) {
-            let d = buf[..n].to_vec();
-            self.feed(&d);
+        while let Ok(Some(d)) = self.sock.recv(quiet) {
+            self.inbox.push_back(d);
         }
-        self.flush_acks();
-        self.sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         while let Some(p) = self.inbox.pop_front() {
             self.unpack(&p, true);
         }
@@ -423,14 +252,13 @@ impl Client {
 
     }
 
-    /// Attend la notification de fermeture de session envoyée par le serveur.
+    /// Attend que le serveur ferme la liaison.
     fn expect_closed(&mut self) {
-        let mut buf = [0u8; 2048];
         for _ in 0..5000 {
-            match self.sock.recv(&mut buf) {
-                Ok(n) if n >= 8 && buf[0] == 0x84 && buf[4] == 0x00 && buf[7] == 0x15 => return,
-                Ok(_) => {}
-                Err(_) => break,
+            match self.sock.recv(Duration::from_secs(3)) {
+                Err(_) => return,
+                Ok(Some(_)) => {}
+                Ok(None) => break,
             }
         }
         panic!("le serveur n'a pas fermé la session");
@@ -475,6 +303,8 @@ fn start_opts(dir: &PathBuf, max_per_ip: usize, xbox_auth: bool) -> (SocketAddr,
         cfg.max_per_ip = max_per_ip;
         cfg.xbox_auth = xbox_auth;
         cfg.nethernet_udp_port = 0;
+        cfg.test_transport = true;
+        cfg.http_signaling = false;
         cfg.gamemode = "Creative".into();
         // Terrain plat : les tests marchent sur le sol à y = -60 (sauf fichier témoin)
         cfg.level_type = if let Ok(kind) = std::fs::read_to_string(dir.join("terrain-type")) {
@@ -506,7 +336,7 @@ fn full_connection_flow() {
     std::thread::sleep(Duration::from_millis(1500));
 
     // 1. Le serveur répond aux pings (liste des serveurs)
-    let c = Client::new(addr);
+    let mut c = Client::new(addr);
     let pong = c.ping();
     assert!(pong.starts_with("MCPE;"), "{}", pong);
     assert!(pong.contains(";2225;1.26.65;0;20;"), "{}", pong);
@@ -716,22 +546,26 @@ fn garbage_datagrams_do_not_crash() {
                 (x >> 8) as u8
             })
             .collect();
-        // Une partie des paquets vise le chemin « session connectée »
+        // Tantôt un message bien formé au contenu absurde (parfois marqué comme un lot du
+        // jeu), tantôt des octets bruts qui brouillent jusqu'au découpage des messages
         match i % 4 {
-            0 => d[0] = 0x84,
-            1 => d[0] = 0xc0,
-            2 => d[0] = [0x01, 0x05, 0x07, 0xa0][(i / 4) % 4],
-            _ => {}
+            0 => {
+                d[0] = 0xfe;
+                c.send(&d);
+            }
+            1 => c.send(&d),
+            _ => {
+                let _ = c.sock.send_raw(&d);
+            }
         }
-        c.sock.send(&d).unwrap();
         if i % 200 == 0 {
             std::thread::sleep(Duration::from_millis(2));
         }
     }
-    // Le flot dépasse le débit autorisé : la session fautive est fermée…
+    // Messages illisibles : la session fautive est fermée…
     c.expect_closed();
     // …et le serveur répond toujours aux autres
-    let fresh = Client::new(addr);
+    let mut fresh = Client::new(addr);
     assert!(fresh.ping().starts_with("MCPE;"));
     stop.store(true, Ordering::Relaxed);
     handle.join().unwrap();
@@ -832,15 +666,11 @@ fn connections_per_ip_are_limited() {
     a.handshake();
     let mut b = Client::new(addr);
     b.handshake();
-    // Troisième connexion depuis la même adresse : refusée (« aucune place libre »)
-    let c = Client::new(addr);
-    let mut p = vec![0x07];
-    p.extend_from_slice(&MAGIC);
-    p.extend_from_slice(&[4, 0x80, 0xff, 0xff, 0xfe, 0x4a, 0xbc]);
-    p.extend_from_slice(&1228u16.to_be_bytes());
-    p.extend_from_slice(&77i64.to_be_bytes());
-    c.sock.send(&p).unwrap();
-    assert_eq!(c.recv_raw()[0], 0x14);
+    // Les deux premières sont bien en place
+    assert!(a.ping().starts_with("MCPE;") && b.ping().starts_with("MCPE;"));
+    // Troisième connexion depuis la même adresse : fermée par le serveur
+    let mut c = Client::new(addr);
+    c.expect_closed();
     stop.store(true, Ordering::Relaxed);
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
@@ -871,15 +701,8 @@ fn xbox_authentication_flow() {
     // Jeton valide : accepté, sous le pseudo certifié par le jeton
     let mut c = connect();
     c.login_raw(2225, &request(fixtures["token_valid"]), fixtures["client_valid"], false);
-    // Accepté : le serveur propose le chiffrement (jeton signé avec sa clé et un sel), que
-    // seul le possesseur de la clé du jeton peut suivre
-    let (id, body) = c.recv_game(true);
-    assert_eq!(id, 3, "login accepté : début du chiffrement attendu");
-    let start = body.iter().position(|b| b & 0x80 == 0).unwrap() + 1; // longueur (entier variable)
-    let jwt = String::from_utf8_lossy(&body[start..]).to_string();
-    let header = String::from_utf8(basalt::json::base64_decode(jwt.split('.').next().unwrap()).unwrap()).unwrap();
-    let payload = String::from_utf8(basalt::json::base64_decode(jwt.split('.').nth(1).unwrap()).unwrap()).unwrap();
-    assert!(header.contains("\"x5u\"") && payload.contains("\"salt\""), "{} {}", header, payload);
+    // Accepté : état « login réussi », puis les packs de ressources
+    assert_eq!(c.recv_game(true), (2, vec![0, 0, 0, 0]), "login accepté attendu");
     std::thread::sleep(Duration::from_millis(100));
     assert!(c.ping().contains(";1;20;"));
 
@@ -945,47 +768,6 @@ fn players_see_each_other_without_packets_the_game_refuses() {
         }
     }
 
-    stop.store(true, Ordering::Relaxed);
-    handle.join().unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn capture_tool_talks_raknet_to_basalt_itself() {
-    let dir = std::env::temp_dir().join(format!("basalt-e2e-capture-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let (addr, stop, handle) = start(&dir);
-    let payload = dir.join("client-data.b64");
-    // modèle de données client : un vrai jeu en fournit un bien plus gros (skin)
-    let skin = "A".repeat(40_000);
-    std::fs::write(&payload, b64(format!(r#"{{"GameVersion":"1.26.65","SkinData":"{}"}}"#, skin).as_bytes())).unwrap();
-    let out = dir.join("data");
-    // Un témoin entre d'abord et reste en jeu : la capture reçoit alors, en plus du reste,
-    // le paquet qui fait apparaître un autre joueur
-    let witness_payload = payload.clone();
-    let port = addr.port();
-    let witness = std::thread::spawn(move || {
-        basalt::tools::capture_rak::run_as("127.0.0.1", port, None, &witness_payload, "BasaltTemoin", Duration::from_secs(15), ("", ""))
-    });
-    std::thread::sleep(Duration::from_millis(3000));
-    // Le joueur de la capture reste 8 s en jeu : sur une machine lente (intégration continue),
-    // le témoin a le temps de lui apparaître
-    let summary = basalt::tools::capture_rak::run_as("127.0.0.1", addr.port(), Some(&out), &payload, "BasaltCapture", Duration::from_secs(8), ("", ""))
-        .expect("capture");
-    // Le témoin est attendu avant de conclure : en cas d'échec, son propre résultat dit pourquoi
-    let witness_result = witness.join().unwrap();
-    assert!(summary.contains("start_game"), "{}", summary);
-    assert!(
-        summary.contains("add_player"),
-        "le témoin doit apparaître chez le joueur de la capture : {} — témoin : {:?}",
-        summary,
-        witness_result
-    );
-    let saved = out.join("2225").join("packets");
-    assert!(std::fs::metadata(saved.join("start_game.bin")).unwrap().len() > 100);
-    assert!(std::fs::metadata(saved.join("add_player.bin")).unwrap().len() > 40);
-    assert!(witness_result.expect("témoin").contains("BasaltTemoin"));
     stop.store(true, Ordering::Relaxed);
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
@@ -1158,7 +940,7 @@ fn a_chest_opens_and_keeps_what_is_put_in_it() {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(text.contains("Tick complet") && text.contains("Réseau — lecture RakNet") && text.contains("Tick — joueurs vus par les autres"), "{}", text);
+    assert!(text.contains("Tick complet") && text.contains("Réseau — lecture du transport de test") && text.contains("Tick — joueurs vus par les autres"), "{}", text);
     command(&mut steve, "/timings off");
     expect_text(&mut steve, "Mesures éteintes");
 

@@ -4,7 +4,7 @@
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-use crate::raknet::RakEvent;
+use crate::transport::NetEvent;
 
 pub struct NetherNet {
     pub max_peers: usize,
@@ -15,7 +15,7 @@ impl NetherNet {
     pub const AVAILABLE: bool = false;
 
     /// Version vide, compilée quand la fonction nethernet est désactivée : le serveur tourne
-    /// alors en RakNet seulement, et toutes ces méthodes ne font rien.
+    /// alors par le transport de test seulement, et toutes ces méthodes ne font rien.
     pub fn bind(_ip: &str, _port: u16, _public_ip: &str, _domain: &str, _cpk_as_jwk: bool) -> Result<NetherNet, String> {
         Err("Basalt a été compilé sans le transport NetherNet".into())
     }
@@ -34,10 +34,10 @@ impl NetherNet {
     pub fn prepared(&mut self) -> Vec<(SocketAddr, Result<String, (u16, &'static str)>)> {
         Vec::new()
     }
-    pub fn poll(&mut self, _events: &mut Vec<RakEvent>) -> usize {
+    pub fn poll(&mut self, _events: &mut Vec<NetEvent>) -> usize {
         0
     }
-    pub fn flush(&mut self, _events: &mut Vec<RakEvent>) {}
+    pub fn flush(&mut self, _events: &mut Vec<NetEvent>) {}
     pub fn has(&self, _key: &SocketAddr) -> bool {
         false
     }
@@ -52,4 +52,14 @@ impl NetherNet {
     pub fn abort(&mut self, _key: &SocketAddr, _reason: &'static str) {}
     pub fn set_game_limits(&mut self, _key: &SocketAddr) {}
     pub fn shutdown(&mut self) {}
+    pub fn sibling(&self) -> Result<NetherNet, String> {
+        Err("Basalt a été compilé sans le transport NetherNet".into())
+    }
+    pub fn external_reads(&mut self) -> Result<std::net::UdpSocket, String> {
+        Err("Basalt a été compilé sans le transport NetherNet".into())
+    }
+    pub fn fed_from_outside(&mut self) {}
+    pub fn feed(&mut self, _data: &[u8], _source: SocketAddr, _events: &mut Vec<NetEvent>) -> bool {
+        false
+    }
 }

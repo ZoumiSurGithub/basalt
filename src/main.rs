@@ -8,7 +8,10 @@ use basalt::{error, info, warn};
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
-/// Arrêt propre sur Ctrl+C / SIGTERM (Unix). Sous Windows, utilisez la commande `stop`.
+/// Vrai une fois tout enregistré : le processus peut disparaître.
+static DONE: AtomicBool = AtomicBool::new(false);
+
+/// Arrêt propre sur Ctrl+C / SIGTERM (Unix).
 #[cfg(unix)]
 fn install_signals() {
     /// Ctrl+C ou arrêt du système : le serveur s'arrête proprement au tick suivant.
@@ -24,8 +27,35 @@ fn install_signals() {
     }
 }
 
+/// Arrêt propre sous Windows : Ctrl+C et Ctrl+Pause demandent l'arrêt comme la commande
+/// `stop` (sans ce gestionnaire, Windows tue le processus sur-le-champ, sans rien
+/// enregistrer). Fenêtre fermée, fermeture de session ou extinction : même demande, et
+/// Windows patiente tant que cette fonction n'a pas rendu la main — quelques secondes au
+/// plus, c'est lui qui décide — le temps d'enregistrer.
+#[cfg(windows)]
+fn install_signals() {
+    use std::sync::atomic::Ordering;
+    extern "system" fn on_event(kind: u32) -> i32 {
+        STOP.store(true, Ordering::Relaxed);
+        // 0 : Ctrl+C, 1 : Ctrl+Pause. Au-delà (fermeture) le processus est tué dès le retour.
+        if kind >= 2 {
+            while !DONE.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+        1
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetConsoleCtrlHandler(handler: Option<extern "system" fn(u32) -> i32>, add: i32) -> i32;
+    }
+    unsafe {
+        SetConsoleCtrlHandler(Some(on_event), 1);
+    }
+}
+
 /// Autres systèmes : pas de gestion des signaux.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn install_signals() {}
 
 /// Lit server.properties, démarre le serveur et la console, puis tourne jusqu'à l'arrêt.
@@ -75,9 +105,10 @@ fn main() {
 
     server.run(&STOP, &rx);
     // Les écritures en arrière-plan (disque, journal) sont terminées avant de quitter
-    basalt::background::DISK.flush(std::time::Duration::from_secs(60));
+    basalt::background::DISK.flush_all(|_| {});
     basalt::log::flush();
     basalt::console::restore();
+    DONE.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// `basalt capture [adresse] [port]` : enregistre les données du jeu auprès d'un serveur officiel.

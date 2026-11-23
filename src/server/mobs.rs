@@ -340,6 +340,10 @@ impl Species {
     }
 }
 
+/// Distance à laquelle un point d'un chemin est tenu pour atteint. Courte : en coupant les
+/// virages, un villageois (0,6 de large) accrochait le montant des portes.
+const PATH_STOP: f32 = 0.2;
+
 /// Premier numéro des offres d'échange : au-dessus de tous les numéros de recettes
 const TRADE_NET_BASE: i32 = 1_000_000;
 
@@ -841,6 +845,8 @@ pub(super) struct MobRecord {
     /// Villageois : expérience d'échange et usure de ses offres
     pub trade_xp: i32,
     pub trade_uses: Vec<i32>,
+    /// Villageois : dernier réassort connu (-1 : jamais regardé)
+    pub trade_restock: i64,
     /// Villageois : son poste de travail
     pub station: Option<(i32, i32, i32)>,
 }
@@ -888,6 +894,7 @@ impl MobRecord {
             }),
             ("trade_xp".into(), Json::Num(self.trade_xp as f64)),
             ("trade_uses".into(), Json::Arr(self.trade_uses.iter().map(|u| Json::Num(*u as f64)).collect())),
+            ("trade_restock".into(), Json::Num(self.trade_restock as f64)),
             ("items".into(), Json::Arr(self.items.iter().map(|(slot, name, count)| Json::Arr(vec![Json::Num(*slot as f64), Json::Str(name.clone()), Json::Num(*count as f64)])).collect())),
         ])
     }
@@ -926,6 +933,7 @@ impl MobRecord {
                 _ => None,
             }),
             trade_xp: num("trade_xp").unwrap_or(0.0).clamp(0.0, 100_000.0) as i32,
+            trade_restock: num("trade_restock").map(|n| n.clamp(-1.0, 1.0e15) as i64).unwrap_or(-1),
             trade_uses: v.get("trade_uses").and_then(|k| k.as_arr()).map(|k| k.iter().take(16).map(|u| u.as_f64().unwrap_or(0.0).clamp(0.0, 64.0) as i32).collect()).unwrap_or_default(),
             items: v
                 .get("items")
@@ -975,6 +983,7 @@ impl Mob {
             home: self.home,
             trade_xp: self.trade_xp,
             trade_uses: self.trade_uses.clone(),
+            trade_restock: self.trade_restock,
             station: self.station,
             items: self.items.iter().enumerate().filter_map(|(i, it)| it.as_ref().map(|(n, c)| (i as u8, n.clone(), *c))).collect(),
         }
@@ -1373,7 +1382,10 @@ impl Server {
             let speed = (vel.0 * vel.0 + vel.1 * vel.1).sqrt();
             let ahead = if speed > 0.01 { (pos.0 + vel.0 / speed * 0.8, pos.2 + vel.1 / speed * 0.8) } else { (pos.0, pos.2) };
             for (x, z) in [(pos.0, pos.2), ahead] {
-                let cell = (x.floor() as i32, pos.1.floor() as i32, z.floor() as i32);
+                // (debout sur un chemin de terre ou une dalle, ses pieds sont dans la case
+                // du dessous : la porte est alors une case plus haut)
+                let base = (x.floor() as i32, pos.1.floor() as i32, z.floor() as i32);
+                let cell = if self.wood_door(base.0, base.1, base.2) { base } else { (base.0, base.1 + 1, base.2) };
                 if self.wood_door(cell.0, cell.1, cell.2) {
                     self.set_door(cell, true);
                     match self.open_doors.iter_mut().find(|(p, _)| *p == cell) {
@@ -2072,6 +2084,7 @@ impl Server {
             m.panic -= 1;
             speed = ground_speed(attr * panic);
             m.errand = None;
+            m.path.clear();
             // En fuite : une nouvelle direction de temps en temps
             if m.target.is_none() || self.mob_rng.below(20) == 0 {
                 let a = self.mob_rng.unit() as f32 * std::f32::consts::TAU;
@@ -2160,9 +2173,17 @@ impl Server {
             // sortir de chez lui, ou y rentrer)
             m.errand = None;
             if m.species == Species::Villager && self.mob_rng.below(3) == 0 {
-                if let Some((door, beyond)) = self.door_errand(m) {
-                    t = door;
-                    m.errand = Some(beyond);
+                if let Some((_, beyond)) = self.door_errand(m) {
+                    // (par un chemin calculé : droit vers la porte, il butait contre le mur
+                    // d'à côté et y restait)
+                    if let Some(mut path) = self.villager_path(m.pos, (beyond.0, None, beyond.1)) {
+                        path.reverse();
+                        if let Some(first) = path.pop() {
+                            t = first;
+                            m.path = path;
+                            m.path_ticks = 0;
+                        }
+                    }
                 }
             }
             // Villageois : il reste dans son village (retour vers chez lui au-delà de 24 blocs)
@@ -2263,7 +2284,7 @@ impl Server {
             }
             // Jusqu'à son lit, par un vrai chemin (portes, marches, détours)
             self.villager_go(m, (home.0, Some(home.1), home.2));
-            return Some((ground_speed(attr * 0.6), 0.4));
+            return Some((ground_speed(attr * 0.6), PATH_STOP));
         }
         m.late = 0;
         if (9_000..11_000).contains(&time) && !m.baby() && m.variant != 14 {
@@ -2280,7 +2301,7 @@ impl Server {
             };
             if flat2(center) > 5.0 * 5.0 {
                 self.villager_go(m, (center.0, None, center.1));
-                return Some((ground_speed(attr * 0.6), 0.4));
+                return Some((ground_speed(attr * 0.6), PATH_STOP));
             }
             return None;
         }
@@ -2298,9 +2319,25 @@ impl Server {
                     self.villager_go(m, (at.0, Some(st.1 as f32), at.1));
                 }
                 if !m.path.is_empty() {
-                    return Some((ground_speed(attr * 0.6), 0.4));
+                    return Some((ground_speed(attr * 0.6), PATH_STOP));
                 }
             }
+        }
+        // Un chemin de promenade en cours (sortir de chez lui par la porte, y rentrer)
+        if !m.path.is_empty() {
+            if m.target.is_none() {
+                m.errand = None;
+                m.path_ticks = 0;
+                m.target = m.path.pop();
+            } else {
+                m.path_ticks += 1;
+                if m.path_ticks > 60 {
+                    m.path.clear();
+                    m.target = None;
+                    m.path_ticks = 0;
+                }
+            }
+            return Some((ground_speed(attr * 0.6), PATH_STOP));
         }
         None
     }
@@ -2438,15 +2475,16 @@ impl Server {
                         continue;
                     }
                     // Sens du lit dans la numérotation du jeu (sud, ouest, nord, est) : du pied
-                    // vers l'oreiller. Le jeu couche le dormeur sur le dos, la tête derrière
-                    // lui : il regarde donc vers le pied du lit, et ses pieds sont posés près
-                    // du pied du lit pour que sa tête arrive sur l'oreiller.
+                    // vers l'oreiller. Le jeu couche le dormeur sur le dos en le faisant pivoter
+                    // par le milieu du corps, la tête à l'opposé de son regard : il regarde
+                    // donc vers le pied du lit, posé un peu avant le milieu du lit (réglage
+                    // fait sur captures : la tête sur l'oreiller, les pieds au bout).
                     let n = match d.prop(s, "direction") {
                         Some(Prop::Int(n)) => n.rem_euclid(4),
                         _ => 0,
                     };
                     let (hx2, hz2) = [(0.0, 1.0), (-1.0, 0.0), (0.0, -1.0), (1.0, 0.0)][n as usize];
-                    let at = (x as f32 + 0.5 - hx2 * 1.3, y as f32 + 0.5625, z as f32 + 0.5 - hz2 * 1.3);
+                    let at = (x as f32 + 0.5 - hx2 * 0.7, y as f32 + 0.5625, z as f32 + 0.5 - hz2 * 0.7);
                     if taken.iter().any(|t| (t.0 - at.0).abs() < 0.6 && (t.2 - at.2).abs() < 0.6 && (t.1 - at.1).abs() < 1.0) {
                         continue;
                     }
@@ -3126,6 +3164,12 @@ impl Server {
                 // Marche d'un bloc : saute
                 m.vel.1 = m.vel.1.max(0.42);
                 m.on_ground = false;
+            } else if (in_water || self.mob_water(m.pos.0, m.pos.1, m.pos.2)) && body_free(self, ex, m.pos.1.floor() + 1.01, ez) {
+                // Contre la berge, les pieds dans l'eau : un élan pour se hisser dessus. En
+                // flottant seulement, ses pieds restaient juste sous le bord et elle y
+                // butait sans fin.
+                m.vel.1 = m.vel.1.max(0.3);
+                m.on_ground = false;
             } else if !grounded && m.vel.1 > -0.3 && body_free(self, ex, m.pos.1.floor() + 1.01, ez) {
                 // En plein saut vers la marche : il continue de monter, sans changer d'idée
             } else if in_water {
@@ -3343,7 +3387,10 @@ impl Server {
         // jour, aux heures de travail)
         let restocks = restocks_before(self.world_time());
         if let Some(m) = self.mobs.get_mut(&id) {
-            if m.trade_restock >= 0 && restocks > m.trade_restock {
+            // (un compte différent, pas seulement plus grand : si l'heure du monde a reculé —
+            // commande time, monde d'avant l'enregistrement de l'heure — le villageois se
+            // réassortit plutôt que d'attendre de la rattraper)
+            if m.trade_restock >= 0 && restocks != m.trade_restock {
                 m.trade_uses.clear();
             }
             m.trade_restock = restocks;
@@ -4422,6 +4469,7 @@ impl Server {
             m.station = r.station;
             m.trade_xp = r.trade_xp;
             m.trade_uses = r.trade_uses;
+            m.trade_restock = r.trade_restock;
             m.items = vec![None; m.inventory_size()];
             for (slot, name, count) in r.items {
                 if let Some(cell) = m.items.get_mut(slot as usize) {
@@ -4676,6 +4724,7 @@ mod tests {
             home: Some((10.5, 70.0, -3.5)),
             trade_xp: 75,
             trade_uses: vec![3, 0, 12],
+            trade_restock: 7,
             station: Some((12, 70, -5)),
         };
         assert_eq!(MobRecord::from_json(&r.to_json()), Some(r.clone()));

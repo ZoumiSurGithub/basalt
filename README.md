@@ -36,7 +36,7 @@ Les joueurs de ces versions peuvent être connectés en même temps ; les versio
   cœur, à 20 ticks par seconde (mesure sur une machine de 2 cœurs, détaillée dans
   [docs/PERFORMANCES.md](docs/PERFORMANCES.md)).
 - **À jour avec le jeu.** Basalt parle NetherNet, le transport que Bedrock exige depuis la
-  1.26.60 ; un serveur qui ne parle que RakNet affiche une erreur à ces joueurs.
+  1.26.60, et rien d'autre : pas de vieux transport à maintenir.
 - **Un monde qui ressemble au jeu.** Une cinquantaine de biomes, des grottes, des villages
   habités, des temples, des épaves, des manoirs, avec le butin de leurs coffres.
 - **Des plugins simples à écrire.** En Lua, avec des événements à la PocketMine, un guide
@@ -51,7 +51,7 @@ Les joueurs de ces versions peuvent être connectés en même temps ; les versio
 
 | | |
 |---|---|
-| **Connexion** | NetherNet et RakNet, comptes Xbox vérifiés, liste des serveurs, plusieurs versions du jeu en même temps |
+| **Connexion** | NetherNet, comptes Xbox vérifiés, liste des serveurs, plusieurs versions du jeu en même temps |
 | **Monde** | terrain à la manière du jeu (relief, biomes, grottes, arbres, fonds marins), cycle jour et nuit, eau et lave qui coulent, sauvegarde |
 | **Structures** | villages, pyramides, temples de la jungle, mines abandonnées, avant-postes, cités antiques, ruines de piste, chambres des épreuves, épaves, igloos, portails en ruine, manoirs |
 | **Blocs** | casser et poser (escaliers, orientations, dalles), portes, trappes, portillons, leviers, coffres, fours, établi, cloches |

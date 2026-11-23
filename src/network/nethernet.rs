@@ -14,8 +14,8 @@
 //! (certificat DTLS, réponse SDP, signature) : elle coûte 20 à 40 ms et se fait
 //! sur deux fils à part, pour ne pas figer les joueurs déjà connectés.
 //!
-//! Vers le reste du serveur, ce transport émet les mêmes événements que RakNet
-//! (`RakEvent`), avec des paquets préfixés de l'octet 0xfe, pour que la couche
+//! Vers le reste du serveur, ce transport émet les événements communs aux transports
+//! (`NetEvent`), avec des paquets préfixés de l'octet 0xfe, pour que la couche
 //! de jeu n'ait pas à distinguer les deux.
 
 use std::collections::{HashMap, VecDeque};
@@ -33,7 +33,7 @@ use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc};
 
 use crate::framing::{self, Reassembler};
 use crate::identity::ServerIdentity;
-use crate::raknet::{RakEvent, MAX_PACKET_GAME, MAX_PACKET_LOGIN};
+use crate::transport::{NetEvent, MAX_PACKET_GAME, MAX_PACKET_LOGIN};
 use crate::signaling::{sdp_fingerprints, sdp_insert_identity};
 
 /// Canal qui transporte les paquets du jeu.
@@ -180,6 +180,12 @@ pub struct NetherNet {
     by_remote: HashMap<SocketAddr, SocketAddr>,
     pub max_peers: usize,
     pub debug: bool,
+    /// Port UDP et adresse publique annoncés aux joueurs (repris par les instances sœurs)
+    port: u16,
+    public_ip: Option<IpAddr>,
+    /// Vrai : `poll` lit lui-même le socket. Faux : les datagrammes lui sont remis par
+    /// `feed` (plusieurs instances se partagent alors le même port, voir nethernet_thread)
+    reads: bool,
 }
 
 /// Adresse locale que le système utiliserait pour joindre `remote` (aucun paquet n'est émis).
@@ -285,7 +291,7 @@ impl Peer {
     }
 
     /// Exécute ce que la session demande : émissions réseau et événements.
-    fn drain(&mut self, socket: &UdpSocket, events: &mut Vec<RakEvent>) {
+    fn drain(&mut self, socket: &UdpSocket, events: &mut Vec<NetEvent>) {
         loop {
             let output = {
                 let _t = crate::timings::scope("NetherNet — calcul des sorties (chiffrement)");
@@ -320,7 +326,7 @@ impl Peer {
     }
 
     /// Événements de la connexion WebRTC : canal ouvert, message, fermeture.
-    fn on_event(&mut self, event: Event, events: &mut Vec<RakEvent>) {
+    fn on_event(&mut self, event: Event, events: &mut Vec<NetEvent>) {
         match event {
             Event::ChannelOpen(id, label) => {
                 if self.debug {
@@ -330,7 +336,7 @@ impl Peer {
                     self.reliable = Some(id);
                     if !self.announced {
                         self.announced = true;
-                        events.push(RakEvent::Connected(self.key));
+                        events.push(NetEvent::Connected(self.key));
                     }
                 }
             }
@@ -344,7 +350,7 @@ impl Peer {
                         let mut packet = Vec::with_capacity(message.len() + 1);
                         packet.push(0xfe);
                         packet.extend_from_slice(&message);
-                        events.push(RakEvent::Packet(self.key, packet));
+                        events.push(NetEvent::Packet(self.key, packet));
                     }
                     Ok(None) => {}
                     Err(why) => self.dead = Some(Some(why)),
@@ -363,7 +369,8 @@ impl Peer {
                     info!("[nethernet] {} : état ICE {:?}", self.key, state);
                 }
                 if state == IceConnectionState::Disconnected {
-                    self.dead = Some(None);
+                    // (pas un départ volontaire : plus aucune réponse aux vérifications de la liaison)
+                    self.dead = Some(Some("liaison perdue (le joueur ne répond plus)"));
                 }
             }
             Event::Connected => {
@@ -400,7 +407,58 @@ impl NetherNet {
             by_remote: HashMap::new(),
             max_peers: 64,
             debug: false,
+            port,
+            public_ip,
+            reads: true,
         })
+    }
+
+    /// Une instance sœur : même port (le socket est partagé), même clé, ses propres sessions.
+    /// Sert à répartir les liaisons sur plusieurs fils.
+    pub fn sibling(&self) -> Result<NetherNet, String> {
+        let socket = self.socket.try_clone().map_err(|e| format!("partage du port UDP : {}", e))?;
+        let (jobs, prepared) = start_preparers(self.identity.clone(), self.port, self.public_ip);
+        Ok(NetherNet {
+            socket,
+            identity: self.identity.clone(),
+            preparing: HashMap::new(),
+            jobs: Some(jobs),
+            prepared,
+            peers: HashMap::new(),
+            by_remote: HashMap::new(),
+            max_peers: self.max_peers,
+            debug: self.debug,
+            port: self.port,
+            public_ip: self.public_ip,
+            reads: true,
+        })
+    }
+
+    /// Les datagrammes seront remis par `feed` : `poll` ne lit plus le socket. Renvoie une
+    /// copie du socket pour le fil qui lira à sa place, en lecture bloquante (50 ms au plus).
+    pub fn external_reads(&mut self) -> Result<UdpSocket, String> {
+        let reader = self.socket.try_clone().map_err(|e| format!("partage du port UDP : {}", e))?;
+        // (le mode du socket est commun à toutes ses copies : les envois deviennent
+        // bloquants eux aussi, ce qui en UDP ne dure que le temps de vider le tampon)
+        reader.set_nonblocking(false).map_err(|e| e.to_string())?;
+        reader.set_read_timeout(Some(Duration::from_millis(50))).map_err(|e| e.to_string())?;
+        self.reads = false;
+        Ok(reader)
+    }
+
+    /// Marque cette instance comme nourrie de l'extérieur (voir `external_reads`).
+    pub fn fed_from_outside(&mut self) {
+        self.reads = false;
+    }
+
+    /// Remet un datagramme lu ailleurs. Vrai si son origine appartient à l'une des sessions
+    /// de cette instance.
+    pub fn feed(&mut self, data: &[u8], source: SocketAddr, events: &mut Vec<NetEvent>) -> bool {
+        if data.is_empty() {
+            return false;
+        }
+        self.on_datagram(data, source, Instant::now(), events);
+        self.by_remote.contains_key(&source)
     }
 
     /// Empreinte de la clé du serveur.
@@ -485,11 +543,11 @@ impl NetherNet {
     }
 
     /// Lit les datagrammes arrivés et fait vivre les sessions. Renvoie le nombre lu.
-    pub fn poll(&mut self, events: &mut Vec<RakEvent>) -> usize {
+    pub fn poll(&mut self, events: &mut Vec<NetEvent>) -> usize {
         let now = Instant::now();
         let mut buf = [0u8; 2048];
         let mut read = 0;
-        for _ in 0..MAX_READS {
+        for _ in 0..if self.reads { MAX_READS } else { 0 } {
             match self.socket.recv_from(&mut buf) {
                 Ok((n, source)) if n > 0 => {
                     read += 1;
@@ -547,7 +605,7 @@ impl NetherNet {
     }
 
     /// Datagramme UDP reçu : rattaché à sa connexion par l'adresse, ou reconnu par STUN.
-    fn on_datagram(&mut self, data: &[u8], source: SocketAddr, now: Instant, events: &mut Vec<RakEvent>) {
+    fn on_datagram(&mut self, data: &[u8], source: SocketAddr, now: Instant, events: &mut Vec<NetEvent>) {
         // Session déjà associée à cette adresse, sinon celle qui reconnaît le paquet (STUN)
         let key = match self.by_remote.get(&source) {
             Some(k) => Some(*k),
@@ -621,7 +679,7 @@ impl NetherNet {
     }
 
     /// Émet ce qui a été écrit depuis le dernier passage.
-    pub fn flush(&mut self, events: &mut Vec<RakEvent>) {
+    pub fn flush(&mut self, events: &mut Vec<NetEvent>) {
         for peer in self.peers.values_mut() {
             if peer.dead.is_some() {
                 continue;
@@ -637,7 +695,7 @@ impl NetherNet {
     }
 
     /// Retire les sessions terminées et prévient la couche de jeu.
-    fn reap(&mut self, events: &mut Vec<RakEvent>) {
+    fn reap(&mut self, events: &mut Vec<NetEvent>) {
         let gone: Vec<SocketAddr> = self.peers.iter().filter(|(_, p)| p.dead.is_some()).map(|(k, _)| *k).collect();
         if gone.is_empty() {
             return;
@@ -648,7 +706,7 @@ impl NetherNet {
                 peer.rtc.disconnect();
                 let reason = peer.dead.unwrap_or(None);
                 if peer.announced {
-                    events.push(RakEvent::Disconnected(*key, reason));
+                    events.push(NetEvent::Disconnected(*key, reason));
                 } else if let Some(why) = reason {
                     warn!("{} : connexion NetherNet fermée ({})", key, why);
                 } else if self.debug {

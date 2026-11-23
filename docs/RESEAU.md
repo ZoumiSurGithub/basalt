@@ -26,32 +26,35 @@ bas dans `server.properties` est relevé à 2225 au démarrage. Pour en ajouter
 une, il faut décrire ses différences dans `src/network/protocol/versions.rs` et les appliquer dans
 `src/network/protocol/bedrock/`. À chaque nouvelle version du jeu, la même opération est nécessaire.
 
-## Transport : RakNet et NetherNet
+## Transport : NetherNet
 
-Bedrock a changé de transport réseau. Jusqu'à la 1.26.5x, le jeu joignait un serveur
-en UDP par le protocole RakNet. Depuis la 1.26.60, les clients Windows et Android
-utilisent **NetherNet** pour les serveurs tiers :
+Bedrock a changé de transport réseau. Jusqu'à la 1.26.5x, le jeu joignait un serveur en UDP
+par le protocole RakNet. Depuis la 1.26.60, il utilise **NetherNet** pour les serveurs tiers :
 
 1. le jeu ouvre une connexion **TCP** sur le port du serveur et demande
    `GET /v1/join` : la réponse (JSON) donne le nom du serveur, affiché dans la liste ;
 2. pour entrer, il envoie son offre par `POST /v1/join/{id}` ; la réponse ouvre une
    liaison **WebRTC** (chiffrement DTLS, transport SCTP) qui transporte le jeu.
 
-Un serveur qui ne parle que RakNet affiche « Une erreur s'est produite » à ces joueurs.
-
-Basalt gère les deux. La signalisation est dans `src/network/signaling.rs`, la liaison WebRTC
-dans `src/network/nethernet.rs`, qui s'appuie sur la bibliothèque [`str0m`](https://github.com/algesten/str0m)
-(Rust pur, sans compilateur C ni OpenSSL). C'est la seule partie du serveur qui a des
-dépendances ; `cargo build --release --no-default-features` compile Basalt sans elle.
+Basalt ne parle que NetherNet : les versions du jeu qui utilisaient RakNet sont antérieures à
+la 1.26.60 et ne sont plus acceptées. La signalisation est dans `src/network/signaling.rs`, la
+liaison WebRTC dans `src/network/nethernet.rs`, qui s'appuie sur la bibliothèque
+[`str0m`](https://github.com/algesten/str0m) (Rust pur, sans compilateur C ni OpenSSL). C'est
+la seule partie du serveur qui a des dépendances.
 
 | Port | Rôle |
 |---|---|
-| `server-port` (19132) en UDP | RakNet |
 | `server-port` (19132) en TCP | signalisation NetherNet (HTTP) |
 | `nethernet-udp-port` (19140) en UDP | liaison WebRTC de NetherNet |
 
-Les trois doivent être ouverts (et redirigés sur la box pour un serveur public, avec
-`public-ip` renseigné dans `server.properties`).
+Les deux doivent être ouverts (et redirigés sur la box pour un serveur public, avec
+`public-ip` renseigné dans `server.properties`). Le port 19132 en UDP ne sert plus.
+
+**Transport de test.** Les tests de bout en bout et quelques outils locaux utilisent une
+liaison TCP toute simple (`src/network/transport.rs`), limitée à la machine du serveur. Elle
+ne s'ouvre que par programme : aucun réglage de `server.properties` ne l'active, et un
+serveur lancé normalement ne l'écoute pas. `cargo build --release --no-default-features`
+compile Basalt sans NetherNet : il ne reste alors que ce transport, pour les tests.
 
 **Clé du serveur.** Le jeu exige que le serveur signe ses réponses. Basalt crée sa clé au
 premier démarrage dans `server-identity.key` : gardez ce fichier secret et conservez-le,
@@ -73,25 +76,19 @@ limite est déconnecté sur-le-champ ; la raison est écrite dans la console
 | Paquets tronqués ou incohérents | toutes les lectures sont bornées ; le client est déconnecté |
 | Paquet énorme envoyé par fragments | 3 Mo au plus pendant le login, 512 Ko ensuite |
 | « Bombe » de décompression | la décompression s'arrête à la même limite |
-| Rafale de paquets | 1 500 datagrammes et 300 lots par seconde et par joueur, 6 Mo/s de données |
-| Saturation de la mémoire | files d'attente plafonnées par session (fragments, paquets en avance) |
-| Connexions en masse depuis une adresse | `max-connections-per-ip` (5 par défaut) et débit d'ouvertures limité |
-| Avalanche de pings ou d'ouvertures | 30 par seconde et par adresse, 3 000 au total ; le reste est ignoré |
+| Rafale de paquets | 300 lots par seconde et par joueur, 6 Mo/s de données |
+| Connexions en masse depuis une adresse | `max-connections-per-ip` (5 par défaut) |
 | Connexion ouverte qui ne fait rien | 10 s pour s'identifier, 90 s pour entrer en jeu |
-| Client factice qui n'acquitte rien | session fermée après 12 s sans accusé de réception |
-| Renvois provoqués pour inonder un tiers | renvois sur demande limités, débit d'envoi plafonné |
 | Bug du serveur déclenché par un paquet | l'erreur est interceptée : seul ce joueur est déconnecté |
 
-Ces protections sont vérifiées par des tests (`cargo test`) : paquets aléatoires,
+Ces protections sont vérifiées par des tests (`cargo test`) : messages aléatoires,
 bombe de décompression, inondation, limite par adresse.
 
 Autres protections :
 
-- **Échanges chiffrés.** Les jeux récents passent par NetherNet, chiffré par sa liaison
-  DTLS. En RakNet, le serveur chiffre la session comme le serveur officiel (échange de clés
-  ECDH sur P-384, AES-256 en mode compteur, somme de contrôle sur chaque lot). Seul le
-  possesseur de la clé du jeton Xbox peut suivre : un login intercepté puis rejoué ne mène
-  à rien, et un lot altéré ou rejoué ferme la connexion.
+- **Échanges chiffrés.** La liaison NetherNet est chiffrée par DTLS. Avec `xbox-auth=true`,
+  l'offre de connexion porte le jeton Xbox du joueur et une signature qui le lie à cette
+  liaison : un login intercepté puis rejoué ne mène à rien.
 - **Fabrication vérifiée.** Le résultat annoncé par le jeu doit venir d'une vraie recette
   (`data/recipes.json`) qui correspond exactement à la grille, et chaque case doit perdre
   ce que la recette consomme. Les recettes de l'établi et de la grille d'inventaire sont
@@ -154,3 +151,13 @@ connexion s'est terminée.
 **Réglages de secours.** Si un joueur est replacé à tort, ou se déconnecte quand un autre
 joueur apparaît, `movement-check=false` et `show-players=false` désactivent ces fonctions
 le temps de corriger.
+
+## Beaucoup de joueurs : `nethernet-threads`
+
+Par défaut, un seul fil lit, déchiffre et envoie tout le trafic NetherNet. Il suffit jusqu'à
+quelques centaines de joueurs ; vers un millier, il sature. `nethernet-threads=4` dans
+`server.properties` répartit les joueurs sur quatre fils (16 au plus). Comptez un fil pour
+400 joueurs environ, sans dépasser le nombre de cœurs de la machine.
+
+Le port UDP reste le même : rien à changer dans le pare-feu. Chaque joueur reste sur le même
+fil du début à la fin de sa session.

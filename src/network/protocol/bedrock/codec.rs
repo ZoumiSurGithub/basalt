@@ -83,7 +83,7 @@ fn compressing() -> bool {
     COMPRESS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Emballe un paquet dans un lot prêt à être envoyé par RakNet.
+/// Emballe un paquet dans un lot prêt à être envoyé (avec son octet 0xfe de tête).
 pub fn encode_packet(id: u32, body: &[u8], compression: bool) -> Vec<u8> {
     encode_packet_with(id, body, compression, crate::utils::deflate::Level::Fast)
 }
@@ -185,7 +185,34 @@ pub fn read_vari32(d: &[u8], pos: &mut usize) -> Option<i32> {
 
 /// Emballe plusieurs paquets dans un seul lot.
 pub fn encode_batch(packets: &[(u32, Vec<u8>)], compression: bool) -> Vec<u8> {
-    let mut framed = Vec::with_capacity(packets.iter().map(|p| p.1.len() + 8).sum());
+    encode_batch_with(packets, &[], compression)
+}
+
+/// Un paquet tel qu'il figure dans un lot (longueur, numéro, contenu) : préparé une fois, il
+/// se recopie tel quel dans le lot de chaque destinataire (voir `encode_batch_with`).
+pub fn frame_packet(id: u32, body: &[u8]) -> Vec<u8> {
+    let mut head = [0u8; 5];
+    let mut n = 0;
+    let mut v = id;
+    loop {
+        let b = (v & 0x7f) as u8;
+        v >>= 7;
+        head[n] = if v != 0 { b | 0x80 } else { b };
+        n += 1;
+        if v == 0 {
+            break;
+        }
+    }
+    let mut out = Vec::with_capacity(body.len() + n + 3);
+    write_varu32(&mut out, (n + body.len()) as u32);
+    out.extend_from_slice(&head[..n]);
+    out.extend_from_slice(body);
+    out
+}
+
+/// Comme `encode_batch`, suivi de paquets déjà mis en forme par `frame_packet`.
+pub fn encode_batch_with(packets: &[(u32, Vec<u8>)], framed_tail: &[u8], compression: bool) -> Vec<u8> {
+    let mut framed = Vec::with_capacity(packets.iter().map(|p| p.1.len() + 8).sum::<usize>() + framed_tail.len());
     for (id, body) in packets {
         let mut head = Vec::with_capacity(4);
         write_varu32(&mut head, *id);
@@ -193,6 +220,7 @@ pub fn encode_batch(packets: &[(u32, Vec<u8>)], compression: bool) -> Vec<u8> {
         framed.extend_from_slice(&head);
         framed.extend_from_slice(body);
     }
+    framed.extend_from_slice(framed_tail);
     let mut out = Vec::with_capacity(framed.len() + 2);
     out.push(0xfe);
     if compression && framed.len() >= COMPRESS_FROM && compressing() {

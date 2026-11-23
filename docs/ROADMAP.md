@@ -7,7 +7,6 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 ## 1. Réseau et connexion
 
 - [x] NetherNet (jeux 1.26.60 et plus)
-- [x] RakNet et son chiffrement (ECDH, AES-256)
 - [x] Connexion Xbox vérifiée
 - [x] Compression des paquets
 - [x] Refus propre des clients trop anciens

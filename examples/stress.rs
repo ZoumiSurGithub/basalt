@@ -1,30 +1,41 @@
-//! Outil de charge : simule N joueurs qui se connectent, entrent en jeu, puis
-//! marchent en envoyant 20 paquets de déplacement par seconde chacun, et mesure comment le serveur tient.
+//! Outil de charge : simule N joueurs qui se connectent par NetherNet (le transport du vrai
+//! jeu), entrent en jeu, puis marchent en envoyant 20 paquets de déplacement par seconde
+//! chacun, et mesure comment le serveur tient.
 //!
 //!   cargo build --release
 //!   cargo run --release --example stress -- 1000 [secondes] [arrivées_par_seconde]
 //!
-//! Linux uniquement : chaque joueur simulé utilise sa propre adresse 127.x.y.z, et
-//! la consommation du serveur est lue dans /proc. Le serveur testé est le binaire
-//! target/release/basalt, lancé dans un dossier temporaire sans authentification.
+//! Le serveur testé est le binaire target/release/basalt, lancé dans un dossier temporaire,
+//! sans authentification, avec `local-bots=true` (joueurs simulés admis depuis cette machine).
+//! Sa consommation est lue dans /proc : hors de Linux, ces deux lignes restent à zéro.
 //!
-//! Ce que la mesure couvre : la couche réseau (réception, accusés, sessions) et la
-//! séquence d'entrée en jeu. Elle ne dit rien d'un futur gameplay (entités, blocs,
-//! joueurs qui se voient), qui coûtera davantage.
+//! Ce que la mesure couvre : la liaison chiffrée (WebRTC), les sessions et la séquence
+//! d'entrée en jeu. Elle ne dit rien d'un vrai gameplay (combat, blocs, entités), qui coûte
+//! davantage.
 
+#[cfg(not(feature = "nethernet"))]
+fn main() {
+    eprintln!("L'outil de charge a besoin du transport NetherNet : compilez avec les fonctions par défaut.");
+}
+
+#[cfg(feature = "nethernet")]
+fn main() {
+    stress::run();
+}
+
+#[cfg(feature = "nethernet")]
+mod stress {
 use std::io::{BufRead, BufReader, Write};
-use std::net::{SocketAddr, UdpSocket};
+use std::net::SocketAddr;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use basalt::bedrock::{read_varu32, write_varu32};
-use basalt::raknet::MAGIC;
+use basalt::nethernet_client::NetherLink;
 
 #[derive(PartialEq, Clone, Copy)]
 enum Stage {
     Waiting,
-    Open1,
-    Open2,
     Connecting,
     Joining,
     InGame,
@@ -32,13 +43,9 @@ enum Stage {
 }
 
 struct Bot {
-    sock: UdpSocket,
+    link: Option<NetherLink>,
     stage: Stage,
-    seq: u32,
-    ridx: u32,
-    oidx: u32,
     compressed: bool,
-    last_step: Instant,
     last_input: Instant,
     last_heard: Instant,
     joined_after: Option<Duration>,
@@ -48,49 +55,21 @@ struct Bot {
 }
 
 impl Bot {
-    fn frame(&mut self, body: &[u8]) {
-        let mut d = vec![0x84];
-        d.extend_from_slice(&self.seq.to_le_bytes()[..3]);
-        self.seq += 1;
-        d.push(0x60);
-        d.extend_from_slice(&((body.len() * 8) as u16).to_be_bytes());
-        d.extend_from_slice(&self.ridx.to_le_bytes()[..3]);
-        self.ridx += 1;
-        d.extend_from_slice(&self.oidx.to_le_bytes()[..3]);
-        self.oidx += 1;
-        d.push(0);
-        d.extend_from_slice(body);
-        let _ = self.sock.send(&d);
-    }
-
+    /// Envoie un paquet de jeu : un lot à lui seul, sans l'octet 0xfe (NetherNet s'en passe).
     fn game(&mut self, id: u32, body: &[u8]) {
         let mut inner = Vec::new();
         write_varu32(&mut inner, id);
         inner.extend_from_slice(body);
-        let mut p = vec![0xfe];
+        let mut p = Vec::new();
         if self.compressed {
             p.push(0xff);
         }
         write_varu32(&mut p, inner.len() as u32);
         p.extend_from_slice(&inner);
-        self.frame(&p);
-    }
-
-    fn open1(&mut self) {
-        let mut p = vec![0x05];
-        p.extend_from_slice(&MAGIC);
-        p.push(11);
-        p.resize(1372, 0);
-        let _ = self.sock.send(&p);
-    }
-
-    fn open2(&mut self) {
-        let mut p = vec![0x07];
-        p.extend_from_slice(&MAGIC);
-        p.extend_from_slice(&[4, 0x80, 0xff, 0xff, 0xfe, 0x4a, 0xbc]);
-        p.extend_from_slice(&1400u16.to_be_bytes());
-        p.extend_from_slice(&7i64.to_be_bytes());
-        let _ = self.sock.send(&p);
+        let sent = self.link.as_mut().map(|l| l.send(&p).is_ok()).unwrap_or(false);
+        if !sent {
+            self.stage = Stage::Lost;
+        }
     }
 
     fn login(&mut self, index: usize) {
@@ -109,110 +88,51 @@ impl Bot {
         self.game(1, &body);
     }
 
-    fn on_packet(&mut self, index: usize, p: &[u8], now: Instant) {
-        match p[0] {
-            0x10 if self.stage == Stage::Connecting => {
-                self.frame(&[0x13, 0, 0, 0]);
-                self.game(0xc1, &2225i32.to_be_bytes());
-                self.stage = Stage::Joining;
-            }
-            0xfe => {
-                let mut pos = 1;
-                let inflated;
-                let mut p = p;
-                if self.compressed {
-                    pos = 2;
-                    // Lot compressé par le serveur (« zlib », algorithme 0)
-                    if p.get(1) == Some(&0x00) {
-                        inflated = match basalt::inflate::inflate(&p[2..], 8 << 20) {
-                            Ok(v) => v,
-                            Err(_) => return,
-                        };
-                        p = &inflated;
-                        pos = 0;
-                    }
-                }
-                while pos < p.len() {
-                    let len = match read_varu32(p, &mut pos) {
-                        Some(l) => l as usize,
-                        None => return,
-                    };
-                    let end = (pos + len).min(p.len());
-                    let mut q = pos;
-                    let id = read_varu32(&p[..end], &mut q).unwrap_or(0);
-                    let body = &p[q..end];
-                    pos = end;
-                    match id {
-                        0x8f => {
-                            self.compressed = true;
-                            self.login(index);
-                        }
-                        6 => self.game(8, &[3, 0, 0]),
-                        7 => self.game(8, &[4, 0, 0]),
-                        11 => self.game(69, &[8, 16]),
-                        2 if body == [0, 0, 0, 3] => {
-                            self.game(113, &[2]);
-                            self.stage = Stage::InGame;
-                            self.joined_after = self.started.map(|s| now.duration_since(s));
-                        }
-                        58 if self.stage == Stage::InGame => self.chunks += 1,
-                        5 => self.stage = Stage::Lost,
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn on_datagram(&mut self, index: usize, d: &[u8], now: Instant) {
+    /// Un lot reçu du serveur (sans octet 0xfe).
+    fn on_message(&mut self, index: usize, message: &[u8], now: Instant) {
         self.last_heard = now;
-        match d[0] {
-            0x06 if self.stage == Stage::Open1 => {
-                self.open2();
-                self.stage = Stage::Open2;
-                self.last_step = now;
+        let mut pos = 0;
+        let inflated;
+        let mut p = message;
+        if self.compressed {
+            pos = 1;
+            // Lot compressé par le serveur (« zlib », algorithme 0)
+            if p.first() == Some(&0x00) {
+                inflated = match basalt::inflate::inflate(&p[1..], 8 << 20) {
+                    Ok(v) => v,
+                    Err(_) => return,
+                };
+                p = &inflated;
+                pos = 0;
             }
-            0x08 if self.stage == Stage::Open2 => {
-                let mut p = vec![0x09];
-                p.extend_from_slice(&7i64.to_be_bytes());
-                p.extend_from_slice(&1i64.to_be_bytes());
-                p.push(0);
-                self.frame(&p);
-                self.stage = Stage::Connecting;
-                self.last_step = now;
-            }
-            f if f & 0x80 != 0 && f & 0x60 == 0 && d.len() > 4 => {
-                let mut ack = vec![0xc0, 0, 1, 1];
-                ack.extend_from_slice(&d[1..4]);
-                let _ = self.sock.send(&ack);
-                let mut pos = 4;
-                while pos + 3 <= d.len() {
-                    let flags = d[pos];
-                    let len = (u16::from_be_bytes([d[pos + 1], d[pos + 2]]) as usize + 7) / 8;
-                    let rel = flags >> 5;
-                    pos += 3;
-                    if rel == 0 {
-                        if d.get(pos) == Some(&0x15) {
-                            self.stage = Stage::Lost;
-                        }
-                        return;
-                    }
-                    pos += 7;
-                    let split = flags & 0x10 != 0;
-                    if split {
-                        pos += 10; // les gros lots fragmentés sont acquittés mais pas relus
-                    }
-                    if pos + len > d.len() || len == 0 {
-                        return;
-                    }
-                    if !split {
-                        self.on_packet(index, &d[pos..pos + len], now);
-                    }
-                    pos += len;
+        }
+        while pos < p.len() {
+            let len = match read_varu32(p, &mut pos) {
+                Some(l) => l as usize,
+                None => return,
+            };
+            let end = (pos + len).min(p.len());
+            let mut q = pos;
+            let id = read_varu32(&p[..end], &mut q).unwrap_or(0) & 0x3ff;
+            let body = &p[q..end];
+            pos = end;
+            match id {
+                0x8f => {
+                    self.compressed = true;
+                    self.login(index);
                 }
+                6 => self.game(8, &[3, 0, 0]),
+                7 => self.game(8, &[4, 0, 0]),
+                11 => self.game(69, &[8, 16]),
+                2 if body == [0, 0, 0, 3] => {
+                    self.game(113, &[2]);
+                    self.stage = Stage::InGame;
+                    self.joined_after = self.started.map(|s| now.duration_since(s));
+                }
+                58 if self.stage == Stage::InGame => self.chunks += 1,
+                5 => self.stage = Stage::Lost,
+                _ => {}
             }
-            _ => {}
         }
     }
 }
@@ -254,7 +174,7 @@ fn memory_mb(pid: u32) -> f64 {
         / 1024.0
 }
 
-fn main() {
+pub fn run() {
     let args: Vec<String> = std::env::args().collect();
     let count: usize = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(1000);
     let hold: u64 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(15);
@@ -266,8 +186,9 @@ fn main() {
     std::fs::write(
         dir.join("server.properties"),
         format!(
-            "server-ip=127.0.0.1\nserver-port={}\nmax-players={}\nxbox-auth=false\nview-distance=4\nplugins-dir=plugins\nnetwork-compression={}\n",
+            "server-ip=127.0.0.1\nserver-port={}\nnethernet-udp-port={}\nmax-players={}\nxbox-auth=false\nlocal-bots=true\nview-distance=4\nplugins-dir=plugins\nnetwork-compression={}\n",
             port,
+            port + 10000,
             count + 10,
             std::env::var("COMPRESSION").unwrap_or_else(|_| "true".into())
         ),
@@ -292,33 +213,12 @@ fn main() {
 
     let now = Instant::now();
     let mut bots: Vec<Bot> = (0..count)
-        .map(|i| {
-            // Une adresse source par joueur, comme sur Internet
-            let ip = [127, 1 + (i / 62500) as u8, (i / 250 % 250) as u8, (i % 250) as u8 + 1];
-            let sock = UdpSocket::bind(SocketAddr::from((ip, 0))).unwrap();
-            sock.connect(target).unwrap();
-            sock.set_nonblocking(true).unwrap();
-            Bot {
-                sock,
-                stage: Stage::Waiting,
-                seq: 0,
-                ridx: 0,
-                oidx: 0,
-                compressed: false,
-                last_step: now,
-                last_input: now,
-                last_heard: now,
-                joined_after: None,
-                started: None,
-                walked: 0.0,
-                chunks: 0,
-            }
-        })
+        .map(|_| Bot { link: None, stage: Stage::Waiting, compressed: false, last_input: now, last_heard: now, joined_after: None, started: None, walked: 0.0, chunks: 0 })
         .collect();
 
     println!("{} joueurs simulés, {} arrivées par seconde, puis {} s de jeu", count, rate, hold);
     let begin = Instant::now();
-    let mut buf = [0u8; 2048];
+    let mut refused: Option<String> = None;
     let mut steady: Option<(Instant, f64)> = None;
     let mut inputs_sent = 0u64;
     let mut received_bytes = 0u64;
@@ -328,25 +228,40 @@ fn main() {
         let allowed = ((now.duration_since(begin).as_secs_f64() * rate as f64) as usize + 1).min(count);
         for (i, b) in bots.iter_mut().enumerate() {
             if b.stage == Stage::Waiting && i < allowed {
-                b.stage = Stage::Open1;
                 b.started = Some(now);
-                b.last_step = now;
                 b.last_heard = now;
-                b.open1();
-            }
-            // Le serveur limite les ouvertures par seconde : on réessaie comme un vrai client
-            if (b.stage == Stage::Open1 || b.stage == Stage::Open2) && now.duration_since(b.last_step) > Duration::from_millis(700) {
-                b.last_step = now;
-                if b.stage == Stage::Open1 {
-                    b.open1();
-                } else {
-                    b.open2();
+                // Demande d'entrée par la signalisation ; la liaison s'ouvre ensuite
+                match NetherLink::connect(target, 7_000_000_000 + i as u64) {
+                    Ok(link) => {
+                        b.link = Some(link);
+                        b.stage = Stage::Connecting;
+                    }
+                    Err(why) => {
+                        b.stage = Stage::Lost;
+                        refused.get_or_insert(why);
+                    }
                 }
             }
-            while let Ok(n) = b.sock.recv(&mut buf) {
-                received_bytes += n as u64;
-                if n > 0 {
-                    b.on_datagram(i, &buf[..n], now);
+            let polled = b.link.as_mut().map(|l| (l.poll(), l.is_open(), l.is_closed()));
+            if let Some((messages, open, closed)) = polled {
+                if open && b.stage == Stage::Connecting {
+                    b.game(0xc1, &2225i32.to_be_bytes());
+                    b.stage = Stage::Joining;
+                    b.last_heard = now;
+                }
+                match messages {
+                    Ok(list) => {
+                        for m in list {
+                            received_bytes += m.len() as u64;
+                            b.on_message(i, &m, now);
+                        }
+                    }
+                    Err(why) => {
+                        refused.get_or_insert(why);
+                    }
+                }
+                if closed && b.stage != Stage::Lost {
+                    b.stage = Stage::Lost;
                 }
             }
             if b.stage == Stage::InGame && now.duration_since(b.last_input) >= Duration::from_millis(50) {
@@ -373,6 +288,9 @@ fn main() {
         if now.duration_since(last_report) > Duration::from_secs(5) {
             last_report = now;
             println!("  {:>4.0} s : {} en jeu, {} perdus", now.duration_since(begin).as_secs_f64(), in_game, lost);
+            if let Some(why) = refused.take() {
+                println!("         dernière erreur : {}", why);
+            }
         }
         if steady.is_none() && in_game + lost == count {
             println!("Tous les joueurs sont arrivés en {:.1} s", now.duration_since(begin).as_secs_f64());
@@ -421,4 +339,5 @@ fn main() {
         println!("{}", l);
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
 }

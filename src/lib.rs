@@ -12,7 +12,7 @@
 //!   world/       `World` : le monde, ses blocs et sa sauvegarde
 //!   tile/        `Tile` (base), puis `ContainerTile`, `FurnaceTile`, `SignTile` : les données
 //!                attachées aux blocs (contenu d'un coffre, état d'un four…)
-//!   network/     transports RakNet et NetherNet, signalisation, et `protocol/` (paquets Bedrock)
+//!   network/     NetherNet, sa signalisation, le transport de test, et `protocol/` (paquets Bedrock)
 //!   nbt/         format NBT : lecture, écriture, fichiers `.nbt` (sauvegardes)
 //!   permission/  `Permission`, règles par défaut, opérateurs
 //!   plugin/      plugins Lua : fiche `plugin.yml`, chargement, bac à sable, fil dédié
@@ -22,7 +22,7 @@
 //!   tools/       outils en ligne de commande (capture des données du jeu)
 //!
 //! Les modules les plus utilisés sont aussi accessibles par un nom court (`basalt::bedrock`,
-//! `basalt::raknet`…), ce qui garde les chemins simples dans tout le code.
+//! `basalt::transport`…), ce qui garde les chemins simples dans tout le code.
 
 // `utils` en premier : il définit les macros de journal utilisées partout.
 #[macro_use]
@@ -45,11 +45,13 @@ pub mod tools;
 pub mod world;
 
 pub use network::protocol::{self, bedrock, versions};
-pub use network::{framing, nethernet, raknet, signaling};
+pub use network::{framing, nethernet, signaling, transport};
 pub use plugin::lua;
 pub use security::{auth, crypto};
 #[cfg(feature = "nethernet")]
 pub use security::identity;
+#[cfg(feature = "nethernet")]
+pub use network::nethernet_client;
 pub use utils::{background, config, console, inflate, json, log, timings, yaml};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

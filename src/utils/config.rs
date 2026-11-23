@@ -9,7 +9,6 @@ pub struct Config {
     pub sub_motd: String,
     pub ip: String,
     pub port: u16,
-    pub port6: u16,
     pub max_players: u32,
     pub game_version: String,
     pub protocol: i32,
@@ -43,6 +42,8 @@ pub struct Config {
     pub file: Option<std::path::PathBuf>,
     pub http_signaling: bool,
     pub nethernet_udp_port: u16,
+    /// Fils entre lesquels les liaisons NetherNet sont réparties (1 à 16)
+    pub nethernet_threads: usize,
     pub public_ip: String,
     pub identity_domain: String,
     pub identity_cpk_jwk: bool,
@@ -65,6 +66,9 @@ pub struct Config {
     /// Mémoire maximale d'un plugin protégé, en Mo
     pub plugin_memory_mb: usize,
     pub timeout_secs: u64,
+    /// Transport de test (TCP, cette machine seulement) : ouvert par les tests de bout en
+    /// bout, jamais par server.properties
+    pub test_transport: bool,
 }
 
 impl Default for Config {
@@ -75,7 +79,6 @@ impl Default for Config {
             sub_motd: "Basalt".into(),
             ip: "0.0.0.0".into(),
             port: 19132,
-            port6: 19133,
             max_players: 20,
             game_version: "1.26.65".into(),
             protocol: 2225,
@@ -99,6 +102,7 @@ impl Default for Config {
             file: None,
             http_signaling: true,
             nethernet_udp_port: 19140,
+            nethernet_threads: 1,
             public_ip: String::new(),
             identity_domain: "basalt.local".into(),
             identity_cpk_jwk: true,
@@ -106,7 +110,7 @@ impl Default for Config {
             show_players: true,
             spawn_animals: true,
             player_view: 4,
-            max_visible: 48,
+            max_visible: usize::MAX,
             auth_keys_file: String::new(),
             plugins_dir: "plugins".into(),
             world_dir: "world".into(),
@@ -115,6 +119,7 @@ impl Default for Config {
             plugin_trusted: String::new(),
             plugin_memory_mb: 64,
             timeout_secs: 10,
+            test_transport: false,
         }
     }
 }
@@ -124,19 +129,22 @@ const TEMPLATE: &str = "\
 # Nom affiché dans la liste des serveurs
 server-name=Serveur Basalt
 sub-motd=Basalt
-# Adresse et port d'écoute (UDP)
+# Adresse et port d'écoute. Le jeu trouve le serveur en HTTP sur ce port, en TCP
+# (signalisation du transport NetherNet). À ouvrir dans le pare-feu.
 server-ip=0.0.0.0
 server-port=19132
-# true : répond aux jeux récents (1.26.60 et plus), qui cherchent le serveur en HTTP
-# sur le port TCP de même numéro que server-port (transport NetherNet)
+# false : ferme la signalisation (plus aucun joueur ne peut entrer)
 nethernet-signaling=true
 # Port UDP de la liaison WebRTC (transport NetherNet). À ouvrir dans le pare-feu.
 nethernet-udp-port=19140
+# Fils entre lesquels les liaisons des joueurs sont réparties (chiffrement, lecture,
+# envoi), de 1 à 16. Un seul suffit jusqu'à quelques centaines de joueurs ; au-delà,
+# comptez un fil pour 400 joueurs environ, sans dépasser le nombre de cœurs. Le port
+# reste le même.
+nethernet-threads=1
 # Adresse IP publique du serveur, à renseigner s'il est derrière une box ou un NAT
 # (laisser vide sinon : l'adresse sur laquelle le joueur s'est connecté est utilisée)
 public-ip=
-# Port d'écoute IPv6 (0 pour désactiver)
-server-portv6=19133
 max-players=20
 # Version annoncée dans la liste des serveurs (la plus courante chez vos joueurs)
 game-version=1.26.65
@@ -187,8 +195,11 @@ spawn-animals=true
 tick-distance=4
 # Distance (en chunks) jusqu'à laquelle un joueur voit les autres
 player-view-distance=4
-# Nombre maximal d'autres joueurs affichés à chaque joueur
-max-visible-players=48
+# Nombre maximal d'autres joueurs affichés à chaque joueur.
+# 0 : pas de plafond, chacun voit tous les joueurs à portée (player-view-distance).
+# Dans une très grosse foule, le trafic croît avec le carré du nombre de joueurs réunis :
+# un plafond (48 par exemple, 500 au plus) le réduit
+max-visible-players=0
 # Connexions simultanées autorisées depuis une même adresse IP
 max-connections-per-ip=5
 # true : journalise chaque paquet reçu et envoyé (pour le diagnostic)
@@ -324,8 +335,9 @@ impl Config {
             };
         }
         num!("server-port", port);
-        num!("server-portv6", port6);
         num!("nethernet-udp-port", nethernet_udp_port);
+        num!("nethernet-threads", nethernet_threads);
+        c.nethernet_threads = c.nethernet_threads.clamp(1, 16);
         c.public_ip = text_of("public-ip", "");
         c.identity_domain = text_of("identity-domain", &c.identity_domain);
         c.identity_cpk_jwk = map.get("identity-cpk-format").map(|v| v != "spki").unwrap_or(true);
@@ -353,7 +365,8 @@ impl Config {
         num!("player-view-distance", player_view);
         num!("max-visible-players", max_visible);
         c.player_view = c.player_view.max(1).min(16);
-        c.max_visible = c.max_visible.min(500);
+        // 0 : pas de plafond, chacun voit tous les joueurs à portée de vue
+        c.max_visible = if c.max_visible == 0 { usize::MAX } else { c.max_visible.min(500) };
         c.max_per_ip = c.max_per_ip.max(1);
         c.view_distance = c.view_distance.max(2).min(16);
         c.tick_distance = c.tick_distance.clamp(4, 12);

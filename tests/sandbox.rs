@@ -173,8 +173,8 @@ end)
         None => return,
     };
     let mut info = Info::default();
-    info.players.push("Enzo".into());
-    info.pdata.push(PlayerSnap {
+    std::sync::Arc::make_mut(&mut info.players).push("Enzo".into());
+    std::sync::Arc::make_mut(&mut info.pdata).push(PlayerSnap {
         name: "Enzo".into(),
         display_name: "Enzo".into(),
         name_tag: "Enzo".into(),
@@ -271,9 +271,9 @@ end)
     assert!(!has_permission(&player, &declared, "gardien.expulser"));
     assert!(!has_permission(&player, &declared, "inconnue"));
     let mut info = Info::default();
-    info.players.push("Enzo".into());
-    info.pdata.push(player);
-    info.perms = declared;
+    std::sync::Arc::make_mut(&mut info.players).push("Enzo".into());
+    std::sync::Arc::make_mut(&mut info.pdata).push(player);
+    info.perms = std::sync::Arc::new(declared);
     m.set_info(&info, 1);
     m.dispatch("join", &[LVal::Player("Enzo".into())]);
     assert_eq!(
@@ -393,9 +393,9 @@ fn easyedit_edits_the_world_by_itself() {
         assert_eq!(m.command_permission(expected).as_deref(), Some("easyedit.use"));
     }
     // Un opérateur, les yeux en (10.5, -58.38, -3.5) : ses pieds sont dans le bloc (10, -60, -4)
-    info.players.push("Enzo".into());
-    info.pdata.push(PlayerSnap { name: "Enzo".into(), display_name: "Enzo".into(), pos: (10.5, -58.38, -3.5), op: true, held: "minecraft:wooden_axe".into(), yaw: 0.0, pitch: -80.0, ..Default::default() });
-    info.perms = m.permissions();
+    std::sync::Arc::make_mut(&mut info.players).push("Enzo".into());
+    std::sync::Arc::make_mut(&mut info.pdata).push(PlayerSnap { name: "Enzo".into(), display_name: "Enzo".into(), pos: (10.5, -58.38, -3.5), op: true, held: "minecraft:wooden_axe".into(), yaw: 0.0, pitch: -80.0, ..Default::default() });
+    info.perms = std::sync::Arc::new(m.permissions());
     let stone = data.default_state("minecraft:stone").unwrap();
     let grass = data.default_state("minecraft:grass_block").unwrap();
     let air = data.default_state("minecraft:air").unwrap();
@@ -471,13 +471,13 @@ fn easyedit_edits_the_world_by_itself() {
 
     // /copy puis /paste : la copie est relative aux pieds du joueur (10, -60, -4)
     run(&mut m, &mut world, &mut info, Some(("copy", &[])), 0);
-    info.pdata[0].pos = (30.5, -58.38, -3.5);
+    std::sync::Arc::make_mut(&mut info.pdata)[0].pos = (30.5, -58.38, -3.5);
     run(&mut m, &mut world, &mut info, Some(("paste", &["a"])), 3);
     assert_eq!(world.get(20, -61, 0), stone, "collé 20 blocs plus loin");
     assert_eq!(world.get(24, -58, 4), stone);
 
     // Une grosse opération (sphère de rayon 20, plus de 20 000 blocs) se fait en plusieurs ticks
-    info.pdata[0].pos = (100.5, -38.38, 100.5);
+    std::sync::Arc::make_mut(&mut info.pdata)[0].pos = (100.5, -38.38, 100.5);
     let said = run(&mut m, &mut world, &mut info, Some(("sphere", &["glass", "20"])), 1);
     assert!(said.iter().any(|s| s.contains("en cours")), "{:?}", said);
     let said = run(&mut m, &mut world, &mut info, None, 4);
@@ -523,8 +523,8 @@ end)
     let yml = std::fs::read_to_string(d.join("essai").join("config.yml")).unwrap();
     assert!(yml.contains("message: \"Bienvenue !\"") && yml.contains("kit: true") && yml.contains("diamants: 3") && yml.contains("mondes: [\"a\", \"b\"]"), "{}", yml);
     let mut info = Info::default();
-    info.players.push("Enzo".into());
-    info.pdata.push(PlayerSnap { name: "Enzo".into(), ..Default::default() });
+    std::sync::Arc::make_mut(&mut info.players).push("Enzo".into());
+    std::sync::Arc::make_mut(&mut info.pdata).push(PlayerSnap { name: "Enzo".into(), ..Default::default() });
     m.set_info(&info, 1);
     for tick in 1..=20 {
         m.run_timers(tick);
@@ -566,8 +566,8 @@ fn beginner_examples_work() {
     m.load_all(&Info::default(), &[]);
     let mut info = Info::default();
     for (name, op) in [("Admin", true), ("Lea", false)] {
-        info.players.push(name.into());
-        info.pdata.push(PlayerSnap { name: name.into(), op, pos: (100.5, 65.62, 200.5), ..Default::default() });
+        std::sync::Arc::make_mut(&mut info.players).push(name.into());
+        std::sync::Arc::make_mut(&mut info.pdata).push(PlayerSnap { name: name.into(), op, pos: (100.5, 65.62, 200.5), ..Default::default() });
     }
     m.set_info(&info, 1);
     m.take_actions();

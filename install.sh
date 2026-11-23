@@ -102,7 +102,7 @@ if [ "$SERVICE" = 1 ]; then
     systemctl daemon-reload
     systemctl enable --now basalt
     ok "Service installé. Journal : journalctl -u basalt -f"
-    warn "Pensez à ouvrir le port 19132/udp dans votre pare-feu."
+    warn "Pensez à ouvrir les ports 19132/tcp et 19140/udp dans votre pare-feu."
 else
     ok "Terminé. Lancez le serveur avec : cd dist && ./basalt"
 fi

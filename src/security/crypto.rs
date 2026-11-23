@@ -810,7 +810,7 @@ impl BedrockCipher {
 
 /// Chiffrement d'une session Bedrock, une fois la clé convenue (ECDH puis SHA-256 avec un sel) :
 /// chaque lot porte une somme de contrôle (compteur, contenu, clé) puis est chiffré en AES-256
-/// mode compteur. Sert au serveur (joueurs en RakNet) et à l'outil de capture.
+/// mode compteur. Sert à l'outil de capture, qui parle RakNet au serveur officiel.
 pub struct Crypt {
     key: [u8; 32],
     enc: BedrockCipher,

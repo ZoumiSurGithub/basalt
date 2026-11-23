@@ -1,0 +1,20 @@
+# Bots : fait apparaître des personnages qui partent dans des directions opposées.
+# Outil de test (affichage des joueurs, chargement du terrain, charge du serveur).
+# Plugin privé : il n'est pas publié sur GitHub (voir .gitignore).
+name: Bots
+version: 1.0.0
+main: main.lua
+api: 1
+description: Bots de test qui marchent dans des directions opposées
+author: Basalt
+
+commands:
+  bots:
+    description: Fait partir des bots dans des directions opposées, ou les retire
+    usage: "/bots <nombre:int> [vitesse:float] [distance:int] | /bots stop"
+    permission: bots.use
+
+permissions:
+  bots.use:
+    description: Autorise /bots
+    default: op

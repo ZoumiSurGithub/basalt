@@ -178,16 +178,15 @@ Le serveur doit être joignable sur ces ports :
 
 | Port | Protocole | À quoi il sert |
 |---|---|---|
-| 19132 | UDP | connexion des jeux (et liste des serveurs) |
-| 19132 | TCP | prise de contact des jeux 1.26.60 et plus |
-| 19140 | UDP | liaison des jeux 1.26.60 et plus |
+| 19132 | TCP | prise de contact des jeux (et liste des serveurs) |
+| 19140 | UDP | liaison des jeux |
 
-- **À la maison, derrière une box** : dans l'interface de votre box, redirigez ces trois
+- **À la maison, derrière une box** : dans l'interface de votre box, redirigez ces deux
   ports vers le PC du serveur, puis indiquez votre adresse publique dans
   `server.properties` : `public-ip=…` (elle est affichée par des sites comme
   « quel est mon IP »).
 - **Sur un serveur loué (VPS)** : ouvrez ces ports dans son pare-feu, par exemple
-  `sudo ufw allow 19132/udp`, `sudo ufw allow 19132/tcp` et `sudo ufw allow 19140/udp`.
+  `sudo ufw allow 19132/tcp` et `sudo ufw allow 19140/udp`.
 - **Sous Windows**, l'installateur a déjà ouvert le pare-feu de Windows pour Basalt.
 
 ## Régler le serveur

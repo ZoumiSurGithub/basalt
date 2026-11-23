@@ -5,12 +5,75 @@
 //! plugin et chaque commande ; `/timings report` en tire un rapport.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::borrow::Cow;
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<Option<State>> = Mutex::new(None);
+/// Change à chaque remise à zéro : ce que les fils gardent d'avant est alors jeté
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Mesures d'un fil, pas encore versées au compte commun. Chaque fil compte dans son coin
+/// et ne prend le verrou commun que dix fois par seconde : avec un verrou par mesure, les
+/// fils du réseau (des centaines de milliers de mesures par seconde) se le disputaient, ce
+/// qui ralentissait le serveur et gonflait les temps mesurés eux-mêmes.
+struct Local {
+    generation: u64,
+    entries: HashMap<Cow<'static, str>, Entry>,
+    pending: u32,
+    flushed: Option<Instant>,
+}
+
+thread_local! {
+    static LOCAL: RefCell<Local> = RefCell::new(Local { generation: 0, entries: HashMap::new(), pending: 0, flushed: None });
+}
+
+/// Délai entre deux versements d'un fil au compte commun
+const FLUSH_EVERY: Duration = Duration::from_millis(100);
+
+/// Verse les mesures d'un fil au compte commun.
+fn flush(local: &mut Local) {
+    local.pending = 0;
+    if local.entries.is_empty() {
+        return;
+    }
+    let mut guard = match STATE.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    if local.generation != GENERATION.load(Ordering::Relaxed) {
+        local.entries.clear();
+        return;
+    }
+    if let Some(state) = guard.as_mut() {
+        for (name, add) in local.entries.drain() {
+            if !state.entries.contains_key(name.as_ref()) && state.entries.len() >= MAX_ENTRIES {
+                continue;
+            }
+            let e = state.entries.entry(name.into_owned()).or_default();
+            e.total += add.total;
+            e.calls += add.calls;
+            e.slow += add.slow;
+            if add.worst > e.worst {
+                e.worst = add.worst;
+            }
+        }
+    } else {
+        local.entries.clear();
+    }
+}
+
+/// Verse tout de suite les mesures du fil courant (avant un rapport).
+fn flush_current() {
+    let _ = LOCAL.try_with(|l| {
+        if let Ok(mut l) = l.try_borrow_mut() {
+            flush(&mut l);
+        }
+    });
+}
 
 /// Durée d'un tick : au-delà, le serveur prend du retard.
 const TICK: Duration = Duration::from_millis(50);
@@ -119,7 +182,7 @@ impl Drop for Scope {
     /// Fin de la mesure : le temps passé est ajouté à l'étape.
     fn drop(&mut self) {
         if let Some((name, start)) = self.name.take() {
-            record(&name, start.elapsed());
+            record(name, start);
         }
     }
 }
@@ -140,26 +203,39 @@ pub fn scope_with(name: impl FnOnce() -> String) -> Scope {
     Scope { name: Some((std::borrow::Cow::Owned(name()), Instant::now())) }
 }
 
-/// Ajoute un temps à l'étape `name`.
-fn record(name: &str, spent: Duration) {
-    let mut guard = match STATE.lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-    if let Some(state) = guard.as_mut() {
-        if !state.entries.contains_key(name) && state.entries.len() >= MAX_ENTRIES {
-            return;
+/// Ajoute à l'étape `name` le temps écoulé depuis `start`.
+fn record(name: Cow<'static, str>, start: Instant) {
+    let now = Instant::now();
+    let spent = now.duration_since(start);
+    let _ = LOCAL.try_with(|l| {
+        let mut l = match l.try_borrow_mut() {
+            Ok(l) => l,
+            Err(_) => return,
+        };
+        let generation = GENERATION.load(Ordering::Relaxed);
+        if l.generation != generation {
+            l.entries.clear();
+            l.generation = generation;
+            l.pending = 0;
         }
-        let e = state.entries.entry(name.to_string()).or_default();
-        e.total += spent;
-        e.calls += 1;
-        if spent > e.worst {
-            e.worst = spent;
+        if l.entries.len() < MAX_ENTRIES || l.entries.contains_key(&name) {
+            let e = l.entries.entry(name).or_default();
+            e.total += spent;
+            e.calls += 1;
+            if spent > e.worst {
+                e.worst = spent;
+            }
+            if spent > TICK {
+                e.slow += 1;
+            }
         }
-        if spent > TICK {
-            e.slow += 1;
+        l.pending += 1;
+        let due = l.flushed.map(|t| now.duration_since(t) >= FLUSH_EVERY).unwrap_or(true);
+        if due || l.pending >= 65_536 {
+            l.flushed = Some(now);
+            flush(&mut l);
         }
-    }
+    });
 }
 
 /// À appeler une fois par tick du serveur.
@@ -197,6 +273,7 @@ pub fn disable() -> bool {
 /// Remet les compteurs à zéro.
 pub fn reset() {
     if let Ok(mut guard) = STATE.lock() {
+        GENERATION.fetch_add(1, Ordering::Relaxed);
         *guard = Some(State { since: Instant::now(), ticks: 0, entries: HashMap::new(), machine: Machine::sample() });
     }
 }
@@ -216,6 +293,7 @@ pub struct Line {
 
 /// Résumé chiffré : (secondes mesurées, ticks, lignes triées de la plus coûteuse à la moins coûteuse).
 pub fn snapshot() -> Option<(f64, u64, Vec<Line>)> {
+    flush_current();
     let guard = STATE.lock().ok()?;
     let state = guard.as_ref()?;
     let elapsed = state.since.elapsed().as_secs_f64().max(0.001);

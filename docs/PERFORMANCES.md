@@ -9,6 +9,10 @@ Le serveur est conçu pour de grandes populations, et un outil de charge permet 
 le vérifier : `cargo run --release --example stress -- 1000` simule des joueurs
 qui se connectent, entrent en jeu, puis envoient chacun 20 paquets par seconde.
 
+Les chiffres ci-dessous datent de l'ancien transport RakNet, retiré depuis. L'outil de charge
+passe maintenant par NetherNet, dont le chiffrement tourne sur un fil à part : ces mesures
+sont à refaire, et le coût par joueur y sera différent.
+
 Mesures sur une petite machine de 2 cœurs, qui faisait aussi tourner les joueurs simulés :
 
 | Joueurs simulés | Processeur du serveur | Mémoire | Ticks par seconde | Joueurs perdus |
@@ -27,6 +31,11 @@ joueurs affichés chacun) : 31 % d'un cœur, 12 Mo, 20,0 ticks par seconde, aucu
 perdu, mais **environ 110 Mbit/s envoyés**. Dans une foule, c'est la bande passante
 qui limite, pas le processeur ; `max-visible-players` et `player-view-distance`
 permettent de la réduire.
+
+Par défaut (`max-visible-players=0`), il n'y a pas de plafond : chacun voit tous les joueurs
+à portée de vue (`player-view-distance`). Le trafic croît alors avec le carré du nombre de
+joueurs réunis ; pour un hub très fréquenté, un plafond (`max-visible-players=48` par
+exemple) le réduit.
 
 **Ce que ces chiffres mesurent** : le transport réseau (réception, accusés,
 sessions), l'entrée en jeu, l'envoi du terrain et l'affichage des joueurs entre eux, sur

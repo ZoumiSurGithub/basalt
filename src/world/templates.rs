@@ -356,7 +356,7 @@ fn read_template(path: &str, tag: &Tag, resolve: &dyn Fn(&str) -> Option<u32>, u
         })
         .collect();
     let mut t = Template { path: path.to_string(), size: (size[0], size[1], size[2]), states: vec![Vec::new(); 12], blocks: Vec::new(), chests: Vec::new(), beds: Vec::new(), markers: Vec::new(), jigsaws: Vec::new() };
-    let mut jigsaw_blocks: HashMap<(i32, i32, i32), String> = HashMap::new();
+    let mut jigsaw_blocks: HashMap<(i32, i32, i32), (String, Vec<(String, String)>)> = HashMap::new();
     for b in tag.get("blocks")?.as_list()? {
         let pos: Vec<i32> = b.get("pos").and_then(|p| p.as_list()).map(|l| l.iter().filter_map(|t| t.as_int()).collect()).unwrap_or_default();
         let state = b.get("state").and_then(|s| s.as_int()).unwrap_or(0) as usize;
@@ -369,7 +369,7 @@ fn read_template(path: &str, tag: &Tag, resolve: &dyn Fn(&str) -> Option<u32>, u
         if name == "minecraft:jigsaw" || nbt.and_then(|n| n.get("final_state")).is_some() {
             if let Some(f) = nbt.and_then(|n| n.get("final_state")).and_then(|f| f.as_str()) {
                 let (fname, fprops) = parse_state(f);
-                jigsaw_blocks.insert(at, modern_name(&fname, &fprops));
+                jigsaw_blocks.insert(at, (modern_name(&fname, &fprops), fprops));
             }
             if let Some(j) = read_jigsaw(at, props, nbt?, resolve, unknown) {
                 t.jigsaws.push(j);
@@ -437,7 +437,7 @@ fn java_full(short: &str) -> bool {
 
 /// Recalcule, dans le plan non tourné, les coins des escaliers et les raccords des
 /// barrières, vitres, barreaux et murets, d'après leurs voisins dans le plan (règles du jeu).
-fn fix_shapes(palette: &mut Vec<(String, Vec<(String, String)>)>, blocks: &mut [(i16, i16, i16, u16)], jigsaws: &HashMap<(i32, i32, i32), String>) {
+fn fix_shapes(palette: &mut Vec<(String, Vec<(String, String)>)>, blocks: &mut [(i16, i16, i16, u16)], jigsaws: &HashMap<(i32, i32, i32), (String, Vec<(String, String)>)>) {
     let at: HashMap<(i32, i32, i32), usize> = blocks.iter().map(|&(x, y, z, i)| ((x as i32, y as i32, z as i32), i as usize)).collect();
     let names: Vec<String> = palette.iter().map(|(n, p)| modern_name(n, p)).collect();
     let prop = |i: usize, k: &str| palette[i].1.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone());
@@ -455,6 +455,20 @@ fn fix_shapes(palette: &mut Vec<(String, Vec<(String, String)>)>, blocks: &mut [
             let (dx, dy, dz) = d.step();
             at.get(&(x + dx, y + dy, z + dz)).copied()
         };
+        // Escalier voisin de ce côté : dans le plan, ou bloc que laissera un point d'attache
+        // (devant une porte, la marche du milieu est souvent un point d'attache : sans cela
+        // les deux marches qui l'encadrent restaient droites au lieu de former des coins)
+        let stair_near = |d: Dir| -> Option<(Dir, String)> {
+            let (dx, dy, dz) = d.step();
+            near(d).and_then(stairs).or_else(|| {
+                let (n, p) = jigsaws.get(&(x + dx, y + dy, z + dz))?;
+                if !n.ends_with("_stairs") {
+                    return None;
+                }
+                let get = |k: &str| p.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone());
+                Some((Dir::parse(&get("facing")?)?, get("half").unwrap_or_else(|| "bottom".into())))
+            })
+        };
         let name = &names[i];
         let mut props = palette[i].1.clone();
         let set = |props: &mut Vec<(String, String)>, key: &str, v: String| match props.iter_mut().find(|(a, _)| a == key) {
@@ -464,19 +478,19 @@ fn fix_shapes(palette: &mut Vec<(String, Vec<(String, String)>)>, blocks: &mut [
         if let Some((facing, half)) = stairs(i) {
             // StairBlock.getStairsShape du jeu
             let counter = facing.turn(3);
-            let can_take = |face: Dir| match near(face).and_then(stairs) {
+            let can_take = |face: Dir| match stair_near(face) {
                 Some((f, h)) => f != facing || h != half,
                 None => true,
             };
             let axis = |d: Dir| matches!(d, Dir::North | Dir::South);
             let mut shape = "straight";
-            if let Some((f, h)) = near(facing).and_then(stairs) {
+            if let Some((f, h)) = stair_near(facing) {
                 if h == half && axis(f) != axis(facing) && can_take(f.opposite()) {
                     shape = if f == counter { "outer_left" } else { "outer_right" };
                 }
             }
             if shape == "straight" {
-                if let Some((f, h)) = near(facing.opposite()).and_then(stairs) {
+                if let Some((f, h)) = stair_near(facing.opposite()) {
                     if h == half && axis(f) != axis(facing) && can_take(f) {
                         shape = if f == counter { "inner_left" } else { "inner_right" };
                     }
@@ -491,7 +505,7 @@ fn fix_shapes(palette: &mut Vec<(String, Vec<(String, String)>)>, blocks: &mut [
                 // (un point d'attache compte pour le bloc qui le remplacera : un portillon,
                 // souvent)
                 let (dx, dy, dz) = d.step();
-                let other = near(d).map(|n| names[n].as_str()).or_else(|| jigsaws.get(&(x + dx, y + dy, z + dz)).map(|n| n.as_str()));
+                let other = near(d).map(|n| names[n].as_str()).or_else(|| jigsaws.get(&(x + dx, y + dy, z + dz)).map(|n| n.0.as_str()));
                 let joins = other.map(|o| {
                     java_full(o)
                         || (fence && (o.ends_with("_fence") && (o == "nether_brick_fence") == (name == "nether_brick_fence") || o.ends_with("fence_gate")))
@@ -1251,6 +1265,25 @@ pub fn pick(list: &[Arc<Template>], rng: &mut Rng) -> Option<Arc<Template>> {
 mod tests {
     use super::*;
 
+    /// Perron de village : la marche du milieu est un point d'attache qui deviendra un
+    /// escalier ; les deux marches qui l'encadrent forment des coins avec lui.
+    #[test]
+    fn stairs_form_corners_with_a_jigsaw_that_becomes_a_stair() {
+        let stair = |facing: &str| ("minecraft:cobblestone_stairs".to_string(), vec![("facing".to_string(), facing.to_string()), ("half".to_string(), "bottom".to_string()), ("shape".to_string(), "straight".to_string())]);
+        let mut palette = vec![stair("east"), stair("west")];
+        let mut blocks = vec![(0i16, 0i16, 0i16, 0u16), (2, 0, 0, 1)];
+        let mut jigsaws = HashMap::new();
+        jigsaws.insert((1, 0, 0), ("cobblestone_stairs".to_string(), vec![("facing".to_string(), "north".to_string()), ("half".to_string(), "bottom".to_string())]));
+        fix_shapes(&mut palette, &mut blocks, &jigsaws);
+        let shape = |k: usize| palette[blocks[k].3 as usize].1.iter().find(|(a, _)| a == "shape").map(|(_, v)| v.clone()).unwrap();
+        assert_eq!((shape(0).as_str(), shape(1).as_str()), ("outer_left", "outer_right"));
+        // Sans le point d'attache, elles restent droites
+        let mut palette = vec![stair("east"), stair("west")];
+        let mut blocks = vec![(0i16, 0i16, 0i16, 0u16), (2, 0, 0, 1)];
+        fix_shapes(&mut palette, &mut blocks, &HashMap::new());
+        assert_eq!(palette[blocks[0].3 as usize].1.iter().find(|(a, _)| a == "shape").map(|(_, v)| v.as_str()), Some("straight"));
+    }
+
     /// Plans du jeu pour les tests : `BASALT_STRUCTURES` ou /tmp/vs/structures (absents de
     /// Basalt : sans eux, ces tests ne vérifient rien).
     pub fn test_templates(data: &crate::data::GameData) -> Option<Templates> {
@@ -1300,6 +1333,12 @@ mod tests {
         let st = java_to_bedrock("minecraft:oak_stairs", &[("facing".into(), "west".into()), ("half".into(), "top".into())], &resolve).unwrap();
         assert_eq!(d.prop(st, "weirdo_direction"), Some(crate::data::Prop::Int(1)));
         assert_eq!(d.prop(st, "upside_down_bit"), Some(crate::data::Prop::Int(1)));
+        // Coins d'escaliers : le coin et la direction passent, en pierre comme en bois
+        for name in ["minecraft:cobblestone_stairs", "minecraft:oak_stairs"] {
+            let st = java_to_bedrock(name, &[("facing".into(), "east".into()), ("half".into(), "bottom".into()), ("shape".into(), "outer_left".into())], &resolve).unwrap();
+            assert_eq!(d.prop(st, "minecraft:corner"), Some(crate::data::Prop::Str("outer_right".into())), "{}", name);
+            assert_eq!(d.prop(st, "weirdo_direction"), Some(crate::data::Prop::Int(3)), "{}", name);
+        }
         let st = java_to_bedrock("minecraft:oak_log", &[("axis".into(), "z".into())], &resolve).unwrap();
         assert_eq!(d.prop(st, "pillar_axis"), Some(crate::data::Prop::Str("z".into())));
         let st = java_to_bedrock("minecraft:cobblestone_wall", &[("east".into(), "true".into()), ("up".into(), "true".into())], &resolve).unwrap();

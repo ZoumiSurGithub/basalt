@@ -99,6 +99,29 @@ impl Queue {
         }
         done_rx.recv_timeout(timeout).is_ok()
     }
+
+    /// Attend, sans limite de temps, que tout ce qui est en file soit fait (arrêt du serveur :
+    /// rien ne doit rester à moitié écrit). `waiting` est appelé toutes les 10 secondes
+    /// d'attente, avec le temps écoulé.
+    pub fn flush_all(&self, mut waiting: impl FnMut(u64)) {
+        let tx = match self.tx.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            Some(tx) => tx,
+            None => return,
+        };
+        let (done_tx, done_rx) = channel();
+        if tx.send(Msg::Flush(done_tx)).is_err() {
+            return;
+        }
+        let started = std::time::Instant::now();
+        loop {
+            match done_rx.recv_timeout(Duration::from_secs(10)) {
+                Ok(_) => return,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => waiting(started.elapsed().as_secs()),
+                // (le fil d'écriture a disparu : plus rien à attendre)
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        }
+    }
 }
 
 /// Écritures sur disque : monde, coffres et fours, joueurs, rapports de mesures.
