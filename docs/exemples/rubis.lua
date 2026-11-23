@@ -13,7 +13,7 @@ server.items.create("exemple:ragout_du_chef", {
   leftover = "minecraft:bowl",
 })
 
-server.items.create("exemple:lame_de_rubis", { name = "Lame de rubis", icon = "netherite_sword", attackDamage = 12, durability = 300 })
+server.items.create("exemple:lame_de_rubis", { name = "Lame de rubis", icon = "diamond_spear", attackDamage = 12, durability = 300 })
 
 -- Chaque joueur reçoit les trois en arrivant
 local Cadeau = {}

@@ -28,3 +28,6 @@ data/*/packets/available_commands.bin
 /structures/
 /structures.zip
 notes.md
+
+# Packs de ressources du serveur (propres à chaque installation)
+/resource_packs/

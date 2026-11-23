@@ -222,7 +222,7 @@ function Event:setAmount(n) end
 
 ---@class NewItem
 ---@field name? string nom affiché au joueur
----@field icon? string image : celle d'un objet du jeu ("emerald", "netherite_sword"…)
+---@field icon? string image : celle d'un objet du jeu ("emerald", "diamond_spear"…) ou d'un pack de ressources
 ---@field maxStack? number taille de pile (1 à 64)
 ---@field glint? boolean brille comme un objet enchanté
 ---@field category? "construction"|"nature"|"equipment"|"items" onglet du menu créatif

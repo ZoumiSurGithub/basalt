@@ -534,7 +534,7 @@ server.items.create("monserveur:ragout_du_chef", {
 -- Une arme : 12 de dégâts, casse après 300 coups
 server.items.create("monserveur:lame_de_rubis", {
   name = "Lame de rubis",
-  icon = "netherite_sword",
+  icon = "diamond_spear",
   attackDamage = 12,
   durability = 300,
 })
@@ -546,7 +546,7 @@ vôtre (le nom de votre serveur ou de votre plugin) ; `minecraft` est réservé 
 | Réglage | Type | Effet | Par défaut |
 |---|---|---|---|
 | `name` | texte | nom affiché au joueur | le nom de l'objet |
-| `icon` | texte | image : celle d'un objet du jeu (`emerald`, `netherite_sword`, `bread`…) | `stick` |
+| `icon` | texte | image : nom de texture d'un objet du jeu (`emerald`, `apple`, `diamond_spear`…) ou d'un pack de ressources | `stick` |
 | `maxStack` | nombre (1 à 64) | taille de pile | 64 |
 | `glint` | vrai ou faux | brille comme un objet enchanté | faux |
 | `category` | texte | onglet du menu créatif : `"construction"`, `"nature"`, `"equipment"`, `"items"` | `equipment` pour ce qui s'use ou frappe, `items` sinon |
@@ -613,18 +613,17 @@ l'événement est alors appelé de nouveau. Pour un clic sur un bloc, c'est
 - **Créez vos objets au chargement du plugin**, pas plus tard. Le jeu reçoit la liste des
   objets une seule fois, à la connexion : un objet créé pendant que des joueurs sont en
   jeu ne leur apparaît qu'à leur prochaine connexion (la console le signale).
-- **L'image est celle d'un objet du jeu.** Aucun fichier n'est envoyé aux joueurs ; des
-  images propres demanderont un pack de ressources, que Basalt n'envoie pas encore. Le nom
-  à donner à `icon` est le nom de texture du jeu, en général le nom de l'objet
-  (`emerald`, `apple`, `iron_ingot`, `rabbit_stew`). Si le jeu ne le connaît pas, l'objet
-  s'affiche **vide**.
-- **Outils et armures d'origine n'ont pas d'image à leur nom** : le jeu range celles du
-  bois, de la pierre, du fer, de l'or, du diamant, du cuir et des mailles dans des planches
-  communes. `diamond_sword` ou `iron_pickaxe` donnent donc un objet vide (la console le
-  signale). Prenez la Netherite (`netherite_sword`, `netherite_pickaxe`,
-  `netherite_helmet`…) ou un autre objet (`mace`, `trident`, `blaze_rod`, `stick`).
-- Pour une image qui n'existe pas dans le jeu, ajoutez un pack de ressources : voir
-  [PACKS.md](PACKS.md).
+- **L'image est celle d'un objet du jeu**, désignée par son nom de texture — qui n'est pas
+  toujours le nom de l'objet. Si le jeu ne connaît pas le nom, l'objet s'affiche **vide**.
+  Noms vérifiés auprès du jeu : `apple`, `emerald`, `rabbit_stew`, `breeze_rod`,
+  `trial_key`, `ominous_trial_key`, `wind_charge`, `bundle`, et les lances `wood_spear`,
+  `stone_spear`, `copper_spear`, `iron_spear`, `gold_spear`, `diamond_spear`,
+  `netherite_spear` (notez `wood` et `gold`, pas `wooden` ni `golden`).
+- **Épées, pioches, haches, pelles, houes et armures du jeu n'ont pas d'image à leur nom** :
+  `diamond_sword` ou `netherite_sword` donnent un objet vide (la console le signale).
+  Pour une arme ou un outil, prenez une lance, ou mieux, votre propre image.
+- **Le plus sûr : votre propre image**, par un pack de ressources. Trois petits fichiers
+  suffisent, voir [PACKS.md](PACKS.md).
 - Dans la sauvegarde d'un joueur, l'objet est rangé sous son nom. Si le plugin est retiré,
   l'objet disparaît de l'inventaire au chargement.
 - Un objet créé se modifie ensuite comme un autre (`server.items.modify`), et répond aux

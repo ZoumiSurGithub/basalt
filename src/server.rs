@@ -1904,8 +1904,8 @@ impl Server {
                     match made {
                         Ok(_) => {
                             let icon = sheet.lines().find_map(|l| l.strip_prefix("icon\t")).unwrap_or("");
-                            if let Some(instead) = crate::item::custom::icon_advice(icon) {
-                                warn!("[{}] {} : l'image « {} » n'existe pas seule dans le jeu, l'objet s'affichera vide ; essayez « {} »", plugin, name, icon, instead);
+                            if crate::item::custom::icon_advice(icon) {
+                                warn!("[{}] {} : l'image « {} » risque de ne pas s'afficher (les outils et armures du jeu n'ont pas d'image à leur nom) ; fournissez la vôtre par un pack de ressources, voir docs/PACKS.md", plugin, name, icon);
                             }
                             self.register_custom_items();
                             modified = true;

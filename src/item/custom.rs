@@ -231,26 +231,13 @@ impl CustomDef {
     }
 }
 
-/// Le jeu range les images de ses outils et armures d'origine (bois, pierre, fer, or, diamant ;
-/// cuir, mailles) dans des planches communes : leur nom ne désigne pas une image à lui seul,
-/// et l'objet s'affiche vide. Renvoie de quoi le dire au plugin, avec une image qui marche.
-pub fn icon_advice(icon: &str) -> Option<&'static str> {
-    let (material, kind) = icon.split_once('_')?;
-    if !matches!(material, "wooden" | "wood" | "stone" | "iron" | "golden" | "gold" | "diamond" | "leather" | "chainmail") {
-        return None;
-    }
-    Some(match kind {
-        "sword" => "netherite_sword",
-        "pickaxe" => "netherite_pickaxe",
-        "axe" => "netherite_axe",
-        "shovel" => "netherite_shovel",
-        "hoe" => "netherite_hoe",
-        "helmet" => "netherite_helmet",
-        "chestplate" => "netherite_chestplate",
-        "leggings" => "netherite_leggings",
-        "boots" => "netherite_boots",
-        _ => return None,
-    })
+/// Les images des outils et armures du jeu ne portent pas le nom de leur objet (le jeu les
+/// range autrement, et dit `gold` ou `wood` là où l'objet dit `golden` ou `wooden`) : un tel
+/// nom donne un objet sans image. Vrai si `icon` en est un, pour prévenir le plugin.
+pub fn icon_advice(icon: &str) -> bool {
+    let Some((material, kind)) = icon.split_once('_') else { return false };
+    matches!(material, "wooden" | "wood" | "stone" | "iron" | "golden" | "gold" | "diamond" | "netherite" | "copper" | "leather" | "chainmail")
+        && matches!(kind, "sword" | "pickaxe" | "axe" | "shovel" | "hoe" | "helmet" | "chestplate" | "leggings" | "boots")
 }
 
 /// Gabarit d'un objet créé par un plugin.
@@ -391,7 +378,7 @@ mod tests {
         assert_eq!(props.get("max_stack_size").and_then(|t| t.as_int()), Some(64));
         // Pas une arme : aucun « point d'attaque » affiché
         assert_eq!(props.get("damage").and_then(|t| t.as_int()), Some(0));
-        assert_eq!((icon_advice("diamond_sword"), icon_advice("emerald"), icon_advice("netherite_sword")), (Some("netherite_sword"), None, None));
+        assert_eq!((icon_advice("diamond_sword"), icon_advice("netherite_pickaxe"), icon_advice("emerald"), icon_advice("diamond_spear")), (true, true, false, false));
         assert_eq!(props.get("use_duration").and_then(|t| t.as_int()), Some(32));
         assert_eq!(props.get("minecraft:icon").and_then(|i| i.get("textures")).and_then(|t| t.str_of("default")), Some("pumpkin_pie"));
         let food = inner.get("minecraft:food").unwrap();
