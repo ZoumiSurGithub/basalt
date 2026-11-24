@@ -10,6 +10,8 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ## [Non publié]
 
+## [0.0.4] — 2026-11-24
+
 ### Ajouté
 
 - Créatures créées par les plugins : apparence propre avec `ownModel = true` — le pack de ressources définit la créature sous son nom (modèle, image), et elle est déclarée au jeu à la connexion.
