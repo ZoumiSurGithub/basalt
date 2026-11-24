@@ -306,6 +306,18 @@ function Player:setDisplayName(text) pset(self.name, "display", tostring(text)) 
 function Player:getNameTag() return pget(self.name, "tag") or self.name end
 function Player:setNameTag(text) pset(self.name, "tag", tostring(text)) end
 function Player:getHealth() return pget(self.name, "health") end
+-- Effets : speed, slowness, haste, strength, regeneration, poison, night_vision…
+function Player:addEffect(effect, seconds, level)
+  if type(effect) ~= "string" or (seconds ~= nil and type(seconds) ~= "number") or (level ~= nil and type(level) ~= "number") then
+    error("joueur:addEffect(effet, secondes, niveau) : par exemple joueur:addEffect(\"speed\", 30, 1)", 2)
+  end
+  pset(self.name, "effect", effect .. "\t" .. math.max(0, math.floor((level or 1) - 1)) .. "\t" .. math.max(0, seconds or 30))
+end
+function Player:removeEffect(effect)
+  if type(effect) ~= "string" then error("joueur:removeEffect(effet)", 2) end
+  pset(self.name, "effect", effect .. "\t0\t0")
+end
+function Player:clearEffects() pset(self.name, "effect", "clear\t0\t0") end
 function Player:setHealth(value) pset(self.name, "health", value) end
 function Player:getMaxHealth() return pget(self.name, "max_health") end
 function Player:setMaxHealth(value) pset(self.name, "max_health", value) end

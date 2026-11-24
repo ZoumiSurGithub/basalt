@@ -10,6 +10,42 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ## [Non publié]
 
+## [0.0.5] — 2026-11-24
+
+### Ajouté
+
+- **Monstres** : quinze monstres du jeu. Zombie, momie, noyé, zombie-villageois, araignée, araignée venimeuse (elle empoisonne), poisson d'argent, wither squelette et vindicateur frappent ; squelette, vagabond et pillard tirent des flèches ; le creeper explose ; l'enderman, neutre, ne répond qu'aux coups et se téléporte ; le slime a trois tailles et se divise en mourant. Tous par `/summon` ou `server.entities.spawn`.
+- **Apparition dans le noir** : zombies, squelettes, creepers et araignées apparaissent autour des joueurs en survie là où il fait noir, la nuit en surface et le jour dans les grottes. Une torche (ou tout bloc lumineux) les écarte. Ils disparaissent au loin, et zombies et squelettes brûlent au soleil. `spawn-monsters=false` pour un monde paisible.
+- **Lumière** calculée selon les règles du jeu : elle contourne les murs, faiblit de 1 par bloc, et le ciel éclaire ce qui est à découvert.
+- **Projectiles et explosions.** `mob-griefing=false` : les explosions blessent sans rien casser.
+- **Arc** : un joueur le bande (clic tenu) et tire en relâchant ; pleine puissance en une seconde (6 points de dégâts). Une flèche est consommée et l'arc s'use, sauf en créatif.
+- **Armure** : elle absorbe 4 % des dégâts par point (60 % pour une armure de fer complète, 80 % en diamant) contre les coups, les flèches et les explosions, et chaque pièce s'use. Elle se voit sur le joueur chez les autres. Les zombies ont leur armure naturelle.
+- **Effets des joueurs** : commande `/effect <joueur> <effet> [secondes] [niveau]` et `/effect <joueur> clear`. Les trente effets du jeu s'affichent ; régénération, poison, flétrissement, soin et dégâts instantanés, faim, satiété, force, faiblesse et résistance agissent côté serveur.
+- Les créatures se poussent au lieu de se traverser, et un joueur les pousse. Les araignées escaladent les murs quand elles poursuivent un joueur.
+- Une demi-seconde d'invulnérabilité suit chaque coup reçu, comme dans le jeu : entouré de monstres, un joueur n'encaisse pas un coup par monstre et par seconde.
+- Plugins, créatures : `hostile`, `attackDamage` et `sight` ; `projectile`, `projectileDamage`, `shootInterval` et `shootRange` pour en faire des tireurs ; `explosion` pour en faire des bombes.
+- Plugins : `server.entities.shoot(...)` pour tirer un projectile, les événements `ProjectileHitEvent` et `ExplosionEvent`, et `joueur:addEffect`, `removeEffect`, `clearEffects`.
+- Plugins, blocs créés : boîte réglable avec `width` et `height` (une dalle : `height = 0.5`).
+
+### Modifié
+
+- Nettoyage du code signalé par l'analyseur (constructions inutiles, bornes écrites à la main).
+- Feuille de route mise à jour.
+
+### Corrigé
+
+- Pose de blocs : un bloc plein ne se pose plus là où se tient un joueur ou une créature (pour monter, il faut sauter d'abord).
+- Bloc qui tombe (sable, gravier) : l'eau et la lave voisines comblent maintenant le trou qu'il laisse.
+- Golem de fer des villages : il pouvait naître sur le puits ou sur un toit et y rester coincé. Il naît maintenant sur un endroit dégagé de la place, et un golem déjà coincé y est reposé.
+- Eau : casser un bloc à côté d'une herbe marine ou d'une algue laisse maintenant l'eau s'y écouler (ces plantes n'étaient pas comptées comme de l'eau).
+- Grande herbe marine : en casser une moitié emporte l'autre, qui laisse de l'eau.
+- Réapparition : après une mort (ou un réveil), le joueur retrouve sa boîte de joueur debout ; il ne passe plus sous un bloc comme s'il rampait.
+- `/summon` en jeu : toutes les créatures créées par les plugins y sont proposées et acceptées, pas seulement celles qui ont leur propre apparence.
+- Terrain : pétales de cerisier, fleurs sauvages et feuilles mortes ne restent plus perchés sur une autre plante ; ils ne tiennent que sur le sol.
+
+## [0.0.4] — 2026-11-24
+
+
 ### Ajouté
 
 - Créatures hostiles : zombie et araignée du jeu (`summon zombie`), qui poursuivent et frappent les joueurs en survie ; et, pour les créatures créées par les plugins, `hostile`, `attackDamage` et `sight`.

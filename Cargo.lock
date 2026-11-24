@@ -114,7 +114,11 @@ dependencies = [
 
 [[package]]
 name = "basalt"
+<<<<<<< HEAD
 version = "0.0.4"
+=======
+version = "0.0.5"
+>>>>>>> dev
 dependencies = [
  "p384 0.13.1",
  "str0m",

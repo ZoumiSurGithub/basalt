@@ -292,6 +292,31 @@ ne comptent pas) et `server.getOnlinePlayers()` (la liste de tous les joueurs en
 Actions : `joueur:sendMessage(texte)`, `joueur:kick(raison)`, `joueur:save()`,
 `joueur:give(objet, quantité)`.
 
+Effets : `joueur:addEffect(effet, secondes, niveau)`, `joueur:removeEffect(effet)` et
+`joueur:clearEffects()`. Le niveau commence à 1 ; sans durée, l'effet dure 30 secondes.
+
+```lua
+joueur:addEffect("speed", 60, 2)        -- Vitesse II pendant une minute
+joueur:addEffect("night_vision", 600)   -- Vision nocturne dix minutes
+joueur:removeEffect("speed")
+```
+
+Les trente effets du jeu sont acceptés : `speed, slowness, haste, mining_fatigue, strength,
+instant_health, instant_damage, jump_boost, nausea, regeneration, resistance,
+fire_resistance, water_breathing, invisibility, blindness, night_vision, hunger, weakness,
+poison, wither, health_boost, absorption, saturation, levitation, fatal_poison,
+conduit_power, slow_falling, bad_omen, village_hero, darkness`.
+
+- Le jeu affiche chaque effet (icône, particules, décompte) et applique lui-même ceux du
+  déplacement et de la vue : vitesse, lenteur, saut, lévitation, chute lente, vision
+  nocturne, cécité, nausée, obscurité, hâte.
+- Le serveur applique ceux de la vie et des coups : régénération, poison, flétrissement,
+  soin et dégâts instantanés, faim, satiété, force (+3 par niveau), faiblesse (−4),
+  résistance (−20 % de dégâts par niveau).
+- Les autres ne font encore que s'afficher : absorption, bonus de vie, résistance au feu,
+  respiration aquatique, invisibilité (les autres joueurs vous voient toujours).
+- La mort efface tous les effets ; ils ne survivent pas à une déconnexion.
+
 Regard et main : `joueur:getItemInHand()` (nom de l'objet tenu, vide si la main est vide),
 `joueur:getYaw()`, `joueur:getPitch()`, et `joueur:getDirection()` qui renvoie le décalage
 `dx, dy, dz` de la direction regardée parmi les six.

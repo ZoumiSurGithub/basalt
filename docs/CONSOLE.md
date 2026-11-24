@@ -8,6 +8,7 @@ Les commandes du jeu se tapent aussi dans la console, sans `/` :
 | `list` | joueurs connectés |
 | `say`, `me`, `tell` | messages |
 | `gamemode`, `give`, `clear`, `kill`, `tp` | joueurs |
+| `effect <joueur> <effet> [secondes] [niveau] [true]`, `effect <joueur> clear [effet]` | effets d'un joueur (30 s et niveau 0 par défaut ; le niveau commence à 0, comme dans le jeu ; `true` : sans particules) |
 | `setblock`, `fill`, `time` | monde |
 | `locate structure <nom>`, `locate biome <nom>` | structure ou biome le plus proche |
 | `kick`, `op`, `deop`, `whitelist` | modération |

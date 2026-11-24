@@ -203,6 +203,18 @@ impl Species {
         }
     }
 
+<<<<<<< HEAD
+=======
+    /// Multiplicateur de vitesse en poursuite (« speed_multiplier » de l'attaque dans les
+    /// fichiers du jeu) : la plupart des monstres poursuivent à leur vitesse de marche.
+    fn chase(self) -> f32 {
+        match self {
+            Species::Creeper | Species::WitherSkeleton => 1.25,
+            _ => 1.0,
+        }
+    }
+
+>>>>>>> dev
     /// Neutre : il ne s'en prend qu'au joueur qui l'a frappé (l'enderman).
     fn neutral(self) -> bool {
         self == Species::Enderman
@@ -393,7 +405,12 @@ impl Species {
     /// Vitesse du jeu (« minecraft:movement ») ; celle du cheval est tirée à sa naissance
     fn movement(self) -> f32 {
         match self {
+<<<<<<< HEAD
             Species::Rabbit | Species::Wolf | Species::Cat | Species::Spider | Species::CaveSpider | Species::Vindicator | Species::Pillager | Species::Enderman => 0.3,
+=======
+            Species::Rabbit | Species::Wolf | Species::Cat | Species::Spider | Species::CaveSpider | Species::Enderman => 0.3,
+            Species::Vindicator | Species::Pillager => 0.35,
+>>>>>>> dev
             Species::Zombie | Species::Husk | Species::Drowned | Species::ZombieVillager => 0.23,
             Species::Creeper => 0.2,
             Species::Goat => 0.4,
@@ -901,6 +918,13 @@ impl Mob {
         if self.burning {
             f |= 1; // en feu
         }
+<<<<<<< HEAD
+=======
+        // Vindicateur en chasse : il décroise les bras et brandit sa hache
+        if self.species == Species::Vindicator && self.attack.is_some() {
+            f |= bedrock::FLAG_ANGRY;
+        }
+>>>>>>> dev
         if self.fuse > 0 {
             f |= 1 << 10; // mèche allumée : le creeper gonfle et clignote
         }
@@ -984,9 +1008,16 @@ impl Mob {
     fn slime_size(&self) -> f32 {
         if self.species == Species::Slime { self.variant.clamp(1, 4) as f32 } else { 1.0 }
     }
+<<<<<<< HEAD
     /// Taille d'affichage : celle de l'espèce, de la fiche du plugin, et du slime.
     fn shown_scale(&self) -> f32 {
         self.species.scale(self.baby()) * self.custom_scale * self.slime_size()
+=======
+    /// Taille d'affichage : celle de l'espèce et de la fiche du plugin (le jeu grossit
+    /// lui-même un slime d'après sa taille, donnée comme variante).
+    fn shown_scale(&self) -> f32 {
+        self.species.scale(self.baby()) * self.custom_scale
+>>>>>>> dev
     }
     pub(super) fn size(&self) -> (f32, f32) {
         let (w, h) = self.species.size();
@@ -1055,7 +1086,7 @@ impl Mob {
             Some((w, h)) => (w / (adult * self.custom_scale), h / (adult * self.custom_scale)),
             None => {
                 let (w, h) = self.species.size();
-                (w / adult, h / adult)
+                (w * self.slime_size() / adult, h * self.slime_size() / adult)
             }
         }
     }
@@ -2234,7 +2265,14 @@ impl Server {
             }
             let had_love = m.love > 0;
             let grew = self.mob_age(&mut m);
+            let hunting = m.attack.is_some();
             self.mob_think(&mut m, &players, leash_to);
+<<<<<<< HEAD
+=======
+            if m.species == Species::Vindicator && hunting != m.attack.is_some() {
+                m.refresh = true;
+            }
+>>>>>>> dev
             // Les corps ne se traversent pas : ceux qui se chevauchent s'écartent (sauf deux
             // amoureux, qui doivent se rejoindre)
             if !m.sitting && m.love == 0 {
@@ -3141,6 +3179,7 @@ impl Server {
     /// et le frappe au contact, une fois par seconde. Sans joueur en vue, il se promène.
     fn hostile_think(&mut self, m: &mut Mob, damage: f32, sight: f32, name: &'static str) -> Option<(f32, f32)> {
         m.bite_in = m.bite_in.saturating_sub(1);
+<<<<<<< HEAD
         // Enderman frappé : une fois sur deux il se téléporte à quelques blocs
         if m.species == Species::Enderman && self.tick.saturating_sub(m.hurt_tick) == 1 && self.mob_rng.below(2) == 0 {
             for _ in 0..8 {
@@ -3154,6 +3193,8 @@ impl Server {
                 }
             }
         }
+=======
+>>>>>>> dev
         let attr = m.movement();
         let flat2 = |p: (f32, f32, f32)| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2);
         let fair = |c: &Client| c.joined && c.dead.is_none() && c.mode.takes_damage();
@@ -3211,7 +3252,11 @@ impl Server {
                 m.yaw = (-(p.0 - m.pos.0)).atan2(p.2 - m.pos.2).to_degrees().rem_euclid(360.0);
                 return Some((0.0, 64.0));
             }
+<<<<<<< HEAD
             return Some((ground_speed(attr * 1.25), 1.0));
+=======
+            return Some((ground_speed(attr * m.species.chase()), 1.0));
+>>>>>>> dev
         }
         // Tireur : à portée et la vue dégagée, il s'arrête et tire ; sinon il s'approche
         if let Some((kind, shot_damage, interval, range)) = m.ranged() {
@@ -3225,7 +3270,11 @@ impl Server {
                 }
                 return Some((ground_speed(attr), range * 0.6));
             }
+<<<<<<< HEAD
             return Some((ground_speed(attr * 1.25), 1.0));
+=======
+            return Some((ground_speed(attr * m.species.chase()), 1.0));
+>>>>>>> dev
         }
         let reach = 1.2 + width / 2.0;
         if damage > 0.0 && flat2(p) < reach * reach && (p.1 - m.pos.1).abs() < height.max(1.8) && m.bite_in == 0 {
@@ -3234,9 +3283,13 @@ impl Server {
             self.hurt(&a, damage, Cause::Mob(name));
             // Araignée venimeuse : sept secondes de poison
             if m.species == Species::CaveSpider {
+<<<<<<< HEAD
                 if let Some(c) = self.clients.get_mut(&a) {
                     c.poison_until = self.tick + 140;
                 }
+=======
+                self.give_effect(&a, super::effects::POISON, 0, 140, true);
+>>>>>>> dev
             }
             // Le coup repousse un peu sa victime
             if !self.refused_extras.contains(&bedrock::ID_SET_ACTOR_MOTION) {
@@ -3244,7 +3297,19 @@ impl Server {
                 self.send(&a, bedrock::ID_SET_ACTOR_MOTION, &bedrock::set_actor_motion(pid, ((p.0 - m.pos.0) / d * 0.4, 0.36, (p.2 - m.pos.2) / d * 0.4)));
             }
         }
+<<<<<<< HEAD
         Some((ground_speed(attr * 1.25), reach * 0.6))
+=======
+        Some((ground_speed(attr * m.species.chase()), reach * 0.6))
+    }
+
+    /// Une créature vivante répond-elle à ce test (pieds, largeur, hauteur) ?
+    pub(super) fn mobs_in_block(&self, hits: &dyn Fn((f32, f32, f32), f32, f32) -> bool) -> bool {
+        self.mobs.values().any(|m| {
+            let (w, h) = m.size();
+            m.dead.is_none() && hits(m.pos, w, h)
+        })
+>>>>>>> dev
     }
 
     /// La vue est-elle dégagée entre deux points ? (aucun bloc plein sur la ligne)
@@ -3879,6 +3944,21 @@ impl Server {
                 m.vel.1 = m.vel.1.max(-0.1); // les poules battent des ailes
             }
         }
+        // Le slime n'avance qu'en sautant : au sol il attend, puis bondit vers là où il va
+        // (toutes les demi-secondes en poursuite, toutes les secondes et demie sinon)
+        if m.species == Species::Slime && m.on_ground && !in_water {
+            let every = if m.attack.is_some() { 10 } else { 30 };
+            if (m.vel.0 != 0.0 || m.vel.2 != 0.0) && (self.tick + m.id as u64) % every == 0 {
+                m.vel.1 = 0.42;
+                m.on_ground = false;
+                // (son bruit mouillé, grave pour un gros, aigu pour un petit)
+                let sound = if m.variant > 1 { "squish.big" } else { "squish.small" };
+                self.send_near(m.pos, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound(sound, m.pos, "minecraft:slime", false, m.id));
+            } else {
+                m.vel.0 = 0.0;
+                m.vel.2 = 0.0;
+            }
+        }
         // Le lapin avance par bonds
         if m.species == Species::Rabbit && m.on_ground && (m.vel.0 != 0.0 || m.vel.2 != 0.0) && !in_water {
             m.vel.1 = 0.3;
@@ -4088,6 +4168,19 @@ impl Server {
                 }
             }
         }
+        // Enderman : une fois sur deux, le coup le fait se téléporter à quelques blocs
+        let mut blink = None;
+        if self.mobs.get(&id).map(|m| m.species == Species::Enderman).unwrap_or(false) && self.mob_rng.below(2) == 0 {
+            let at = self.mobs.get(&id).map(|m| m.pos).unwrap_or(from);
+            for _ in 0..12 {
+                let (x, z) = (at.0.floor() as i32 + self.mob_rng.below(17) as i32 - 8, at.2.floor() as i32 + self.mob_rng.below(17) as i32 - 8);
+                let far = (x as f32 - at.0).abs() + (z as f32 - at.2).abs() >= 4.0;
+                if let Some(y) = self.surface_y(x, z, at.1.floor() as i32).filter(|y| far && self.mob_free(x, y + 2, z)) {
+                    blink = Some((x as f32 + 0.5, y as f32, z as f32 + 0.5));
+                    break;
+                }
+            }
+        }
         let Some(m) = self.mobs.get_mut(&id) else { return false };
         if m.dead.is_some() || tick.saturating_sub(m.hurt_tick) < 10 {
             return true;
@@ -4106,11 +4199,24 @@ impl Server {
             m.knock = 8;
             m.on_ground = false;
         }
+<<<<<<< HEAD
+=======
+        if let Some(p) = blink.filter(|_| m.health > 0.0) {
+            m.pos = p;
+            m.vel = (0.0, 0.0, 0.0);
+            m.knock = 0;
+            m.sent = (f32::MAX, 0.0, 0.0);
+        }
+>>>>>>> dev
         // (un monstre ne fuit pas : il se retourne contre le joueur qui l'a frappé)
         let monster = m.hostile().is_some();
         m.panic = if monster || matches!(m.species, Species::Wolf | Species::IronGolem) { 0 } else { 100 };
         if let (true, Attacker::Player(a)) = (monster, by) {
             m.attack = Some(Prey::Player(a));
+<<<<<<< HEAD
+=======
+            m.refresh |= m.species == Species::Vindicator;
+>>>>>>> dev
         }
         // Un loup assis qu'on frappe se relève, un villageois endormi se réveille
         m.sitting = false;
@@ -4207,6 +4313,13 @@ impl Server {
                         c.variant = size;
                         c.max_health = (size * size) as f32;
                         c.health = c.max_health;
+<<<<<<< HEAD
+=======
+                        // (ils reprennent le combat de leur parent, sans attendre de repérer le joueur)
+                        if let Attacker::Player(a) = by {
+                            c.attack = Some(Prey::Player(a));
+                        }
+>>>>>>> dev
                     }
                 }
             } else {
