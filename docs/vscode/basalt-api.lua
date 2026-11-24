@@ -200,6 +200,7 @@ function Event:setAmount(n) end
 ---| "PlayerCommandPreprocessEvent" | "ServerCommandEvent" | "BlockBreakEvent" | "BlockPlaceEvent"
 ---| "PlayerInteractEvent" | "EntityDamageEvent" | "EntityDamageByEntityEvent" | "PlayerDeathEvent"
 ---| "PlayerRespawnEvent" | "PlayerDropItemEvent" | "EntityItemPickupEvent" | "PlayerGameModeChangeEvent"
+---| "ProjectileHitEvent" | "ExplosionEvent"
 ---| "CreatureSpawnEvent" | "CreatureDamageEvent" | "CreatureDeathEvent" | "PlayerItemUseEvent" | "PlayerItemConsumeEvent" | "PlayerExhaustEvent" | "PlayerExperienceChangeEvent"
 ---| "PlayerBedEnterEvent" | "PlayerBedLeaveEvent" | "LeavesDecayEvent" | "BlockFallEvent" | "BlockGrowEvent"
 
@@ -215,6 +216,11 @@ function Event:setAmount(n) end
 ---@field attackDamage? number dégâts d'un coup
 
 ---@class BlockChanges
+---@field projectile? string elle tire ce projectile au lieu de frapper ("minecraft:arrow", "minecraft:snowball", "minecraft:small_fireball")
+---@field projectileDamage? number dégâts d'un projectile, en points de vie (3 par défaut)
+---@field shootInterval? number secondes entre deux tirs (2 par défaut)
+---@field shootRange? number distance de tir, en blocs (15 par défaut)
+---@field explosion? number elle explose au contact : la puissance (3 pour un creeper)
 ---@field drops? table butin : { ["minecraft:diamond"] = 2 } ou { "minecraft:stick", { "minecraft:flint", 3 } }
 ---@field falls? boolean tombe quand rien ne le porte
 ---@field needsFloor? boolean se détache si le bloc du dessous disparaît
@@ -261,6 +267,8 @@ function ItemModifier.reset(nom) end
 ---@field transparent? boolean laisse voir à travers les parties vides de l'image
 ---@field geometry? string forme : "minecraft:geometry.cross" ou un modèle du pack ("geometry.ma_dalle")
 ---@field solid? boolean arrête les joueurs (faux pour une plante)
+---@field width? number largeur de la boîte du bloc, en blocs (0.0625 à 1)
+---@field height? number hauteur de la boîte du bloc, en blocs (0.5 pour une dalle)
 ---@field tool? "pickaxe"|"axe"|"shovel"|"hoe"|"sword"|"shears"|"none" outil qui convient
 ---@field tier? "wood"|"gold"|"stone"|"copper"|"iron"|"diamond"|"netherite" matériau minimal de l'outil pour le butin
 ---@field xp? number expérience rendue quand il est cassé
@@ -331,6 +339,9 @@ function Creature:remove() end
 ---@field scale? number taille par rapport à l'espèce
 ---@field width? number largeur de la boîte de collision, en blocs (avec height)
 ---@field height? number hauteur de la boîte de collision, en blocs (avec width)
+---@field hostile? boolean elle s'en prend aux joueurs qu'elle voit (par défaut : comme son espèce)
+---@field attackDamage? number dégâts d'un de ses coups, en points de vie
+---@field sight? number distance, en blocs, à laquelle elle repère un joueur
 ---@field drops? table butin : { ["minecraft:gold_ingot"] = 2 } ou { ["minecraft:gold_ingot"] = { 1, 3 } }
 ---@field xp? number expérience quand un joueur la tue
 ---@field xpMax? number borne haute de l'expérience
@@ -347,6 +358,23 @@ function EntityCreator.create(nom, reglages) end
 ---@param y number
 ---@param z number
 function EntityCreator.spawn(nom, x, y, z) end
+
+---@class ShotOptions
+---@field speed? number vitesse, en blocs par tick (1.6 par défaut, celle d'une flèche)
+---@field damage? number dégâts, en points de vie (3 par défaut)
+---@field gravity? number ce qu'il perd vers le bas à chaque tick (0.05 par défaut ; 0 : il file droit)
+---@field explosion? number puissance de l'explosion à l'impact (0 par défaut : aucune)
+
+--- Tire un projectile : une entité du jeu lancée d'un point dans une direction.
+---@param nom string "minecraft:arrow", "minecraft:snowball", "minecraft:small_fireball"…
+---@param x number
+---@param y number
+---@param z number
+---@param dx number direction (pas besoin d'être de longueur 1)
+---@param dy number
+---@param dz number
+---@param reglages? ShotOptions
+function EntityCreator.shoot(nom, x, y, z, dx, dy, dz, reglages) end
 
 ---@class Server
 ---@field items ItemModifier

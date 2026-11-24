@@ -121,7 +121,7 @@ impl Liquids {
         let (x, y, z) = pos;
         for (dx, dy, dz) in [(0, 0, 0), (1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1), (0, 1, 0), (0, -1, 0)] {
             let p = (x + dx, y + dy, z + dz);
-            let fluid = self.fluid(world.get(p.0, p.1, p.2)).map(|f| f.0).or(if world.is_wet(p.0, p.1, p.2) { Some(Fluid::Water) } else { None });
+            let fluid = self.at(world, p).map(|f| f.0);
             if let Some(f) = fluid {
                 // Lave au contact de l'eau : la pierre se forme presque aussitôt, comme dans le jeu
                 let delay = if f == Fluid::Lava && self.lava_meets_water(world, p) { 1 } else { f.delay() };
@@ -153,7 +153,7 @@ impl Liquids {
                 if done >= BUDGET {
                     // Le reste attend le tick suivant
                     batch.push(pos);
-                    self.queue.entry(now + 1).or_default().extend(batch.drain(..));
+                    self.queue.entry(now + 1).or_default().append(&mut batch);
                     break;
                 }
                 done += 1;
@@ -179,11 +179,13 @@ impl Liquids {
         SIDES.iter().map(|(dx, dz)| (x + dx, y, z + dz)).chain([(x, y + 1, z), (x, y - 1, z)]).any(|n| matches!(self.at(world, n), Some((Fluid::Water, _))))
     }
 
-    /// Liquide présent à une position (un bloc posé dans l'eau compte comme une source).
+    /// Liquide présent à une position. Un bloc posé dans l'eau compte comme une source, une
+    /// plante aquatique aussi (herbe marine, algue : elles vivent dans un bloc d'eau).
     fn at(&self, w: &World, p: (i32, i32, i32)) -> Option<(Fluid, u8)> {
-        match self.fluid(w.get(p.0, p.1, p.2)) {
+        let state = w.get(p.0, p.1, p.2);
+        match self.fluid(state) {
             Some(f) => Some(f),
-            None if w.is_wet(p.0, p.1, p.2) => Some((Fluid::Water, 0)),
+            None if w.is_wet(p.0, p.1, p.2) || w.generator().blocks.aquatic.contains(&state) => Some((Fluid::Water, 0)),
             None => None,
         }
     }
@@ -208,7 +210,8 @@ impl Liquids {
     fn update(&mut self, world: &mut World, now: u64, pos: (i32, i32, i32), washable: &dyn Fn(u32) -> bool, changed: &mut Vec<(i32, i32, i32, u32)>) {
         let (x, y, z) = pos;
         let here = world.get(x, y, z);
-        let wet = world.is_wet(x, y, z);
+        // (bloc posé dans l'eau, ou plante aquatique : de l'eau qui ne bouge pas)
+        let wet = world.is_wet(x, y, z) || world.generator().blocks.aquatic.contains(&here);
         let (fluid, mut depth) = match (self.fluid(here), wet) {
             (Some(f), _) => f,
             // Bloc posé dans l'eau : une source qui ne s'écoule que sur les côtés
@@ -480,6 +483,24 @@ mod tests {
         l.block_changed(&w, 0, (2, -60, 0));
         run(&mut w, &mut l, 100);
         assert_eq!(l.fluid(w.get(1, -60, 0)), Some((Fluid::Water, 0)));
+    }
+
+    /// Une herbe marine est un bloc d'eau : casser le bloc voisin laisse l'eau s'y écouler.
+    #[test]
+    fn water_flows_out_of_sea_plants() {
+        let Some((mut world, mut l, _)) = setup() else { return };
+        let (stone, seagrass, air) = (world.generator().blocks.stone, world.generator().blocks.named["seagrass"], world.air);
+        // Une herbe marine entourée de pierre, puis on casse la pierre à l'est
+        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            world.set(8 + dx, -60, 8 + dz, stone);
+        }
+        world.set(8, -60, 8, seagrass);
+        world.set(9, -60, 8, air);
+        l.block_changed(&world, 0, (9, -60, 8));
+        run(&mut world, &mut l, 40);
+        assert!(matches!(l.fluid(world.get(9, -60, 8)), Some((Fluid::Water, _))), "l'eau de l'herbe marine ne s'est pas écoulée");
+        // (la plante, elle, n'a pas bougé)
+        assert_eq!(world.get(8, -60, 8), seagrass);
     }
 }
 

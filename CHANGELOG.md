@@ -10,7 +10,40 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ## [Non publié]
 
+### Ajouté
+
+- Créatures hostiles : zombie et araignée du jeu (`summon zombie`), qui poursuivent et frappent les joueurs en survie ; et, pour les créatures créées par les plugins, `hostile`, `attackDamage` et `sight`.
+- Monstres la nuit : zombies et araignées apparaissent en surface autour des joueurs en survie, disparaissent au loin, et les zombies brûlent au soleil. `spawn-monsters=false` pour un monde paisible.
+- Onze monstres de plus : squelette et vagabond (ils tirent des flèches), creeper (il explose), momie, noyé, zombie-villageois, araignée venimeuse, poisson d'argent, wither squelette, vindicateur, pillard. Squelettes et creepers apparaissent d'eux-mêmes dans le noir.
+- Projectiles et explosions. Plugins : `projectile`, `projectileDamage`, `shootInterval`, `shootRange` et `explosion` pour les créatures créées, `server.entities.shoot(...)` pour tirer soi-même, et les événements `ProjectileHitEvent` et `ExplosionEvent`. `mob-griefing=false` : les explosions ne cassent rien.
+- Les créatures se poussent au lieu de se traverser, et un joueur les pousse.
+- Arc : un joueur le bande (clic tenu) et tire en relâchant ; la flèche part d'autant plus vite que l'arc a été tendu longtemps (pleine puissance en une seconde, 6 points de dégâts). Une flèche est consommée et l'arc s'use, sauf en créatif.
+- Enderman (neutre : il ne répond qu'aux coups, et se téléporte) et slime (trois tailles, il se divise en mourant).
+- Poison : la morsure de l'araignée venimeuse retire un demi-cœur toutes les 1,25 seconde pendant sept secondes, sans tuer.
+- L'armure d'un joueur se voit sur lui chez les autres joueurs ; les zombies ont leur armure naturelle (2 points).
+- Armure : elle absorbe 4 % des dégâts par point (60 % pour une armure de fer complète, 80 % en diamant) contre les coups, les flèches et les explosions, et chaque pièce s'use à chaque coup. La chute, la faim et le vide passent à travers.
+- Les araignées escaladent les murs quand elles poursuivent un joueur.
+- Lumière : les monstres n'apparaissent plus que dans le noir. Une torche (ou tout bloc lumineux) les écarte, et les grottes en reçoivent aussi le jour. La lumière suit les règles du jeu : elle contourne les murs, faiblit de 1 par bloc, et le ciel éclaire ce qui est à découvert.
+- Blocs créés par les plugins : boîte réglable avec `width` et `height` (une dalle : `height = 0.5`).
+
+### Modifié
+
+- Nettoyage du code signalé par l'analyseur (constructions inutiles, bornes écrites à la main).
+- Feuille de route mise à jour.
+
+### Corrigé
+
+- Flèches et autres projectiles : ils volent la pointe en avant.
+- Bloc qui tombe (sable, gravier) : l'eau et la lave voisines comblent maintenant le trou qu'il laisse.
+- Golem de fer des villages : il pouvait naître sur le puits ou sur un toit et y rester coincé. Il naît maintenant sur un endroit dégagé de la place, et un golem déjà coincé y est reposé.
+- Eau : casser un bloc à côté d'une herbe marine ou d'une algue laisse maintenant l'eau s'y écouler (ces plantes n'étaient pas comptées comme de l'eau).
+- Grande herbe marine : en casser une moitié emporte l'autre, qui laisse de l'eau.
+- Réapparition : après une mort (ou un réveil), le joueur retrouve sa boîte de joueur debout ; il ne passe plus sous un bloc comme s'il rampait.
+- `/summon` en jeu : toutes les créatures créées par les plugins y sont proposées et acceptées, pas seulement celles qui ont leur propre apparence.
+- Terrain : pétales de cerisier, fleurs sauvages et feuilles mortes ne restent plus perchés sur une autre plante ; ils ne tiennent que sur le sol.
+
 ## [0.0.4] — 2026-11-24
+
 
 ### Ajouté
 

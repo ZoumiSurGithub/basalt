@@ -52,6 +52,10 @@ pub struct Config {
     pub show_players: bool,
     /// Animaux (vaches, cochons, moutons, poules) autour des joueurs
     pub spawn_animals: bool,
+    /// Des monstres apparaissent la nuit autour des joueurs en survie
+    pub spawn_monsters: bool,
+    /// Les explosions des monstres cassent les blocs
+    pub mob_griefing: bool,
     pub player_view: i32,
     pub max_visible: usize,
     pub auth_keys_file: String,
@@ -110,6 +114,8 @@ impl Default for Config {
             movement_check: true,
             show_players: true,
             spawn_animals: true,
+            spawn_monsters: true,
+            mob_griefing: true,
             player_view: 4,
             max_visible: usize::MAX,
             auth_keys_file: String::new(),
@@ -191,6 +197,10 @@ movement-check=true
 show-players=true
 # Animaux (vaches, cochons, moutons, poules, lapins) autour des joueurs
 spawn-animals=true
+# Monstres la nuit autour des joueurs en survie (false : monde paisible)
+spawn-monsters=true
+# Les explosions (creeper…) cassent les blocs (false : elles blessent sans rien détruire)
+mob-griefing=true
 # Distance de simulation (en chunks, de 4 à 12, comme le serveur officiel) : au-delà,
 # les animaux restent figés jusqu'au retour d'un joueur
 tick-distance=4
@@ -308,6 +318,8 @@ impl Config {
         c.movement_check = map.get("movement-check").map(|v| v != "false").unwrap_or(true);
         c.show_players = map.get("show-players").map(|v| v != "false").unwrap_or(true);
         c.spawn_animals = map.get("spawn-animals").map(|v| v != "false").unwrap_or(true);
+        c.spawn_monsters = map.get("spawn-monsters").map(|v| v != "false").unwrap_or(true);
+        c.mob_griefing = map.get("mob-griefing").map(|v| v != "false").unwrap_or(true);
         c.http_signaling = map.get("nethernet-signaling").map(|v| v != "false").unwrap_or(true);
         c.xbox_auth = map.get("xbox-auth").map(|v| v != "false").unwrap_or(true);
         c.local_bots = map.get("local-bots").map(|v| v == "true" || v == "on").unwrap_or(false);
@@ -365,11 +377,11 @@ impl Config {
         num!("max-connections-per-ip", max_per_ip);
         num!("player-view-distance", player_view);
         num!("max-visible-players", max_visible);
-        c.player_view = c.player_view.max(1).min(16);
+        c.player_view = c.player_view.clamp(1, 16);
         // 0 : pas de plafond, chacun voit tous les joueurs à portée de vue
         c.max_visible = if c.max_visible == 0 { usize::MAX } else { c.max_visible.min(500) };
         c.max_per_ip = c.max_per_ip.max(1);
-        c.view_distance = c.view_distance.max(2).min(16);
+        c.view_distance = c.view_distance.clamp(2, 16);
         c.tick_distance = c.tick_distance.clamp(4, 12);
         if c.timeout_secs == 0 {
             c.timeout_secs = 10;

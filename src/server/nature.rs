@@ -351,7 +351,7 @@ impl Server {
     }
 
     /// Ce que rend un bloc qui se casse tout seul (comme cassé à la main).
-    fn natural_drops(&self, state: u32) -> Vec<(i16, u8)> {
+    pub(super) fn natural_drops(&self, state: u32) -> Vec<(i16, u8)> {
         if let (Some(d), Some(blocks), 2) = (&self.data, &self.blocks, self.items_level) {
             if let Some((name, block)) = d.block_name(state).and_then(|n| blocks.get(n).map(|b| (n, b))) {
                 let hand = VanillaItems::hand();
@@ -418,6 +418,9 @@ impl Server {
             self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(p.0, p.1, p.2, air), None);
             self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(below.0, below.1, below.2, state), None);
             self.falling.insert(below);
+            // L'eau et la lave voisines comblent le trou laissé, ou contournent le bloc arrivé
+            self.liquid_neighbours(p);
+            self.liquid_neighbours(below);
             // Ce qui reposait sur lui suit ; ce qui s'y accrochait se décroche
             self.support_check(p);
         }

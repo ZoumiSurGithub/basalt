@@ -41,6 +41,17 @@ impl Armor {
     }
 }
 
+/// Part des dégâts qui passe à travers une armure de tant de points : chaque point en
+/// retire 4 %, jusqu'à 80 % pour une armure complète en diamant (20 points), comme dans le jeu.
+pub fn armor_factor(points: u32) -> f32 {
+    1.0 - points.min(20) as f32 * 0.04
+}
+
+/// Usure de chaque pièce pour un coup de tant de dégâts : un point par tranche de 4, un au moins.
+pub fn armor_wear(damage: f32) -> u16 {
+    ((damage / 4.0).floor() as u16).max(1)
+}
+
 impl Item for Armor {
     /// Usure et protection de la pièce d'armure.
     fn base(&self) -> &BaseItem {
@@ -51,5 +62,22 @@ impl Item for Armor {
     }
     fn armor_points(&self) -> u8 {
         self.points
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn armour_absorbs_four_percent_per_point() {
+        assert_eq!(armor_factor(0), 1.0);
+        // Armure de fer complète : 15 points, 60 % des dégâts en moins
+        let iron: u32 = ["iron_helmet", "iron_chestplate", "iron_leggings", "iron_boots"].iter().map(|n| Armor::from_name(n).unwrap().points as u32).sum();
+        assert_eq!(iron, 15);
+        assert!((armor_factor(iron) - 0.4).abs() < 1e-6);
+        // Diamant : 20 points, 80 % ; jamais plus
+        assert!((armor_factor(20) - 0.2).abs() < 1e-6 && (armor_factor(40) - 0.2).abs() < 1e-6);
+        assert_eq!((armor_wear(0.5), armor_wear(3.0), armor_wear(9.0)), (1, 1, 2));
     }
 }

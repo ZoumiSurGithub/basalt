@@ -144,3 +144,41 @@ posés dans l'eau). Conséquence : une nouvelle version de Basalt qui améliore 
 l'applique aussi aux zones déjà explorées, sans toucher aux constructions. Les chunks sont
 générés à l'avance, sur plusieurs cœurs, autour des joueurs (environ 1,2 ms par chunk,
 1,6 ms près d'un village).
+
+## Monstres dans le noir
+
+Des zombies, des squelettes, des creepers et des araignées apparaissent **là où il fait noir**, autour des joueurs en
+survie ou en aventure, à bonne distance (de 24 à 48 blocs), jusqu'à huit par joueur. Ils
+poursuivent et frappent les joueurs qu'ils voient.
+
+- **La nuit**, toute la surface est assez sombre.
+- **Le jour**, seuls les endroits à l'abri du ciel le sont : grottes, mines, grands
+  bâtiments sans fenêtre. Depuis la surface, les grottes du dessous se peuplent en une
+  minute ou deux ; plus vite quand on est soi-même sous terre.
+- **Une torche les empêche d'apparaître** partout où sa lumière arrive, soit à moins de
+  14 blocs de chemin (la lumière contourne les murs, elle ne les traverse pas). Tout bloc
+  lumineux compte : lanterne, pierre lumineuse, lave, bloc lumineux d'un plugin.
+- Ils disparaissent d'eux-mêmes quand plus aucun joueur n'est près (toujours au-delà de
+  128 blocs, peu à peu au-delà de 48).
+- Au lever du jour, les zombies et les squelettes à ciel ouvert prennent feu ; les creepers
+  et les araignées restent.
+- Les squelettes tirent des flèches ; le creeper explose au contact et creuse le sol
+  (`mob-griefing=false` : il blesse sans rien casser).
+- Les araignées escaladent les murs pour atteindre le joueur qu'elles poursuivent.
+- Les créatures ne se traversent plus : elles se poussent, et un joueur les pousse aussi.
+- Aucun n'apparaît autour d'un joueur en créatif ou en spectateur.
+- `spawn-monsters=false` dans `server.properties` donne un monde paisible. Les monstres
+  qu'on fait apparaître soi-même (`summon zombie`) restent possibles.
+
+### Comment la lumière est calculée
+
+Le jeu calcule lui-même la lumière qu'il affiche ; Basalt ne la calcule que pour ses
+règles, à l'endroit et au moment où il en a besoin (rien n'est enregistré dans le monde).
+Les règles sont celles du jeu : une source éclaire à son niveau (14 pour une torche, 15
+pour une lanterne) et perd 1 par bloc, 2 dans l'eau ; le ciel éclaire à 15 ce qui n'a rien
+au-dessus de soi, puis sa lumière se répand de la même façon ; la nuit lui retire 11
+niveaux. Un monstre demande aucune lumière de bloc et 7 au plus venant du ciel.
+
+Limites actuelles : les dalles et les escaliers arrêtent la lumière comme des blocs
+pleins, l'orage n'assombrit pas le ciel, et les monstres ne s'en prennent pas aux
+villageois.

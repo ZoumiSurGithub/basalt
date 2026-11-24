@@ -12,7 +12,8 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 - [x] Refus propre des clients trop anciens
 - [x] Nom du serveur dans la liste des serveurs
 - [x] Plusieurs versions du jeu en même temps (1.26.60 à la préversion 1.26.70)
-- [ ] Packs de ressources envoyés aux joueurs
+- [x] Packs de ressources envoyés aux joueurs, chiffrés ou non (`resource_packs.yml`)
+- [ ] Packs de comportement (addons) : non prévus, la logique se fait dans les plugins
 - [ ] Transfert vers un autre serveur
 - [ ] Query et RCON
 
@@ -47,12 +48,14 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 - [x] Coffres, fours, établi, lits colorés, panneaux
 - [x] Cloches
 - [x] Eau et lave : écoulement, sources, obsidienne, seaux
-- [ ] Cultures qui poussent
-- [ ] Gravité du sable et du gravier
+- [x] Cultures qui poussent et se récoltent, houe, baies
+- [x] Gravité du sable et du gravier
+- [x] Blocs qui tiennent sur un support (fleurs, torches, rails…), feuilles qui dépérissent
+- [x] Herbes marines et algues : elles gardent leur eau, qui s'écoule comme une autre
 - [ ] Feu qui se propage, explosions, TNT
 - [ ] Redstone, pistons, entonnoirs
-- [ ] Temps de minage selon l'outil
-- [ ] Ticks aléatoires (herbe, feuilles, glace)
+- [x] Temps de minage selon l'outil, fissures, bruits et miettes
+- [ ] Herbe qui s'étend, glace et neige qui fondent, pousses qui deviennent des arbres
 - [ ] Générateurs d'épreuves, coffres-forts, sable et gravier suspects
 
 ## 5. Joueur
@@ -62,10 +65,10 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 - [x] Vie, dégâts de chute, mort et réapparition
 - [x] Skins et affichage des autres joueurs
 - [x] Chat, `/msg`, `/me`, couleurs
-- [ ] Faim
-- [ ] Expérience et niveaux
+- [x] Faim et nourriture
+- [x] Expérience et niveaux, orbes
+- [x] Dormir pour passer la nuit, point de réapparition au lit
 - [ ] Effets de potion
-- [ ] Dormir pour passer la nuit, point de réapparition au lit
 
 ## 6. Objets et inventaires
 
@@ -73,8 +76,10 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 - [x] Fabrication et cuisson, vérifiées par le serveur
 - [x] Coffres des structures avec leur butin
 - [x] Seaux, cisailles, laisses, selles
-- [ ] Armures qui protègent
-- [ ] Durabilité des outils
+- [x] Durabilité des outils, variantes d'objets (couleurs)
+- [x] Armures qui protègent (4 % par point d'armure) et s'usent
+- [x] Armure visible sur les autres joueurs ; armure naturelle des zombies
+- [ ] Enchantements (dont la protection)
 - [ ] Enchantements et enclume
 - [ ] Alchimie
 - [ ] Arc, arbalète, trident, bouclier
@@ -92,8 +97,17 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 - [x] `/summon`
 - [ ] Échanges avancés : objets enchantés, cartes au trésor, prix qui varient
 - [ ] Fermiers qui récoltent, marchand ambulant
-- [ ] Monstres : zombies, squelettes, creepers, araignées…
-- [ ] Apparition selon la lumière et la nuit
+- [x] Premiers monstres : zombie et araignée, qui poursuivent et frappent (`/summon`)
+- [x] Monstres la nuit : apparition en surface autour des joueurs, disparition au loin, zombies qui brûlent au soleil
+- [x] Autres monstres : squelette, vagabond, creeper, momie, noyé, zombie-villageois, araignée venimeuse, poisson d'argent, wither squelette, vindicateur, pillard
+- [x] Projectiles (flèches, boules de neige, boules de feu) et explosions, ouverts aux plugins
+- [x] Les créatures se poussent
+- [x] Enderman (neutre, téléportation) et slime (trois tailles, division)
+- [x] Arc pour les joueurs
+- [x] Poison de l'araignée venimeuse
+- [ ] Monstres à part : sorcière (potions), blaze, ghast et phantom (vol)
+- [ ] Arbalète, effets affichés chez le joueur (cœurs verts du poison, ralentissement du vagabond)
+- [x] Apparition selon la lumière (grottes, torches qui protègent)
 - [ ] Créatures aquatiques et volantes
 - [ ] Boss : Ender Dragon, Wither, Warden
 - [ ] Raids de pillards
@@ -127,7 +141,12 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 - [ ] Inventaires et coffres personnalisés
 - [ ] Formulaires (menus à boutons)
 - [ ] Scoreboards, titres, barres de boss
-- [ ] Créatures et objets personnalisés
+- [x] Modifier les objets et les blocs du jeu (butin, dégâts, durabilité, chute…)
+- [x] Objets créés : aliments, armes, menu créatif et groupes
+- [x] Blocs créés : images par face, formes, boîte, outil exigé, orientation, croissance
+- [x] Créatures créées : valeurs, boîte, apparence du pack, hostiles, événements
+- [x] Description de l'API pour Visual Studio Code
+- [ ] Créatures créées qui apparaissent d'elles-mêmes, attaques à distance
 
 ## 11. Performances
 

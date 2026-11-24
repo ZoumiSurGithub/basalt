@@ -18,7 +18,21 @@ server.entities.create("exemple:poule_eclair", { looks = "minecraft:chicken", na
 -- Un loup géant, sans nom affiché, avec sa propre boîte de collision (2 blocs de large, 1,5 de haut)
 server.entities.create("exemple:loup_alpha", { looks = "minecraft:wolf", health = 60, scale = 2, width = 2, height = 1.5 })
 
--- Chaque joueur qui arrive trouve les trois à côté de lui
+-- Un ogre hostile : une grande vache qui poursuit et frappe les joueurs en survie
+server.entities.create("exemple:ogre", {
+  looks = "minecraft:cow", name = "Ogre", scale = 1.8,
+  health = 60, hostile = true, attackDamage = 6, sight = 20,
+  drops = { ["minecraft:emerald"] = { 1, 2 } }, xp = 10,
+})
+
+-- Chaque joueur qui arrive trouve les trois premières à côté de lui ;
+-- l'ogre, lui, se fait apparaître à la main : summon exemple:ogre
+-- Un archer de glace : il tire des boules de neige, vite et de loin
+server.entities.create("exemple:archer_glace", {
+  looks = "minecraft:stray", name = "Archer de glace", health = 30,
+  projectile = "minecraft:snowball", projectileDamage = 2, shootInterval = 0.8, shootRange = 24,
+})
+
 local Accueil = {}
 function Accueil:onPlayerJoin(event)
   local x, y, z = event:getPlayer():getPosition()

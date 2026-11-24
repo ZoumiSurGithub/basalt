@@ -297,6 +297,7 @@ fn start_opts(dir: &PathBuf, max_per_ip: usize, xbox_auth: bool) -> (SocketAddr,
         cfg.white_list = dir.join("liste-blanche-active").exists();
         // Pas d'animaux (leurs paquets gêneraient les tests), sauf fichier témoin
         cfg.spawn_animals = dir.join("animaux").exists();
+        cfg.spawn_monsters = dir.join("monstres").exists();
         // Déplacements libres (grands pas d'un coup), sur fichier témoin
         cfg.movement_check = !dir.join("deplacements-libres").exists();
         cfg.view_distance = 3;
@@ -2522,6 +2523,370 @@ server.registerEvents(Garde)
         }
     }
     assert!(told, "le nom changé par CreatureDamageEvent n'est pas arrivé au joueur");
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn hostile_creatures_attack_players_in_survival() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-hostile-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("ogre.lua"),
+        r#"
+server.entities.create("e2e:ogre", { looks = "minecraft:cow", name = "Ogre du test", hostile = true, attackDamage = 4, sight = 12 })
+local Arrivee = {}
+function Arrivee:onPlayerJoin(event)
+  local x, y, z = event:getPlayer():getPosition()
+  server.entities.spawn("e2e:ogre", x + 1, y, z)
+  event:getPlayer():setGamemode(0)
+end
+function Arrivee:onPlayerDeath(event)
+  server.setMotd(event:getDeathMessage())
+end
+server.registerEvents(Arrivee)
+"#,
+    )
+    .unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut c = Client::join(addr, "Steve");
+    // Personne ne frappe l'ogre : un événement « blessé » (2) ne peut venir que du joueur
+    let is_hurt = |id: u32, body: &[u8]| {
+        let mut pos = 0;
+        id == 27 && read_varu32(body, &mut pos).is_some() && body.get(pos) == Some(&2)
+    };
+    // Le plugin met le joueur en survie à son arrivée : l'ogre vient le frapper
+    let mut hurt = false;
+    let until = std::time::Instant::now() + Duration::from_secs(20);
+    while std::time::Instant::now() < until {
+        let (id, body) = c.recv_game(true);
+        if is_hurt(id, &body) {
+            hurt = true;
+            break;
+        }
+    }
+    assert!(hurt, "la créature hostile n'a jamais frappé le joueur en survie");
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn monsters_appear_at_night_and_zombies_burn_by_day() {
+    // La nuit : un monstre apparaît de lui-même autour d'un joueur en survie
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-nuit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("world")).unwrap();
+    std::fs::write(dir.join("monstres"), "").unwrap();
+    std::fs::write(dir.join("world").join("time.txt"), "18000").unwrap();
+    let survival = r#"
+local Arrivee = {}
+function Arrivee:onPlayerJoin(event) event:getPlayer():setGamemode(0) end
+server.registerEvents(Arrivee)
+"#;
+    std::fs::write(dir.join("survie.lua"), survival).unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut c = Client::join(addr, "Steve");
+    let mut monster = false;
+    let until = std::time::Instant::now() + Duration::from_secs(40);
+    while std::time::Instant::now() < until && !monster {
+        let (id, body) = c.recv_game(true);
+        let has = |needle: &[u8]| body.windows(needle.len()).any(|w| w == needle);
+        monster = id == 13 && (has(b"minecraft:zombie") || has(b"minecraft:spider"));
+    }
+    assert!(monster, "aucun monstre n'est apparu de la nuit");
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // La nuit encore, mais le sol est éclairé partout : rien n'apparaît
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-eclaire-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("world")).unwrap();
+    std::fs::write(dir.join("monstres"), "").unwrap();
+    std::fs::write(dir.join("world").join("time.txt"), "18000").unwrap();
+    let lit = r#"
+local Arrivee = {}
+function Arrivee:onPlayerJoin(event)
+  local x, y, z = event:getPlayer():getPosition()
+  x, y, z = math.floor(x), math.floor(y), math.floor(z)
+  local world = server.getWorld()
+  for dx = -60, 60, 6 do
+    for dz = -60, 60, 6 do
+      world:setBlock(x + dx, y, z + dz, "minecraft:glowstone")
+    end
+  end
+  event:getPlayer():setGamemode(0)
+end
+server.registerEvents(Arrivee)
+"#;
+    std::fs::write(dir.join("lampes.lua"), lit).unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut c = Client::join(addr, "Steve");
+    let mut monster = false;
+    let until = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < until && !monster {
+        let (id, body) = c.recv_game(true);
+        let has = |needle: &[u8]| body.windows(needle.len()).any(|w| w == needle);
+        monster = id == 13 && (has(b"minecraft:zombie") || has(b"minecraft:spider"));
+    }
+    assert!(!monster, "un monstre est apparu sur un sol éclairé");
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // En plein jour, sous un grand toit : il y fait assez sombre, un monstre apparaît
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-toit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("world")).unwrap();
+    std::fs::write(dir.join("monstres"), "").unwrap();
+    std::fs::write(dir.join("world").join("time.txt"), "6000").unwrap();
+    let roof = r#"
+local Arrivee = {}
+function Arrivee:onPlayerJoin(event)
+  local x, y, z = event:getPlayer():getPosition()
+  x, y, z = math.floor(x), math.floor(y), math.floor(z)
+  local world = server.getWorld()
+  local stone, roof = server.blockState("minecraft:stone"), {}
+  for dx = -64, 64 do
+    for dz = -64, 64 do
+      roof[#roof + 1] = x + dx
+      roof[#roof + 1] = y + 3
+      roof[#roof + 1] = z + dz
+      roof[#roof + 1] = stone
+    end
+  end
+  world:setBlocks(roof)
+  event:getPlayer():setGamemode(0)
+end
+server.registerEvents(Arrivee)
+"#;
+    std::fs::write(dir.join("toit.lua"), roof).unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut c = Client::join(addr, "Steve");
+    let mut monster = false;
+    let until = std::time::Instant::now() + Duration::from_secs(60);
+    while std::time::Instant::now() < until && !monster {
+        let (id, body) = c.recv_game(true);
+        let has = |needle: &[u8]| body.windows(needle.len()).any(|w| w == needle);
+        monster = id == 13 && (has(b"minecraft:zombie") || has(b"minecraft:spider"));
+    }
+    assert!(monster, "aucun monstre n'est apparu à l'ombre en plein jour");
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Le jour : rien n'apparaît, et un zombie à ciel ouvert brûle (il encaisse des coups
+    // alors que personne ne le frappe : le joueur est en créatif)
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-jour-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("world")).unwrap();
+    std::fs::write(dir.join("monstres"), "").unwrap();
+    std::fs::write(dir.join("world").join("time.txt"), "6000").unwrap();
+    let summon = r#"
+local Arrivee = {}
+function Arrivee:onPlayerJoin(event)
+  local x, y, z = event:getPlayer():getPosition()
+  server.entities.spawn("minecraft:zombie", x + 4, y, z)
+end
+server.registerEvents(Arrivee)
+"#;
+    std::fs::write(dir.join("zombie.lua"), summon).unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut c = Client::join(addr, "Steve");
+    let (mut zombies, mut burnt) = (0, false);
+    let until = std::time::Instant::now() + Duration::from_secs(20);
+    while std::time::Instant::now() < until && !burnt {
+        let (id, body) = c.recv_game(true);
+        if id == 13 && body.windows(16).any(|w| w == b"minecraft:zombie") {
+            zombies += 1;
+        }
+        let mut pos = 0;
+        burnt = id == 27 && read_varu32(&body, &mut pos).is_some() && body.get(pos) == Some(&2);
+    }
+    assert!(burnt, "le zombie n'a pas brûlé au soleil");
+    assert_eq!(zombies, 1, "seul le zombie du plugin doit exister en plein jour");
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+
+/// Un squelette tire des flèches sur un joueur en survie, un plugin en tire aussi et apprend
+/// où la sienne tombe ; un creeper explose au contact.
+#[test]
+fn skeletons_shoot_plugins_too_and_creepers_explode() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-tirs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("world")).unwrap();
+    std::fs::write(dir.join("world").join("time.txt"), "18000").unwrap();
+    let plugin = r#"
+local Tirs = {}
+function Tirs:onPlayerJoin(event)
+  local p = event:getPlayer()
+  local x, y, z = p:getPosition()
+  p:setGamemode(0)
+  server.entities.spawn("minecraft:skeleton", x + 8, y, z)
+  -- Une boule de neige tirée vers le bas, loin du joueur : elle touche le sol
+  server.entities.shoot("minecraft:snowball", x - 10, y + 3, z, 0, -1, 0, { speed = 0.5, damage = 0 })
+end
+function Tirs:onProjectileHit(event)
+  if event:getProjectile() == "minecraft:snowball" then server.broadcast("touche " .. event:getTarget()) end
+end
+server.registerEvents(Tirs)
+"#;
+    std::fs::write(dir.join("tirs.lua"), plugin).unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut c = Client::join(addr, "Steve");
+    let (mut arrow, mut snowball, mut landed) = (false, false, false);
+    let until = std::time::Instant::now() + Duration::from_secs(40);
+    while std::time::Instant::now() < until && !(arrow && snowball && landed) {
+        let (id, body) = c.recv_game(true);
+        let has = |needle: &[u8]| body.windows(needle.len()).any(|w| w == needle);
+        arrow |= id == 13 && has(b"minecraft:arrow");
+        snowball |= id == 13 && has(b"minecraft:snowball");
+        landed |= id == 9 && has(b"touche block");
+    }
+    assert!(snowball, "le projectile du plugin n'est pas apparu");
+    assert!(landed, "le plugin n'a pas su que son projectile avait touché le sol");
+    assert!(arrow, "le squelette n'a pas tiré");
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Le creeper : il s'approche, allume sa mèche et explose (bruit, puis des blocs en moins)
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-creeper-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("world")).unwrap();
+    std::fs::write(dir.join("world").join("time.txt"), "18000").unwrap();
+    let plugin = r#"
+local Boum = {}
+function Boum:onPlayerJoin(event)
+  local p = event:getPlayer()
+  local x, y, z = p:getPosition()
+  p:setGamemode(0)
+  server.entities.spawn("minecraft:creeper", x + 4, y, z)
+end
+function Boum:onExplosion(event) server.broadcast("boum " .. math.floor(event:getPower())) end
+server.registerEvents(Boum)
+"#;
+    std::fs::write(dir.join("boum.lua"), plugin).unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut c = Client::join(addr, "Steve");
+    let (mut noise, mut told, mut holes) = (false, false, 0);
+    let until = std::time::Instant::now() + Duration::from_secs(40);
+    while std::time::Instant::now() < until && !(noise && told && holes >= 3) {
+        let (id, body) = c.recv_game(true);
+        let has = |needle: &[u8]| body.windows(needle.len()).any(|w| w == needle);
+        noise |= id == 123 && has(b"explode");
+        told |= id == 9 && has(b"boum 3");
+        if id == 21 && noise {
+            holes += 1;
+        }
+    }
+    assert!(noise, "le creeper n'a pas explosé");
+    assert!(told, "le plugin n'a pas été prévenu de l'explosion");
+    assert!(holes >= 3, "l'explosion n'a pas creusé le sol ({} blocs changés)", holes);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Une araignée qui poursuit un joueur escalade le mur qui les sépare.
+#[test]
+fn spiders_climb_walls_to_reach_players() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-mur-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("world")).unwrap();
+    std::fs::write(dir.join("world").join("time.txt"), "18000").unwrap();
+    let plugin = r#"
+local Mur = {}
+function Mur:onPlayerJoin(event)
+  local p = event:getPlayer()
+  local x, y, z = p:getPosition()
+  x, y, z = math.floor(x), math.floor(y), math.floor(z)
+  local world = server.getWorld()
+  for dz = -20, 20 do
+    for dy = 0, 3 do world:setBlock(x + 3, y + dy, z + dz, "minecraft:stone") end
+  end
+  p:setGamemode(0)
+  server.entities.spawn("minecraft:spider", x + 7, y, z)
+  server.broadcast("sol " .. y)
+end
+server.registerEvents(Mur)
+"#;
+    std::fs::write(dir.join("mur.lua"), plugin).unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut c = Client::join(addr, "Steve");
+    let (mut ground, mut top) = (None::<f32>, f32::MIN);
+    let until = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < until && !ground.map(|g| top >= g + 3.5).unwrap_or(false) {
+        let (id, body) = c.recv_game(true);
+        if id == 9 {
+            if let Some(i) = body.windows(4).position(|w| w == b"sol ") {
+                let digits: String = body[i + 4..].iter().take_while(|b| b.is_ascii_digit() || **b == b'-').map(|b| *b as char).collect();
+                ground = digits.parse::<f32>().ok();
+            }
+        }
+        if id == 18 {
+            let mut pos = 0;
+            if read_varu32(&body, &mut pos).is_some() && body.len() >= pos + 13 {
+                let y = f32::from_le_bytes([body[pos + 5], body[pos + 6], body[pos + 7], body[pos + 8]]);
+                top = top.max(y);
+            }
+        }
+    }
+    let ground = ground.expect("le plugin n'a pas donné la hauteur du sol");
+    assert!(top >= ground + 3.5, "l'araignée n'a pas escaladé le mur (montée jusqu'à {} pour un sol à {})", top, ground);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Un joueur bande son arc (clic, puis bouton relâché une seconde plus tard) : une flèche part.
+#[test]
+fn players_shoot_arrows_with_a_bow() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-arc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("world")).unwrap();
+    let plugin = r#"
+local Arc = {}
+function Arc:onPlayerJoin(event) event:getPlayer():give("minecraft:bow", 1) end
+server.registerEvents(Arc)
+"#;
+    std::fs::write(dir.join("arc.lua"), plugin).unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut c = Client::join(addr, "Steve");
+    // Le temps que l'arc arrive dans la main
+    let until = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < until {
+        c.recv_game(true);
+    }
+    // Transaction « objet utilisé, dans le vide », puis « objet relâché »
+    c.game(30, &[0, 0, 2, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0], Some(0xff));
+    let until = std::time::Instant::now() + Duration::from_millis(1300);
+    while std::time::Instant::now() < until {
+        c.recv_game(true);
+    }
+    c.game(30, &[0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], Some(0xff));
+    let mut arrow = false;
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < until && !arrow {
+        let (id, body) = c.recv_game(true);
+        arrow = id == 13 && body.windows(15).any(|w| w == b"minecraft:arrow");
+    }
+    assert!(arrow, "la flèche n'est pas partie");
     stop.store(true, Ordering::Relaxed);
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);

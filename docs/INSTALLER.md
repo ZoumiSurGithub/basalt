@@ -204,6 +204,8 @@ démarrage). Arrêtez le serveur avant de le modifier. Les plus utiles :
 | `white-list` | `true` : seuls les joueurs de `white-list.txt` peuvent entrer |
 | `keep-inventory` | `true` : on garde son inventaire à la mort |
 | `spawn-animals` | `false` : pas d'animaux |
+| `spawn-monsters` | `false` : pas de monstres qui apparaissent la nuit (monde paisible) |
+| `mob-griefing` | `false` : les explosions (creeper…) blessent sans casser de blocs |
 | `tick-distance` | Distance de simulation en chunks (4 à 12) : au-delà, les animaux restent figés |
 | `public-ip` | adresse publique, derrière une box |
 

@@ -431,6 +431,11 @@ impl GameData {
         crate::block::BlockRegistry::new(self.props.iter().map(|(name, props)| (name.clone(), *props)))
     }
 
+    /// Propriétés physiques d'un bloc (lumière émise, opacité…), par son nom complet.
+    pub fn block_props(&self, name: &str) -> Option<&crate::block::BlockProps> {
+        self.props.get(name)
+    }
+
     /// Dureté d'un bloc, si elle est connue.
     pub fn hardness(&self, state: u32) -> Option<f32> {
         self.hardness.get(self.block_name(state)?).copied()
