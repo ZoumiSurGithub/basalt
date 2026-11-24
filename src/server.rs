@@ -1,6 +1,7 @@
 //! Boucle principale : relie le réseau, la console et les plugins.
 
 mod mob_store;
+mod effects;
 mod mobs;
 mod nature;
 mod shots;
@@ -353,8 +354,11 @@ struct Client {
     shown_armor: [(i16, u8); 4],
     /// Arc : tick où il a commencé à le bander
     drawing: Option<u64>,
-    /// Empoisonné jusqu'à ce tick (0 : non)
-    poison_until: u64,
+    /// Effets en cours : (numéro, niveau à partir de 0, tick de fin)
+    effects: Vec<effects::Effect>,
+    /// Dégâts du dernier coup reçu (avant armure) : pendant la demi-seconde
+    /// d'invulnérabilité qui suit, seul un coup plus fort passe
+    hurt_amount: f32,
     /// Anti-abus du chat : début de la fenêtre et messages envoyés dedans
     chat_window: Instant,
     chat_count: u32,
@@ -634,6 +638,8 @@ enum Cause {
     Mob(&'static str),
     /// Le ventre vide
     Hunger,
+    /// Un effet qui tue (dégâts instantanés, flétrissement) : l'armure n'y fait rien
+    Magic,
     /// Empoisonné (araignée venimeuse) : l'armure n'y fait rien, et il ne tue pas
     Poison,
 }
@@ -2098,6 +2104,22 @@ impl Server {
                         self.set_gamemode(&addr, GameMode::from_save_id(*v as i32));
                         continue;
                     }
+                    // Effet : « nom<TAB>niveau<TAB>secondes » ; zéro seconde le retire, « clear » les retire tous
+                    if let ("effect", LVal::Str(sheet)) = (key.as_str(), &value) {
+                        let parts: Vec<&str> = sheet.split('\t').collect();
+                        let (level, seconds) = (parts.get(1).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0), parts.get(2).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0));
+                        match (parts.first().copied(), parts.first().and_then(|w| effects::effect_id(w))) {
+                            (Some("clear"), _) => {
+                                self.clear_effects(&addr, None);
+                            }
+                            (_, Some(effect)) if seconds * 20.0 >= 1.0 => self.give_effect(&addr, effect, level.clamp(0.0, 255.0) as i32, (seconds * 20.0).min(1.0e9) as u64, true),
+                            (_, Some(effect)) => {
+                                self.clear_effects(&addr, Some(effect));
+                            }
+                            (other, None) => warn!("[plugin] effet inconnu : {}", crate::log::clean(other.unwrap_or(""), 64)),
+                        }
+                        continue;
+                    }
                     let mut attributes = false;
                     if let Some(d) = self.clients.get_mut(&addr).and_then(|c| c.data.as_mut()) {
                         match (key.as_str(), &value) {
@@ -2443,6 +2465,51 @@ impl Server {
                     self.add_item(&t, id, count);
                     let name = self.name_at(&t);
                     self.reply(sender, &format!("{} a reçu {} * {}", name, item.trim_start_matches("minecraft:"), count));
+                }
+            }
+            "effect" => {
+                let targets = if args.is_empty() { Vec::new() } else { self.targets(sender, arg(0)) };
+                if targets.is_empty() {
+                    return self.reply(sender, if args.is_empty() { "§cUsage : /effect <joueur> <effet|clear> [secondes] [niveau] [true : sans particules]" } else { NO_TARGET });
+                }
+                let word = args.get(1).map(|w| w.to_lowercase()).unwrap_or_default();
+                if word == "clear" || word.is_empty() {
+                    // « /effect joueur clear » (tous) ou « /effect joueur clear effet »
+                    let only = match args.get(2) {
+                        Some(w) => match effects::effect_id(w) {
+                            Some(id) => Some(id),
+                            None => return self.reply(sender, &format!("§cEffet inconnu : {}", crate::log::clean(w, 64))),
+                        },
+                        None => None,
+                    };
+                    for t in targets {
+                        let n = self.clear_effects(&t, only);
+                        let name = self.name_at(&t);
+                        self.reply(sender, &format!("{} effet(s) retiré(s) à {}", n, name));
+                    }
+                    return;
+                }
+                let Some(effect) = effects::effect_id(&word) else {
+                    return self.reply(sender, &format!("§cEffet inconnu : {} (speed, slowness, haste, strength, regeneration, poison, night_vision…)", crate::log::clean(&word, 64)));
+                };
+                let number = |i: usize, default: i64, max: i64| match args.get(i) {
+                    Some(w) => w.parse::<i64>().ok().filter(|n| (0..=max).contains(n)),
+                    None => Some(default),
+                };
+                let (Some(seconds), Some(level)) = (number(2, 30, 1_000_000), number(3, 0, 255)) else {
+                    return self.reply(sender, "§cLes secondes vont de 0 à 1000000 et le niveau de 0 à 255");
+                };
+                let hidden = args.get(4).map(|w| w.eq_ignore_ascii_case("true")).unwrap_or(false);
+                for t in targets {
+                    let name = self.name_at(&t);
+                    if seconds == 0 {
+                        // (zéro seconde : l'effet est retiré, comme dans le jeu)
+                        self.clear_effects(&t, Some(effect));
+                        self.reply(sender, &format!("Effet {} retiré à {}", effects::effect_name(effect), name));
+                    } else {
+                        self.give_effect(&t, effect, level as i32, seconds as u64 * 20, !hidden);
+                        self.reply(sender, &format!("Effet {} (niveau {}) donné à {} pour {} s", effects::effect_name(effect), level + 1, name, seconds));
+                    }
                 }
             }
             "clear" => {
@@ -3298,13 +3365,21 @@ impl Server {
     fn hurt(&mut self, addr: &SocketAddr, amount: f32, cause: Cause) {
         let tick = self.tick;
         let unstoppable = matches!(cause, Cause::Void | Cause::Command);
+        // Coup reçu pendant l'invulnérabilité : ce que le coup précédent avait déjà fait
+        let mut shielded: Option<f32> = None;
         match self.clients.get(addr) {
             Some(c) if c.joined && c.dead.is_none() => {
                 if c.mode.is_spectator() || (!c.mode.takes_damage() && !unstoppable) {
                     return;
                 }
-                if matches!(cause, Cause::Player(_)) && c.hurt_at > 0 && tick.saturating_sub(c.hurt_at) < 10 {
-                    return;
+                // Une demi-seconde d'invulnérabilité après un coup, comme dans le jeu : entouré
+                // de monstres, on n'encaisse pas un coup par monstre et par seconde. Seul un
+                // coup plus fort que le précédent passe, pour la différence.
+                if matches!(cause, Cause::Player(_) | Cause::Mob(_)) && c.hurt_at > 0 && tick.saturating_sub(c.hurt_at) < 10 {
+                    if matches!(cause, Cause::Player(_)) || amount <= c.hurt_amount {
+                        return;
+                    }
+                    shielded = Some(c.hurt_amount);
                 }
             }
             _ => return,
@@ -3325,7 +3400,7 @@ impl Server {
                 Cause::Plugin => ("CUSTOM", None),
                 Cause::Mob(_) => ("ENTITY_ATTACK", None),
                 Cause::Hunger => ("STARVATION", None),
-                Cause::Poison => ("MAGIC", None),
+                Cause::Poison | Cause::Magic => ("MAGIC", None),
             };
             let mut fields = vec![("entity", self.name_json(addr)), ("cause", Json::Str(label.into())), ("baseDamage", Json::Num(amount as f64))];
             if let Some(by) = damager {
@@ -3339,13 +3414,26 @@ impl Server {
                 amount = n.clamp(0.0, 1.0e6) as f32;
             }
         }
+        // Résistance : un cinquième de moins par niveau (sauf le vide, les commandes et la faim)
+        if !unstoppable && !matches!(cause, Cause::Hunger) {
+            let level = self.effect_level(addr, effects::RESISTANCE);
+            amount *= (1.0 - 0.2 * level as f32).max(0.0);
+        }
+        let full = amount;
+        if let Some(already) = shielded {
+            amount = (amount - already).max(0.0);
+        }
         // L'armure absorbe une part des coups (pas la chute, la faim ni le vide), et s'use
         if matches!(cause, Cause::Player(_) | Cause::Mob(_)) && amount > 0.0 {
             amount = self.armour_takes(addr, amount);
         }
         let (id, dead) = match self.clients.get_mut(addr) {
             Some(c) if c.joined && c.dead.is_none() => {
-                c.hurt_at = tick;
+                // (un coup plus fort pendant l'invulnérabilité ne la prolonge pas)
+                if shielded.is_none() {
+                    c.hurt_at = tick;
+                }
+                c.hurt_amount = full;
                 let d = match c.data.as_mut() {
                     Some(d) => d,
                     None => return,
@@ -3408,6 +3496,7 @@ impl Server {
             Cause::Command | Cause::Plugin => format!("{} est mort", name),
             Cause::Hunger => format!("{} est mort de faim", name),
             Cause::Poison => format!("{} est mort empoisonné", name),
+            Cause::Magic => format!("{} a été tué par magie", name),
             Cause::Mob(by) => format!("{} a été tué par {}", name, by),
         };
         // Écouteurs : message de mort, inventaire gardé
@@ -3605,9 +3694,10 @@ impl Server {
     /// santé. Ceux qui le voyaient le voient disparaître, puis réapparaître là-bas.
     fn respawn(&mut self, addr: &SocketAddr) {
         if let Some(c) = self.clients.get_mut(addr) {
-            c.poison_until = 0;
             c.drawing = None;
         }
+        // La mort efface tous les effets
+        self.clear_effects(addr, None);
         if self.clients.get(addr).map(|c| c.dead.is_none()).unwrap_or(true) {
             return;
         }
@@ -3686,6 +3776,8 @@ impl Server {
             }
             _ => return,
         };
+        // Force : 3 points de plus par niveau ; faiblesse : 4 de moins
+        let damage = (damage + 3.0 * self.effect_level(addr, effects::STRENGTH) as f32 - 4.0 * self.effect_level(addr, effects::WEAKNESS) as f32).max(0.0);
         if self.clients.get(addr).map(|c| c.mode.is_spectator()).unwrap_or(true) {
             return;
         }
@@ -5201,6 +5293,9 @@ impl Server {
         let soak = self.is_water_source(was) && self.holds_water(block);
         // Le support que le bloc exige (terre labourée pour une culture, bloc plein pour une torche…)
         let stands = self.can_stand(block, (x, y, z));
+        // Un bloc plein ne se pose pas là où se tient quelqu'un (le poseur compris : pour
+        // monter, il saute d'abord)
+        let refused = refused || (!self.npc_passable(block) && self.body_in((x, y, z)));
         if refused || !near || !room_above || !stands || !self.replaceable(was) || !self.world.set(x, y, z, block) {
             // Pose refusée : le joueur retrouve son inventaire exact et le bloc d'origine
             self.send_inventory(addr);
@@ -5273,20 +5368,6 @@ impl Server {
     }
 
     /// Montre aux joueurs qui le voient l'objet qu'un joueur tient en main, s'il a changé.
-    /// Poison : un demi-cœur toutes les 1,25 seconde, sans jamais descendre sous un demi-cœur.
-    fn poison_tick(&mut self) {
-        let tick = self.tick;
-        let sick: Vec<SocketAddr> = self
-            .clients
-            .iter()
-            .filter(|(_, c)| c.poison_until > tick && c.joined && c.dead.is_none() && c.mode.takes_damage() && c.data.as_ref().map(|d| d.health > 1.0).unwrap_or(false))
-            .map(|(a, _)| *a)
-            .collect();
-        for a in sick {
-            self.hurt(&a, 1.0, Cause::Poison);
-        }
-    }
-
     /// Armure portée par un joueur : (objet, quantité) pour le casque, le plastron, les
     /// jambières et les bottes.
     fn worn(c: &Client) -> [(i16, u8); 4] {
@@ -5388,6 +5469,17 @@ impl Server {
         for (p, state) in changes {
             self.change_block(p, state);
         }
+    }
+
+    /// Un joueur ou une créature occupe-t-il ce bloc ? (les pieds à moins de 0,6 bloc du haut
+    /// ne comptent pas : c'est le joueur qui saute pour poser sous lui)
+    fn body_in(&self, (x, y, z): (i32, i32, i32)) -> bool {
+        let hits = |feet: (f32, f32, f32), width: f32, height: f32| {
+            let half = width / 2.0 - 0.05;
+            (feet.0 - (x as f32 + 0.5)).abs() < 0.5 + half && (feet.2 - (z as f32 + 0.5)).abs() < 0.5 + half && feet.1 < y as f32 + 0.6 && feet.1 + height > y as f32 + 0.05
+        };
+        self.clients.values().any(|c| c.joined && c.stage == Stage::InGame && c.dead.is_none() && !c.mode.is_spectator() && hits((c.pos.0, c.pos.1 - EYE, c.pos.2), 0.6, 1.8))
+            || self.mobs_in_block(&hits)
     }
 
     /// Double dalle formée par cette dalle posée (`placed` : état prévu à la place `target`,
@@ -6051,7 +6143,7 @@ impl Server {
                         c.items_seen.clear();
                     }
                     warn!("Les objets au sol sont refusés par le jeu : le butin ira de nouveau directement dans l'inventaire.");
-                } else if [bedrock::ID_ACTOR_EVENT, bedrock::ID_SET_ACTOR_MOTION, bedrock::ID_RESPAWN, bedrock::ID_DEATH_INFO, bedrock::ID_LEVEL_SOUND_EVENT].contains(&(packet as u32))
+                } else if [bedrock::ID_ACTOR_EVENT, bedrock::ID_SET_ACTOR_MOTION, bedrock::ID_RESPAWN, bedrock::ID_DEATH_INFO, bedrock::ID_LEVEL_SOUND_EVENT, bedrock::ID_MOB_EFFECT].contains(&(packet as u32))
                     && self.refused_extras.insert(packet as u32)
                 {
                     warn!("Le paquet {} (vie, mort ou sons) est refusé par le jeu : il n'est plus envoyé.", packet);
@@ -6752,7 +6844,8 @@ impl Server {
                         shown_held: None,
                         shown_armor: [(0, 0); 4],
                         drawing: None,
-                        poison_until: 0,
+                        effects: Vec::new(),
+                        hurt_amount: 0.0,
                         chat_window: Instant::now(),
                         chat_count: 0,
                         interactions_logged: 0,
@@ -7685,9 +7778,7 @@ impl Server {
                 if self.tick % 5 == 2 {
                     self.show_armor();
                 }
-                if self.tick % 25 == 11 {
-                    self.poison_tick();
-                }
+                self.effects_tick();
                 // Le jour et la nuit : l'heure avance chez tous les joueurs (le jeu ne la fait
                 // pas avancer seul), une fois par seconde
                 if self.tick % 20 == 0 {

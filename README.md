@@ -55,13 +55,14 @@ Les joueurs de ces versions peuvent être connectés en même temps ; les versio
 | **Monde** | terrain à la manière du jeu (relief, biomes, grottes, arbres, fonds marins), cycle jour et nuit, eau et lave qui coulent, sauvegarde |
 | **Structures** | villages, pyramides, temples de la jungle, mines abandonnées, avant-postes, cités antiques, ruines de piste, chambres des épreuves, épaves, igloos, portails en ruine, manoirs |
 | **Blocs** | casser et poser (escaliers, orientations, dalles), portes, trappes, portillons, leviers, coffres, fours, établi, cloches |
-| **Joueurs** | visibles entre eux avec leur skin, survie, créatif, aventure et spectateur, combat avec recul, dégâts de chute, mort et réapparition |
+| **Joueurs** | visibles entre eux avec leur skin et leur armure, survie, créatif, aventure et spectateur, combat avec recul, arc, armure qui protège, effets, dégâts de chute, mort et réapparition |
 | **Inventaire** | sac, armure, seconde main, menu créatif, fabrication et cuisson, objets au sol |
 | **Animaux** | vaches, cochons, moutons, poules, lapins, chèvres, champimeuhs : élevage, croissance, tonte, traite |
 | **Montures et compagnons** | chevaux, ânes, mules et lamas à apprivoiser, seller et charger ; loups et chats ; laisses |
+| **Monstres** | quinze monstres (zombie, squelette, creeper, araignée, enderman, slime…) qui apparaissent dans le noir, flèches, explosions, torches qui protègent |
 | **Villageois** | métiers et postes de travail, emploi du temps, lits, naissances, échanges avec niveaux et réassort, golems de fer |
-| **Commandes** | `/tp`, `/gamemode`, `/give`, `/summon`, `/setblock`, `/fill`, `/locate`, `/time`, modération, chat en couleur |
-| **Plugins Lua** | événements, commandes, accès au monde, personnages non joueurs, générateurs de terrain ; EasyEdit et Archipel fournis |
+| **Commandes** | `/tp`, `/gamemode`, `/give`, `/summon`, `/setblock`, `/fill`, `/locate`, `/time`, `/effect`, modération, chat en couleur |
+| **Plugins Lua** | événements, commandes, accès au monde, personnages non joueurs, objets, blocs et créatures sur mesure, projectiles, générateurs de terrain ; EasyEdit et Archipel fournis |
 | **Administration** | console, opérateurs, liste blanche, permissions, `status` et `timings` |
 
 Ce qui reste à faire est suivi dans la [feuille de route](docs/ROADMAP.md).

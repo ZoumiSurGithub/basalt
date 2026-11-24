@@ -911,6 +911,10 @@ impl Mob {
         if self.burning {
             f |= 1; // en feu
         }
+        // Vindicateur en chasse : il décroise les bras et brandit sa hache
+        if self.species == Species::Vindicator && self.attack.is_some() {
+            f |= bedrock::FLAG_ANGRY;
+        }
         if self.fuse > 0 {
             f |= 1 << 10; // mèche allumée : le creeper gonfle et clignote
         }
@@ -2245,7 +2249,11 @@ impl Server {
             }
             let had_love = m.love > 0;
             let grew = self.mob_age(&mut m);
+            let hunting = m.attack.is_some();
             self.mob_think(&mut m, &players, leash_to);
+            if m.species == Species::Vindicator && hunting != m.attack.is_some() {
+                m.refresh = true;
+            }
             // Les corps ne se traversent pas : ceux qui se chevauchent s'écartent (sauf deux
             // amoureux, qui doivent se rejoindre)
             if !m.sitting && m.love == 0 {
@@ -3232,9 +3240,7 @@ impl Server {
             self.hurt(&a, damage, Cause::Mob(name));
             // Araignée venimeuse : sept secondes de poison
             if m.species == Species::CaveSpider {
-                if let Some(c) = self.clients.get_mut(&a) {
-                    c.poison_until = self.tick + 140;
-                }
+                self.give_effect(&a, super::effects::POISON, 0, 140, true);
             }
             // Le coup repousse un peu sa victime
             if !self.refused_extras.contains(&bedrock::ID_SET_ACTOR_MOTION) {
@@ -3243,6 +3249,14 @@ impl Server {
             }
         }
         Some((ground_speed(attr * m.species.chase()), reach * 0.6))
+    }
+
+    /// Une créature vivante répond-elle à ce test (pieds, largeur, hauteur) ?
+    pub(super) fn mobs_in_block(&self, hits: &dyn Fn((f32, f32, f32), f32, f32) -> bool) -> bool {
+        self.mobs.values().any(|m| {
+            let (w, h) = m.size();
+            m.dead.is_none() && hits(m.pos, w, h)
+        })
     }
 
     /// La vue est-elle dégagée entre deux points ? (aucun bloc plein sur la ligne)
@@ -3877,6 +3891,21 @@ impl Server {
                 m.vel.1 = m.vel.1.max(-0.1); // les poules battent des ailes
             }
         }
+        // Le slime n'avance qu'en sautant : au sol il attend, puis bondit vers là où il va
+        // (toutes les demi-secondes en poursuite, toutes les secondes et demie sinon)
+        if m.species == Species::Slime && m.on_ground && !in_water {
+            let every = if m.attack.is_some() { 10 } else { 30 };
+            if (m.vel.0 != 0.0 || m.vel.2 != 0.0) && (self.tick + m.id as u64) % every == 0 {
+                m.vel.1 = 0.42;
+                m.on_ground = false;
+                // (son bruit mouillé, grave pour un gros, aigu pour un petit)
+                let sound = if m.variant > 1 { "squish.big" } else { "squish.small" };
+                self.send_near(m.pos, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound(sound, m.pos, "minecraft:slime", false, m.id));
+            } else {
+                m.vel.0 = 0.0;
+                m.vel.2 = 0.0;
+            }
+        }
         // Le lapin avance par bonds
         if m.species == Species::Rabbit && m.on_ground && (m.vel.0 != 0.0 || m.vel.2 != 0.0) && !in_water {
             m.vel.1 = 0.3;
@@ -4128,6 +4157,7 @@ impl Server {
         m.panic = if monster || matches!(m.species, Species::Wolf | Species::IronGolem) { 0 } else { 100 };
         if let (true, Attacker::Player(a)) = (monster, by) {
             m.attack = Some(Prey::Player(a));
+            m.refresh |= m.species == Species::Vindicator;
         }
         // Un loup assis qu'on frappe se relève, un villageois endormi se réveille
         m.sitting = false;
@@ -4224,6 +4254,10 @@ impl Server {
                         c.variant = size;
                         c.max_health = (size * size) as f32;
                         c.health = c.max_health;
+                        // (ils reprennent le combat de leur parent, sans attendre de repérer le joueur)
+                        if let Attacker::Player(a) = by {
+                            c.attack = Some(Prey::Player(a));
+                        }
                     }
                 }
             } else {

@@ -106,7 +106,8 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 - [x] Arc pour les joueurs
 - [x] Poison de l'araignée venimeuse
 - [ ] Monstres à part : sorcière (potions), blaze, ghast et phantom (vol)
-- [ ] Arbalète, effets affichés chez le joueur (cœurs verts du poison, ralentissement du vagabond)
+- [x] Effets des joueurs : `/effect`, plugins, affichage chez le joueur
+- [ ] Arbalète, ralentissement de la flèche du vagabond, effets sur les créatures, potions
 - [x] Apparition selon la lumière (grottes, torches qui protègent)
 - [ ] Créatures aquatiques et volantes
 - [ ] Boss : Ender Dragon, Wither, Warden
@@ -125,7 +126,8 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 
 - [x] `/tp` `/gamemode` `/give` `/kill` `/time` `/summon`
 - [x] `/setblock` `/fill` `/locate` `/list` `/say`
-- [ ] `/effect` `/enchant` `/weather` `/xp`
+- [x] `/effect`
+- [ ] `/enchant` `/weather` `/xp`
 - [ ] `/scoreboard` `/title` `/bossbar`
 - [ ] Sélecteurs (`@a`, `@p`, `@e`…) complets
 - [ ] Blocs de commande

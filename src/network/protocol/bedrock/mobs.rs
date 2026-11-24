@@ -302,6 +302,25 @@ pub fn set_actor_data(id: i64, entries: &[(u32, Meta)]) -> Vec<u8> {
     w.0
 }
 
+/// MobEffect : un effet (poison, lenteur…) commence, change ou cesse chez une entité. Le jeu
+/// affiche alors l'icône, les cœurs colorés et le décompte. Disposition (acceptée par le
+/// jeu 1.26.65) : entité, opération, effet, niveau, particules, durée en ticks, tick, ambiant.
+pub const ID_MOB_EFFECT: u32 = 28;
+pub const EFFECT_ADD: u8 = 1;
+pub const EFFECT_REMOVE: u8 = 3;
+pub fn mob_effect(runtime_id: i64, operation: u8, effect: i32, amplifier: i32, duration: i32, particles: bool) -> Vec<u8> {
+    let mut w = W::default();
+    w.varu64(runtime_id as u64);
+    w.u8(operation);
+    w.vari32(effect);
+    w.vari32(amplifier);
+    w.bool(particles);
+    w.vari32(duration);
+    w.varu64(0); // tick
+    w.bool(false); // ambiant
+    w.0
+}
+
 pub const ID_LEVEL_SOUND_EVENT: u32 = 123;
 /// LevelEvent : un effet du monde à une position (ici le bruit d'une porte).
 pub const ID_LEVEL_EVENT: u32 = 25;

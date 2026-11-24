@@ -2891,3 +2891,48 @@ server.registerEvents(Arc)
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Un plugin donne un effet à un joueur : le jeu en est prévenu (icône, décompte), puis de son retrait.
+#[test]
+fn players_receive_effects() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-effets-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("world")).unwrap();
+    let plugin = r#"
+local Effets = {}
+function Effets:onPlayerJoin(event)
+  local p = event:getPlayer()
+  p:addEffect("regeneration", 10, 2)
+  p:addEffect("speed", 60)
+  p:removeEffect("speed")
+end
+server.registerEvents(Effets)
+"#;
+    std::fs::write(dir.join("effets.lua"), plugin).unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut c = Client::join(addr, "Steve");
+    // (opération, effet, niveau, durée) de chaque annonce reçue
+    let mut seen: Vec<(u8, i32, i32, i32)> = Vec::new();
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < until && seen.len() < 3 {
+        let (id, body) = c.recv_game(true);
+        if id == 28 {
+            let mut pos = 0;
+            read_varu32(&body, &mut pos).unwrap();
+            let op = body[pos];
+            pos += 1;
+            let zig = |v: u32| ((v >> 1) as i32) ^ -((v & 1) as i32);
+            let effect = zig(read_varu32(&body, &mut pos).unwrap());
+            let level = zig(read_varu32(&body, &mut pos).unwrap());
+            pos += 1;
+            let ticks = zig(read_varu32(&body, &mut pos).unwrap());
+            seen.push((op, effect, level, ticks));
+        }
+    }
+    // Régénération II pour dix secondes, vitesse I pour une minute, puis vitesse retirée
+    assert_eq!(seen, vec![(1, 10, 1, 200), (1, 1, 0, 1200), (3, 1, 0, 0)]);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -703,7 +703,7 @@ unsafe extern "C" fn l_pset(l: L) -> c_int {
             _ => return bad_call(c, "joueur:setOp(true ou false)"),
         },
         k if k.starts_with("perm:") && k.len() > 5 && k.len() <= 69 => flag,
-        "display" | "tag" => match arg_str(c, l, 3) {
+        "display" | "tag" | "effect" => match arg_str(c, l, 3) {
             Some(s) => LVal::Str(s),
             None => return bad_call(c, "un texte est attendu"),
         },

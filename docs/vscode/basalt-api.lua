@@ -68,6 +68,15 @@ function Player:setGamemode(mode) end
 function Player:getHealth() end
 ---@param n number à 0, le joueur meurt
 function Player:setHealth(n) end
+--- Donne un effet au joueur ("speed", "regeneration", "poison", "night_vision"…).
+---@param effet string
+---@param secondes? number 30 par défaut
+---@param niveau? integer 1 par défaut
+function Player:addEffect(effet, secondes, niveau) end
+---@param effet string
+function Player:removeEffect(effet) end
+--- Retire tous les effets du joueur.
+function Player:clearEffects() end
 ---@return number
 function Player:getMaxHealth() end
 ---@param n number
