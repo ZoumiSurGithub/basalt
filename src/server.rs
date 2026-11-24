@@ -354,16 +354,11 @@ struct Client {
     shown_armor: [(i16, u8); 4],
     /// Arc : tick où il a commencé à le bander
     drawing: Option<u64>,
-<<<<<<< HEAD
-    /// Empoisonné jusqu'à ce tick (0 : non)
-    poison_until: u64,
-=======
     /// Effets en cours : (numéro, niveau à partir de 0, tick de fin)
     effects: Vec<effects::Effect>,
     /// Dégâts du dernier coup reçu (avant armure) : pendant la demi-seconde
     /// d'invulnérabilité qui suit, seul un coup plus fort passe
     hurt_amount: f32,
->>>>>>> dev
     /// Anti-abus du chat : début de la fenêtre et messages envoyés dedans
     chat_window: Instant,
     chat_count: u32,
@@ -643,11 +638,8 @@ enum Cause {
     Mob(&'static str),
     /// Le ventre vide
     Hunger,
-<<<<<<< HEAD
-=======
     /// Un effet qui tue (dégâts instantanés, flétrissement) : l'armure n'y fait rien
     Magic,
->>>>>>> dev
     /// Empoisonné (araignée venimeuse) : l'armure n'y fait rien, et il ne tue pas
     Poison,
 }
@@ -3408,11 +3400,7 @@ impl Server {
                 Cause::Plugin => ("CUSTOM", None),
                 Cause::Mob(_) => ("ENTITY_ATTACK", None),
                 Cause::Hunger => ("STARVATION", None),
-<<<<<<< HEAD
-                Cause::Poison => ("MAGIC", None),
-=======
                 Cause::Poison | Cause::Magic => ("MAGIC", None),
->>>>>>> dev
             };
             let mut fields = vec![("entity", self.name_json(addr)), ("cause", Json::Str(label.into())), ("baseDamage", Json::Num(amount as f64))];
             if let Some(by) = damager {
@@ -3426,8 +3414,6 @@ impl Server {
                 amount = n.clamp(0.0, 1.0e6) as f32;
             }
         }
-<<<<<<< HEAD
-=======
         // Résistance : un cinquième de moins par niveau (sauf le vide, les commandes et la faim)
         if !unstoppable && !matches!(cause, Cause::Hunger) {
             let level = self.effect_level(addr, effects::RESISTANCE);
@@ -3437,7 +3423,6 @@ impl Server {
         if let Some(already) = shielded {
             amount = (amount - already).max(0.0);
         }
->>>>>>> dev
         // L'armure absorbe une part des coups (pas la chute, la faim ni le vide), et s'use
         if matches!(cause, Cause::Player(_) | Cause::Mob(_)) && amount > 0.0 {
             amount = self.armour_takes(addr, amount);
@@ -3511,10 +3496,7 @@ impl Server {
             Cause::Command | Cause::Plugin => format!("{} est mort", name),
             Cause::Hunger => format!("{} est mort de faim", name),
             Cause::Poison => format!("{} est mort empoisonné", name),
-<<<<<<< HEAD
-=======
             Cause::Magic => format!("{} a été tué par magie", name),
->>>>>>> dev
             Cause::Mob(by) => format!("{} a été tué par {}", name, by),
         };
         // Écouteurs : message de mort, inventaire gardé
@@ -3712,16 +3694,10 @@ impl Server {
     /// santé. Ceux qui le voyaient le voient disparaître, puis réapparaître là-bas.
     fn respawn(&mut self, addr: &SocketAddr) {
         if let Some(c) = self.clients.get_mut(addr) {
-<<<<<<< HEAD
-            c.poison_until = 0;
-            c.drawing = None;
-        }
-=======
             c.drawing = None;
         }
         // La mort efface tous les effets
         self.clear_effects(addr, None);
->>>>>>> dev
         if self.clients.get(addr).map(|c| c.dead.is_none()).unwrap_or(true) {
             return;
         }
@@ -5392,23 +5368,6 @@ impl Server {
     }
 
     /// Montre aux joueurs qui le voient l'objet qu'un joueur tient en main, s'il a changé.
-<<<<<<< HEAD
-    /// Poison : un demi-cœur toutes les 1,25 seconde, sans jamais descendre sous un demi-cœur.
-    fn poison_tick(&mut self) {
-        let tick = self.tick;
-        let sick: Vec<SocketAddr> = self
-            .clients
-            .iter()
-            .filter(|(_, c)| c.poison_until > tick && c.joined && c.dead.is_none() && c.mode.takes_damage() && c.data.as_ref().map(|d| d.health > 1.0).unwrap_or(false))
-            .map(|(a, _)| *a)
-            .collect();
-        for a in sick {
-            self.hurt(&a, 1.0, Cause::Poison);
-        }
-    }
-
-=======
->>>>>>> dev
     /// Armure portée par un joueur : (objet, quantité) pour le casque, le plastron, les
     /// jambières et les bottes.
     fn worn(c: &Client) -> [(i16, u8); 4] {
@@ -6885,12 +6844,8 @@ impl Server {
                         shown_held: None,
                         shown_armor: [(0, 0); 4],
                         drawing: None,
-<<<<<<< HEAD
-                        poison_until: 0,
-=======
                         effects: Vec::new(),
                         hurt_amount: 0.0,
->>>>>>> dev
                         chat_window: Instant::now(),
                         chat_count: 0,
                         interactions_logged: 0,
@@ -7823,13 +7778,7 @@ impl Server {
                 if self.tick % 5 == 2 {
                     self.show_armor();
                 }
-<<<<<<< HEAD
-                if self.tick % 25 == 11 {
-                    self.poison_tick();
-                }
-=======
                 self.effects_tick();
->>>>>>> dev
                 // Le jour et la nuit : l'heure avance chez tous les joueurs (le jeu ne la fait
                 // pas avancer seul), une fois par seconde
                 if self.tick % 20 == 0 {

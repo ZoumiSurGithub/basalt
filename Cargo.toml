@@ -1,10 +1,6 @@
 [package]
 name = "basalt"
-<<<<<<< HEAD
-version = "0.0.4"
-=======
 version = "0.0.5"
->>>>>>> dev
 edition = "2021"
 description = "Serveur Minecraft Bedrock léger, écrit en Rust, avec plugins Lua"
 license = "MIT"

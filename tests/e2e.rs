@@ -2891,8 +2891,6 @@ server.registerEvents(Arc)
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
-<<<<<<< HEAD
-=======
 
 /// Un plugin donne un effet à un joueur : le jeu en est prévenu (icône, décompte), puis de son retrait.
 #[test]
@@ -2938,4 +2936,3 @@ server.registerEvents(Effets)
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
->>>>>>> dev
