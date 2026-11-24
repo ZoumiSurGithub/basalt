@@ -9,7 +9,7 @@
 //! Ajouter un objet particulier revient à écrire une structure qui contient un `BaseItem`
 //! et à redéfinir, dans son `impl Item`, les seules méthodes qui le distinguent.
 
-mod armor;
+pub mod armor;
 mod consumable;
 pub mod custom;
 mod durable;

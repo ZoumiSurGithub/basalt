@@ -174,6 +174,7 @@ local NEW_BLOCK_KEYS = {
   name = "string", texture = "string", textureTop = "string", textureBottom = "string", textureFront = "string", rotation = "string", stages = "table",
   hardness = "number", light = "number", friction = "number",
   transparent = "boolean", solid = "boolean", geometry = "string", tool = "string", tier = "string", xp = "number", xpMax = "number",
+  width = "number", height = "number",
   category = "string", group = "string", creative = "boolean", drops = "table", falls = "boolean", needsFloor = "boolean", breakable = "boolean",
   _stages = "string",
 }
@@ -200,7 +201,8 @@ end
 -- Créer une créature (voir docs/PLUGINS.md, « Créer des créatures »)
 local NEW_ENTITY_KEYS = {
   looks = "string", ownModel = "boolean", name = "string", nameVisible = "boolean", health = "number", speed = "number", scale = "number",
-  width = "number", height = "number",
+  width = "number", height = "number", hostile = "boolean", attackDamage = "number", sight = "number",
+  projectile = "string", projectileDamage = "number", shootInterval = "number", shootRange = "number", explosion = "number",
   xp = "number", xpMax = "number", drops = "table", _drops = "string",
 }
 local create_entity = creator("new-entity", NEW_ENTITY_KEYS, "server.entities.create(\"monserveur:vache_doree\", { looks = \"minecraft:cow\", health = 30 })")
@@ -233,6 +235,25 @@ function server.entities.spawn(name, x, y, z)
     error("server.entities.spawn(nom, x, y, z)", 2)
   end
   modify("spawn-entity", name, "", x .. "\t" .. y .. "\t" .. z)
+end
+-- Tirer un projectile : une entité du jeu (« minecraft:arrow ») lancée d'un point dans une direction
+function server.entities.shoot(name, x, y, z, dx, dy, dz, options)
+  local usage = "server.entities.shoot(nom, x, y, z, dx, dy, dz, { speed = 1.6, damage = 3, gravity = 0.05, explosion = 0 })"
+  for _, v in ipairs({ x, y, z, dx, dy, dz }) do
+    if type(v) ~= "number" then error(usage, 2) end
+  end
+  if type(name) ~= "string" or (options ~= nil and type(options) ~= "table") then error(usage, 2) end
+  options = options or {}
+  local function num(key, default)
+    local v = options[key]
+    if v == nil then return default end
+    if type(v) ~= "number" or v ~= v or v < 0 then error(key .. " attend un nombre positif", 3) end
+    return v
+  end
+  for key in pairs(options) do
+    if key ~= "speed" and key ~= "damage" and key ~= "gravity" and key ~= "explosion" then error("réglage inconnu « " .. tostring(key) .. " » ; " .. usage, 2) end
+  end
+  modify("shoot", name, "", table.concat({ x, y, z, dx, dy, dz, num("speed", 1.6), num("damage", 3), num("gravity", 0.05), num("explosion", 0) }, "\t"))
 end
 -- Créer un objet (voir docs/PLUGINS.md, « Créer des objets »)
 local NEW_ITEM_KEYS = {
@@ -667,6 +688,8 @@ local EVENTS = {
   CreatureSpawnEvent = { cancellable = true, fields = { { "entity", "creature" } } },
   CreatureDamageEvent = { cancellable = true, fields = { { "entity", "creature" }, { "damage", "number", true }, { "cause", "string" }, { "damager", "player" } } },
   CreatureDeathEvent = { fields = { { "entity", "creature" }, { "killer", "player" } } },
+  ProjectileHitEvent = { cancellable = true, fields = { { "projectile", "string" }, { "x", "number" }, { "y", "number" }, { "z", "number" }, { "target", "string" }, { "player", "player" }, { "entity", "creature" } } },
+  ExplosionEvent = { cancellable = true, fields = { { "x", "number" }, { "y", "number" }, { "z", "number" }, { "power", "number", true } } },
 }
 -- Événements « enfants » : un écouteur de EntityDamageByEntityEvent ne reçoit que les dégâts
 -- causés par un autre joueur (et un écouteur de EntityDamageEvent reçoit tout).

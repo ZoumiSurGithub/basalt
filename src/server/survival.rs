@@ -637,7 +637,13 @@ impl Server {
     fn show_sleep(&mut self, addr: &SocketAddr) {
         let Some((id, bed)) = self.clients.get(addr).map(|c| (c.id, c.sleeping)) else { return };
         let (x, y, z) = bed.unwrap_or((0, 0, 0));
-        let packet = bedrock::set_actor_data(id, &[(bedrock::META_PLAYER_FLAGS, bedrock::Meta::Byte(if bed.is_some() { bedrock::PLAYER_FLAG_SLEEP } else { 0 })), (bedrock::META_BED_POSITION, bedrock::Meta::Pos(x, y, z))]);
+        let mut data = vec![(bedrock::META_PLAYER_FLAGS, bedrock::Meta::Byte(if bed.is_some() { bedrock::PLAYER_FLAG_SLEEP } else { 0 })), (bedrock::META_BED_POSITION, bedrock::Meta::Pos(x, y, z))];
+        if bed.is_none() {
+            // Debout : le jeu retrouve la boîte d'un joueur levé (couché, elle est toute petite)
+            data.push((53, bedrock::Meta::Float(0.6)));
+            data.push((54, bedrock::Meta::Float(1.8)));
+        }
+        let packet = bedrock::set_actor_data(id, &data);
         let mut to: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.visible.contains(&id)).map(|(a, _)| *a).collect();
         to.push(*addr);
         for a in to {

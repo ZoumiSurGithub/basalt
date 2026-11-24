@@ -1408,6 +1408,34 @@ impl Vanilla {
             }
         }
 
+        // Tapis de pétales, fleurs sauvages et feuilles mortes : ils ne tiennent que sur le sol.
+        // Une structure ou une autre plante venue se glisser dessous (herbe d'un jardin de
+        // village, par exemple) les laisserait perchés : ceux-là sont retirés.
+        {
+            let carpets: std::collections::HashSet<u32> = p
+                .named
+                .iter()
+                .filter(|(n, _)| matches!(n.split('[').next().unwrap_or(n), "pink_petals" | "wildflowers" | "leaf_litter"))
+                .map(|(_, s)| *s)
+                .collect();
+            let soil: std::collections::HashSet<u32> = ["podzol", "coarse_dirt", "moss_block", "mud", "rooted_dirt", "mycelium", "farmland"]
+                .iter()
+                .filter_map(|n| p.named.get(*n).copied())
+                .chain([p.grass, p.dirt])
+                .collect();
+            for x in 0..16 {
+                for z in 0..16 {
+                    let top = tops[x][z];
+                    for y in (top - 4).max(MIN_Y + 1)..=(top + 24).min(MAX_Y) {
+                        let i = at(x, z, y);
+                        if carpets.contains(&blocks[i]) && !soil.contains(&blocks[at(x, z, y - 1)]) {
+                            blocks[i] = p.air;
+                        }
+                    }
+                }
+            }
+        }
+
         // 8. Biomes en 3D (cases de 4 blocs), y compris les biomes souterrains
         let mut ids = vec![0u8; SECTIONS * 64];
         for qx in 0..4usize {

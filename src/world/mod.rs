@@ -12,6 +12,7 @@
 //! est encore utilisée ; le terrain généré est partagé tel quel.
 
 pub mod generator;
+pub mod light;
 pub mod liquid;
 pub mod structures;
 pub mod templates;

@@ -103,6 +103,9 @@ pub struct CustomBlock {
     pub variants: Variants,
     /// Image de la face avant, pour un bloc tourné vers le joueur (vide : comme les côtés)
     pub texture_front: String,
+    /// Boîte du bloc chez le joueur, en blocs : (largeur, hauteur), centrée, posée au sol.
+    /// (1, 1) : le cube entier. C'est elle qu'on vise, et elle qui arrête le joueur.
+    pub hitbox: (f32, f32),
 }
 
 impl CustomBlock {
@@ -135,6 +138,7 @@ impl CustomBlock {
             xp: (0, 0),
             variants: Variants::None,
             texture_front: String::new(),
+            hitbox: (1.0, 1.0),
         };
         let mut listed = true;
         let flag = |key: &str, value: &str| match value {
@@ -151,6 +155,9 @@ impl CustomBlock {
                 "texture" => def.texture = image(value)?,
                 "textureTop" => def.texture_top = image(value)?,
                 "textureFront" => def.texture_front = image(value)?,
+                // (le jeu compte en seizièmes de bloc : au moins un)
+                "width" => def.hitbox.0 = (number()? as f32).clamp(0.0625, 1.0),
+                "height" => def.hitbox.1 = (number()? as f32).clamp(0.0625, 1.0),
                 "rotation" => {
                     def.variants = match (value, &def.variants) {
                         (_, Variants::Stages(_)) => return Err("un bloc a soit une orientation (rotation), soit des stades (stages), pas les deux".into()),
@@ -316,11 +323,13 @@ impl CustomBlock {
         if !self.texture_bottom.is_empty() {
             materials.push(("down", material(&self.texture_bottom)));
         }
+        // Boîte, en seizièmes de bloc : centrée, posée au sol
+        let (wide, high) = ((self.hitbox.0 * 16.0).round(), (self.hitbox.1 * 16.0).round());
         let cube = |enabled: bool| {
             Tag::compound(vec![
                 ("enabled", Tag::Byte(enabled as i8)),
-                ("origin", Tag::List(5, vec![Tag::Float(-8.0), Tag::Float(0.0), Tag::Float(-8.0)])),
-                ("size", Tag::List(5, vec![Tag::Float(16.0), Tag::Float(16.0), Tag::Float(16.0)])),
+                ("origin", Tag::List(5, vec![Tag::Float(-wide / 2.0), Tag::Float(0.0), Tag::Float(-wide / 2.0)])),
+                ("size", Tag::List(5, vec![Tag::Float(wide), Tag::Float(high), Tag::Float(wide)])),
             ])
         };
         let geometry = if self.geometry.is_empty() { "minecraft:geometry.full_block" } else { &self.geometry };
@@ -604,6 +613,11 @@ mod tests {
         assert_eq!(components.get("minecraft:collision_box").and_then(|c| c.get("enabled")), Some(&Tag::Byte(0)));
         assert_eq!(components.get("minecraft:geometry").and_then(|g| g.str_of("identifier")), Some("minecraft:geometry.cross"));
         assert_eq!(components.get("minecraft:material_instances").and_then(|m| m.get("materials")).and_then(|m| m.get("*")).and_then(|m| m.str_of("render_method")), Some("alpha_test"));
+        // Une dalle : boîte d'un demi-bloc de haut, en seizièmes de bloc pour le jeu
+        let slab = CustomBlock::parse("essai:dalle", "height\t0.5\nwidth\t0.75").unwrap().definition(10003);
+        let boxed = slab.get("components").and_then(|c| c.get("minecraft:collision_box")).unwrap();
+        assert_eq!(boxed.get("size"), Some(&Tag::List(5, vec![Tag::Float(12.0), Tag::Float(8.0), Tag::Float(12.0)])));
+        assert_eq!(boxed.get("origin"), Some(&Tag::List(5, vec![Tag::Float(-6.0), Tag::Float(0.0), Tag::Float(-6.0)])));
         // Côté serveur : un minerai qui demande une pioche en fer
         define(CustomBlock::parse("essai:titane", "hardness\t4\ntool\tpickaxe\ntier\tiron").unwrap()).unwrap();
         define(plant).unwrap();

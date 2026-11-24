@@ -282,6 +282,17 @@ pub fn mob_armor(runtime_id: i64, body: Option<(i16, u8)>) -> Vec<u8> {
     w.0
 }
 
+/// MobArmorEquipment d'un joueur : casque, plastron, jambières, bottes (objet, quantité ; 0 : rien).
+pub fn player_armor(runtime_id: i64, pieces: [(i16, u8); 4]) -> Vec<u8> {
+    let mut w = W::default();
+    w.varu64(runtime_id as u64);
+    for (id, count) in pieces {
+        item_stack(&mut w, id, count, 0, 0);
+    }
+    item_stack(&mut w, 0, 0, 0, 0); // corps (réservé aux montures)
+    w.0
+}
+
 pub const ID_CONTAINER_SET_DATA: u32 = 51;
 
 /// Ouvre l'écran d'un bloc (coffre, four, établi…) situé en `pos`.

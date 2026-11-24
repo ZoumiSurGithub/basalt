@@ -3,6 +3,7 @@
 mod mob_store;
 mod mobs;
 mod nature;
+mod shots;
 mod survival;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -348,6 +349,12 @@ struct Client {
     last_swing: u64,
     /// Objet en main tel que les autres joueurs le voient (identifiant, présent ou non)
     shown_held: Option<(i16, u8)>,
+    /// Armure montrée aux autres joueurs au dernier envoi
+    shown_armor: [(i16, u8); 4],
+    /// Arc : tick où il a commencé à le bander
+    drawing: Option<u64>,
+    /// Empoisonné jusqu'à ce tick (0 : non)
+    poison_until: u64,
     /// Anti-abus du chat : début de la fenêtre et messages envoyés dedans
     chat_window: Instant,
     chat_count: u32,
@@ -471,6 +478,10 @@ pub struct Server {
     bed_colors: HashMap<(i32, i32, i32), u8>,
     /// Blocs en train de tomber (sable, gravier…)
     falling: HashSet<(i32, i32, i32)>,
+    /// Projectiles en vol
+    shots: HashMap<i64, shots::Shot>,
+    /// Creepers arrivés au bout de leur mèche : (créature, centre, puissance, nom)
+    booms: Vec<(i64, (f32, f32, f32), f32, &'static str)>,
     /// Feuilles privées de tronc, et le tick où chacune tombera
     decaying: HashMap<(i32, i32, i32), u64>,
     /// Orbes d'expérience au sol
@@ -623,6 +634,8 @@ enum Cause {
     Mob(&'static str),
     /// Le ventre vide
     Hunger,
+    /// Empoisonné (araignée venimeuse) : l'armure n'y fait rien, et il ne tue pas
+    Poison,
 }
 
 /// Sens d'un lit, du pied vers l'oreiller, d'après sa propriété `direction` (numérotation du
@@ -792,6 +805,8 @@ impl Server {
             orbs: HashMap::new(),
             decaying: HashMap::new(),
             falling: HashSet::new(),
+            shots: HashMap::new(),
+            booms: Vec::new(),
             bed_colors: HashMap::new(),
             move_actor_refused: false,
             equip_refused: false,
@@ -1541,6 +1556,8 @@ impl Server {
             sneaking: bool,
             sprinting: bool,
             held: (i16, u8, u32),
+            /// Armure portée : casque, plastron, jambières, bottes
+            armor: [(i16, u8); 4],
             skin: Option<Arc<crate::player::Skin>>,
             mode: i32,
             npc: bool,
@@ -1570,6 +1587,7 @@ impl Server {
                     mode: c.mode.bedrock_id(),
                     npc: false,
                     riding: c.riding.and_then(|m| self.mob_seat(m).map(|(seat, at)| (m, seat, at))),
+                    armor: Self::worn(c),
                     held: {
                         let h = c.inv.held();
                         (h.id, h.count.min(1), if h.is_empty() { 0 } else { self.block_for(h.id).unwrap_or(0) })
@@ -1589,6 +1607,7 @@ impl Server {
                 head_yaw: n.yaw,
                 moved_tick: n.moved_tick,
                 riding: None,
+                armor: [(0, 0); 4],
                 name: n.name.clone(),
                 sneaking: false,
                 sprinting: false,
@@ -1608,7 +1627,7 @@ impl Server {
         let by_id: HashMap<i64, usize> = players.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
         let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
         for (i, p) in players.iter().enumerate() {
-            grid.entry(p.chunk).or_insert_with(Vec::new).push(i);
+            grid.entry(p.chunk).or_default().push(i);
         }
         // Déplacement de chaque joueur, mis en forme une seule fois (à la première demande)
         // puis recopié dans le lot de tous ceux qui le voient : [format joueur, format entité]
@@ -1687,6 +1706,10 @@ impl Server {
                                     // refusé par le jeu, l'apparition du joueur ne le serait pas
                                     if o.held.1 > 0 && !no_equipment {
                                         packets.push((bedrock::ID_MOB_EQUIPMENT, bedrock::mob_equipment(o.id, o.held, 0)));
+                                    }
+                                    // Son armure, de la même façon
+                                    if o.armor.iter().any(|p| p.1 > 0) && !no_equipment {
+                                        packets.push((bedrock::ID_MOB_ARMOR_EQUIPMENT, bedrock::player_armor(o.id, o.armor)));
                                     }
                                     // Déjà en selle : assis sur sa monture
                                     if let Some((mount, seat, _)) = o.riding {
@@ -1972,6 +1995,31 @@ impl Server {
                     };
                     if let Err(why) = done {
                         warn!("[{}] créature : {}", plugin, why);
+                    }
+                }
+                Action::Modify(plugin, kind, name, _, shot) if kind == "shoot" => {
+                    // x y z, direction (vx vy vz), vitesse, dégâts, gravité, explosion
+                    let v: Vec<f32> = shot.split('\t').filter_map(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).collect();
+                    let done = match v[..] {
+                        [x, y, z, dx, dy, dz, speed, damage, gravity, power] => {
+                            let d = (dx * dx + dy * dy + dz * dz).sqrt();
+                            let name_ok = !name.is_empty() && name.len() <= 64 && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b':');
+                            if d < 1.0e-4 {
+                                Err("direction nulle".to_string())
+                            } else if !name_ok {
+                                Err("nom de projectile invalide".to_string())
+                            } else {
+                                let speed = speed.clamp(0.05, 4.0);
+                                let cause: &'static str = "un projectile";
+                                self.shoot(&name, (x, y, z), (dx / d * speed, dy / d * speed, dz / d * speed), damage.clamp(0.0, 1000.0), gravity.clamp(0.0, 1.0), power.clamp(0.0, 8.0), None, cause)
+                                    .map(|_| ())
+                                    .ok_or_else(|| "trop de projectiles en vol".to_string())
+                            }
+                        }
+                        _ => Err("position ou direction invalide".to_string()),
+                    };
+                    if let Err(why) = done {
+                        warn!("[{}] server.entities.shoot(\"{}\") : {}", plugin, name, why);
                     }
                 }
                 Action::Modify(plugin, kind, name, _, place) if kind == "spawn-entity" => {
@@ -2883,7 +2931,7 @@ impl Server {
         let state = self.world.get(pos.0, pos.1, pos.2);
         let block = self.data.as_ref().and_then(|d| d.block_name(state)).unwrap_or("").to_string();
         let answers = self.emit(event, &[LVal::Player(name), LVal::Int(pos.0 as i64), LVal::Int(pos.1 as i64), LVal::Int(pos.2 as i64), LVal::Str(block)]);
-        !answers.iter().any(|a| *a == LVal::Bool(false))
+        !answers.contains(&LVal::Bool(false))
     }
 
     /// Événement à la PocketMine (écouteurs des plugins, voir docs/PLUGINS.md). Renvoie l'état
@@ -2947,7 +2995,7 @@ impl Server {
             Some(h) if !h.is_empty() => h,
             _ => return false,
         };
-        let item = self.item_json(held.id, held.count.min(255) as u8);
+        let item = self.item_json(held.id, held.count);
         let out = self.fire("PlayerItemUseEvent", vec![("player", self.name_json(addr)), ("item", item)]);
         cancelled(&out)
     }
@@ -3205,6 +3253,48 @@ impl Server {
 
     /// Un joueur perd de la vie. Sans effet en créatif (sauf chute hors du monde et /kill),
     /// sur un joueur déjà mort, ou sur un joueur frappé il y a moins d'une demi-seconde.
+    /// Un coup arrive sur l'armure du joueur : chaque pièce s'use, et les dégâts qui passent
+    /// sont rendus (4 % de moins par point d'armure).
+    fn armour_takes(&mut self, addr: &SocketAddr, amount: f32) -> f32 {
+        let Some(d) = self.data.clone() else { return amount };
+        let wear = crate::item::armor::armor_wear(amount);
+        let (points, broke) = match self.clients.get_mut(addr) {
+            Some(c) => {
+                let (mut points, mut broke, mut worn) = (0u32, false, false);
+                for stack in c.inv.armor.slots.iter_mut().filter(|s| !s.is_empty()) {
+                    let Some(def) = d.item_by_id(stack.id) else { continue };
+                    let item = VanillaItems::get(&def.name);
+                    if item.armor_points() == 0 {
+                        continue;
+                    }
+                    points += item.armor_points() as u32;
+                    let max = item.max_durability().min(u16::MAX as u32) as u16;
+                    if max > 0 {
+                        worn = true;
+                        stack.damage = stack.damage.saturating_add(wear);
+                        if stack.damage >= max {
+                            *stack = inventory::ItemStack::EMPTY;
+                            broke = true;
+                        }
+                    }
+                }
+                if worn {
+                    c.inv_touched = true;
+                }
+                if points == 0 {
+                    return amount;
+                }
+                (points, broke.then_some(c.pos))
+            }
+            None => return amount,
+        };
+        self.send_inventory(addr);
+        if let Some(at) = broke {
+            self.send_near(at, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound(bedrock::SOUND_BREAK, at, "", false, -1));
+        }
+        amount * crate::item::armor::armor_factor(points)
+    }
+
     fn hurt(&mut self, addr: &SocketAddr, amount: f32, cause: Cause) {
         let tick = self.tick;
         let unstoppable = matches!(cause, Cause::Void | Cause::Command);
@@ -3235,6 +3325,7 @@ impl Server {
                 Cause::Plugin => ("CUSTOM", None),
                 Cause::Mob(_) => ("ENTITY_ATTACK", None),
                 Cause::Hunger => ("STARVATION", None),
+                Cause::Poison => ("MAGIC", None),
             };
             let mut fields = vec![("entity", self.name_json(addr)), ("cause", Json::Str(label.into())), ("baseDamage", Json::Num(amount as f64))];
             if let Some(by) = damager {
@@ -3247,6 +3338,10 @@ impl Server {
             if let Some(n) = out.as_ref().and_then(|v| v.get("baseDamage")).and_then(|n| n.as_f64()) {
                 amount = n.clamp(0.0, 1.0e6) as f32;
             }
+        }
+        // L'armure absorbe une part des coups (pas la chute, la faim ni le vide), et s'use
+        if matches!(cause, Cause::Player(_) | Cause::Mob(_)) && amount > 0.0 {
+            amount = self.armour_takes(addr, amount);
         }
         let (id, dead) = match self.clients.get_mut(addr) {
             Some(c) if c.joined && c.dead.is_none() => {
@@ -3312,6 +3407,7 @@ impl Server {
             }
             Cause::Command | Cause::Plugin => format!("{} est mort", name),
             Cause::Hunger => format!("{} est mort de faim", name),
+            Cause::Poison => format!("{} est mort empoisonné", name),
             Cause::Mob(by) => format!("{} a été tué par {}", name, by),
         };
         // Écouteurs : message de mort, inventaire gardé
@@ -3508,6 +3604,10 @@ impl Server {
     /// Le joueur a cliqué sur « Réapparaître » : il revient au point de réapparition, en pleine
     /// santé. Ceux qui le voyaient le voient disparaître, puis réapparaître là-bas.
     fn respawn(&mut self, addr: &SocketAddr) {
+        if let Some(c) = self.clients.get_mut(addr) {
+            c.poison_until = 0;
+            c.drawing = None;
+        }
         if self.clients.get(addr).map(|c| c.dead.is_none()).unwrap_or(true) {
             return;
         }
@@ -3546,6 +3646,16 @@ impl Server {
         if !self.refused_extras.contains(&bedrock::ID_RESPAWN) {
             self.send(addr, bedrock::ID_RESPAWN, &bedrock::respawn(spawn, bedrock::RESPAWN_READY, id));
         }
+        // Le jeu garde la petite boîte du corps tombé à terre : sans ce rappel de ses
+        // indicateurs, de sa boîte (0,6 sur 1,8) et de sa taille, le joueur revenu à la vie
+        // passait sous un bloc comme s'il rampait ou nageait
+        let body = [
+            (0u32, bedrock::Meta::Long(bedrock::OWN_PLAYER_FLAGS)),
+            (38, bedrock::Meta::Float(1.0)),
+            (53, bedrock::Meta::Float(0.6)),
+            (54, bedrock::Meta::Float(1.8)),
+        ];
+        self.send(addr, bedrock::ID_SET_ACTOR_DATA, &bedrock::set_actor_data(id, &body));
         self.send_attributes(addr, true);
         let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.visible.contains(&id)).map(|(a, _)| *a).collect();
         for v in viewers {
@@ -4167,6 +4277,20 @@ impl Server {
         });
         if let Some(p) = other_half {
             self.change_block(p, air);
+        }
+        // Une grande herbe marine aussi : l'autre moitié part avec elle, et laisse de l'eau
+        let sea_half = self.data.as_ref().and_then(|d| {
+            let p = match d.prop(old, "sea_grass_type")? {
+                Prop::Str(kind) if kind == "double_top" => (x, y - 1, z),
+                Prop::Str(kind) if kind == "double_bot" => (x, y + 1, z),
+                _ => return None,
+            };
+            let other = self.world.get(p.0, p.1, p.2);
+            (d.block_name(other) == d.block_name(old) && d.prop(other, "sea_grass_type") != d.prop(old, "sea_grass_type")).then_some(p)
+        });
+        if let Some(p) = sea_half {
+            let water = self.world.left_behind(p.0, p.1, p.2);
+            self.change_block(p, water);
         }
         // Un lit aussi : la tête part avec le pied (et inversement), pour un seul lit rendu
         if let Some(p) = self.bed_other_half(old, (x, y, z)) {
@@ -5149,6 +5273,54 @@ impl Server {
     }
 
     /// Montre aux joueurs qui le voient l'objet qu'un joueur tient en main, s'il a changé.
+    /// Poison : un demi-cœur toutes les 1,25 seconde, sans jamais descendre sous un demi-cœur.
+    fn poison_tick(&mut self) {
+        let tick = self.tick;
+        let sick: Vec<SocketAddr> = self
+            .clients
+            .iter()
+            .filter(|(_, c)| c.poison_until > tick && c.joined && c.dead.is_none() && c.mode.takes_damage() && c.data.as_ref().map(|d| d.health > 1.0).unwrap_or(false))
+            .map(|(a, _)| *a)
+            .collect();
+        for a in sick {
+            self.hurt(&a, 1.0, Cause::Poison);
+        }
+    }
+
+    /// Armure portée par un joueur : (objet, quantité) pour le casque, le plastron, les
+    /// jambières et les bottes.
+    fn worn(c: &Client) -> [(i16, u8); 4] {
+        let mut out = [(0i16, 0u8); 4];
+        for (i, s) in c.inv.armor.slots.iter().take(4).enumerate() {
+            if !s.is_empty() {
+                out[i] = (s.id, 1);
+            }
+        }
+        out
+    }
+
+    /// Montre aux autres joueurs l'armure de ceux qui viennent d'en changer.
+    fn show_armor(&mut self) {
+        if self.equip_refused {
+            return;
+        }
+        let mut changed = Vec::new();
+        for c in self.clients.values_mut().filter(|c| c.joined && c.stage == Stage::InGame) {
+            let now = Self::worn(c);
+            if now != c.shown_armor {
+                c.shown_armor = now;
+                changed.push((c.id, now));
+            }
+        }
+        for (id, armor) in changed {
+            let packet = bedrock::player_armor(id, armor);
+            let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.id != id && c.visible.contains(&id)).map(|(a, _)| *a).collect();
+            for viewer in viewers {
+                self.send(&viewer, bedrock::ID_MOB_ARMOR_EQUIPMENT, &packet);
+            }
+        }
+    }
+
     fn show_held(&mut self, addr: &SocketAddr) {
         if self.equip_refused {
             return;
@@ -6393,12 +6565,18 @@ impl Server {
                             // Écouteurs : l'objet utilisé, et la possibilité de l'empêcher
                             if self.item_use_cancelled(&addr) {
                                 self.send_inventory(&addr);
+                            } else if self.draw_bow(&addr) {
+                                // (l'arc se bande : la flèche part quand le bouton est relâché)
                             } else if !self.eat_in_air(&addr) && !self.boost_mount(&addr) {
                                 // (manger, accélérer sa monture, remplir un seau à une source)
                                 self.bucket_in_air(&addr);
                             }
                         }
-                        Some(bedrock::ItemGesture::Release) => self.stop_eating(&addr),
+                        Some(bedrock::ItemGesture::Release) => {
+                            if !self.release_bow(&addr) {
+                                self.stop_eating(&addr)
+                            }
+                        }
                         None => {}
                     }
                 }
@@ -6572,6 +6750,9 @@ impl Server {
                         skin: None,
                         last_swing: 0,
                         shown_held: None,
+                        shown_armor: [(0, 0); 4],
+                        drawing: None,
+                        poison_until: 0,
                         chat_window: Instant::now(),
                         chat_count: 0,
                         interactions_logged: 0,
@@ -6958,8 +7139,9 @@ impl Server {
         ];
         let mut list = list;
         // Liste complète des entités, d'après les données du jeu
-        // (avec, à la suite, les créatures des plugins dont l'apparence vient du pack)
-        let own = crate::entity::custom::own_models();
+        // (avec, à la suite, les créatures des plugins : le jeu ne laisse taper dans
+        // `/summon` que les noms de cette liste)
+        let own = crate::entity::custom::declared();
         let extended = if own.is_empty() { None } else { self.captured(addr, bedrock::ID_AVAILABLE_ACTOR_IDENTIFIERS).and_then(|body| bedrock::actor_identifiers_append(&body, &own)) };
         if let Some(ids) = extended {
             list.push((bedrock::ID_AVAILABLE_ACTOR_IDENTIFIERS, Some(ids)));
@@ -7381,7 +7563,7 @@ impl Server {
                 read
             };
             let _received = if events.is_empty() { None } else { Some(timings::scope("Paquets reçus — traitement")) };
-            for ev in events.drain(..).collect::<Vec<_>>() {
+            for ev in std::mem::take(&mut events) {
                 let addr = match &ev {
                     NetEvent::Connected(a) | NetEvent::Packet(a, _) | NetEvent::Disconnected(a, _) => *a,
                 };
@@ -7446,6 +7628,7 @@ impl Server {
                     if self.tick % 20 == 0 {
                         self.sleep_tick();
                     }
+                    self.shots_tick();
                     if self.tick % 2 == 0 {
                         self.orb_tick();
                         self.fall_tick();
@@ -7475,6 +7658,9 @@ impl Server {
                         self.stream_mobs();
                         self.populate_chunks();
                     }
+                    if self.tick % 20 == 13 {
+                        self.monsters_tick();
+                    }
                     if !self.mobs.is_empty() {
                         self.move_mobs();
                     }
@@ -7496,6 +7682,12 @@ impl Server {
                     self.watch_containers();
                 }
                 self.release_buttons();
+                if self.tick % 5 == 2 {
+                    self.show_armor();
+                }
+                if self.tick % 25 == 11 {
+                    self.poison_tick();
+                }
                 // Le jour et la nuit : l'heure avance chez tous les joueurs (le jeu ne la fait
                 // pas avancer seul), une fois par seconde
                 if self.tick % 20 == 0 {

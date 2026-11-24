@@ -377,6 +377,8 @@ pub const LEVEL_EVENT_PUNCH: i32 = 2014;
 /// Début et fin des fissures d'un bloc qu'on mine (donnée du début : 65535 / durée en ticks)
 pub const LEVEL_EVENT_START_BREAK: i32 = 3600;
 pub const LEVEL_EVENT_STOP_BREAK: i32 = 3601;
+/// Nuage d'une explosion (particule « huge_explode_seed » ; numéro non vérifié en jeu)
+pub const LEVEL_EVENT_PARTICLE_EXPLOSION: i32 = 0x4000 | 17;
 /// Tintement d'une orbe d'expérience ramassée
 pub const LEVEL_EVENT_SOUND_ORB: i32 = 1051;
 /// Valeur d'une orbe d'expérience (donnée d'entité, entier)

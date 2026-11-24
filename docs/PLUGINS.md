@@ -246,6 +246,7 @@ annulé n'est plus transmis aux écouteurs suivants, sauf à ceux qui demandent 
 | `EntityItemPickupEvent` | oui (l'objet reste au sol) | `getEntity()` (ou `getPlayer()`), `getItem()` | — |
 | `PlayerGameModeChangeEvent` | oui | `getPlayer()`, `getNewGamemode()` (`GameMode.SURVIVAL` 0, `CREATIVE` 1, `ADVENTURE` 2, `SPECTATOR` 3) | — |
 | `CreatureSpawnEvent`, `CreatureDamageEvent`, `CreatureDeathEvent` | voir « Créer des créatures » | `getEntity()` rend une créature | — |
+| `ProjectileHitEvent`, `ExplosionEvent` | voir « Tirer un projectile depuis un plugin » | | `setPower(n)` |
 | `PlayerItemUseEvent` | oui (l'objet ne fait rien) | `getPlayer()`, `getItem()` | — |
 | `PlayerItemConsumeEvent` | oui (l'aliment n'est pas mangé) | `getPlayer()`, `getItem()` | — |
 | `PlayerExhaustEvent` | oui (le point de faim n'est pas perdu) | `getPlayer()`, `getAmount()` (fatigue qui va coûter un point) | — |
@@ -674,6 +675,7 @@ le pose porte le même nom : `joueur:give("monserveur:minerai_rubis", 16)`.
 | `tier` | texte | matériau minimal de cet outil pour que le bloc rende son butin : `wood`, `gold`, `stone`, `copper`, `iron`, `diamond`, `netherite` | butin même à la main |
 | `xp`, `xpMax` | nombre | expérience rendue quand il est cassé (un nombre tiré entre les deux ; `xp` seul : toujours ce nombre) | aucune |
 | `solid` | vrai ou faux | arrête les joueurs ; `false` pour une plante, qu'on traverse | vrai |
+| `width`, `height` | nombre (0,0625 à 1) | boîte du bloc, en blocs : centrée, posée au sol. C'est elle qu'on vise et elle qui arrête le joueur (`height = 0.5` pour une dalle) | 1 et 1 : le cube entier |
 | `friction` | nombre (0,1 à 1) | glissance (glace : 0,98) | 0,6 |
 | `drops`, `falls`, `needsFloor`, `breakable` | | butin et comportement, comme dans `server.blocks.modify` | se rend lui-même |
 | `category`, `group`, `creative` | | place dans le menu créatif, comme pour un objet | onglet `construction` |
@@ -779,9 +781,10 @@ le reste du pack ; `docs/exemples/pack-exemple.mcpack` en contient deux.
   qui exige un outil (`tier`) ne se casse pas plus lentement à la main : il ne rend
   simplement rien.
 - Une forme autre que le cube (`geometry`) vient du jeu ou de votre pack de ressources
-  (dossier `models/blocks/`). Le serveur, lui, ne connaît que deux cas : plein (`solid`,
-  cube entier) ou traversable. Une dalle ou un escalier créés arrêtent donc comme un cube
-  entier pour les créatures.
+  (dossier `models/blocks/`). `width` et `height` règlent la boîte **chez le joueur** ; le
+  serveur, lui, ne connaît que deux cas : plein (`solid`, cube entier) ou traversable. Une
+  dalle créée arrête donc les créatures comme un cube entier, et la vérification des
+  déplacements du joueur la traite comme un bloc plein.
 - Dans le monde enregistré, le bloc est rangé sous un numéro tiré de son nom. Si le plugin
   est retiré, les blocs déjà posés s'affichent comme des blocs inconnus ; ils reviennent
   quand le plugin revient.
@@ -819,6 +822,14 @@ server.entities.create("monserveur:loup_alpha", { looks = "minecraft:wolf", heal
 | `speed` | nombre (0,01 à 1) | vitesse, à l'échelle du jeu (vache 0,25 ; loup 0,3) | celle de l'espèce |
 | `scale` | nombre (0,1 à 10) | taille par rapport à l'espèce (2 : deux fois plus grande) ; agrandit aussi sa boîte de collision | 1 |
 | `width`, `height` | nombre (0,1 à 16) | boîte de collision propre, en blocs (largeur et hauteur, toujours les deux) : là où on peut la viser et la frapper, et ce qui bute contre les blocs | celle de l'espèce, à l'échelle de `scale` |
+| `hostile` | vrai ou faux | elle s'en prend aux joueurs qu'elle voit (voir « Créatures hostiles ») | comme son espèce : un zombie attaque, une vache non |
+| `attackDamage` | nombre | dégâts d'un de ses coups, en points de vie (2 = un cœur) | 3, ou ceux de l'espèce |
+| `sight` | nombre (1 à 64) | distance, en blocs, à laquelle elle repère un joueur | 16, ou celle de l'espèce |
+| `projectile` | texte | elle tire ce projectile au lieu de frapper (voir « Tireurs et explosifs ») : `"minecraft:arrow"`, `"minecraft:snowball"`, `"minecraft:small_fireball"`… | celui de l'espèce (flèche du squelette), sinon aucun |
+| `projectileDamage` | nombre | dégâts d'un projectile, en points de vie | 3 |
+| `shootInterval` | nombre | secondes entre deux tirs | 2 |
+| `shootRange` | nombre (2 à 48) | distance de tir, en blocs | 15 |
+| `explosion` | nombre (0,5 à 8) | elle explose au contact, comme un creeper : la puissance (3 pour un creeper, 4 pour de la TNT) | celle de l'espèce, sinon aucune |
 | `drops` | table | butin à sa mort ; `{}` : rien | celui de l'espèce |
 | `xp`, `xpMax` | nombre | expérience quand un joueur la tue | de 1 à 3 |
 
@@ -830,13 +841,136 @@ Avec `width` et `height`, la boîte ne dépend plus de `scale` : on peut affiche
 server.entities.create("monserveur:colosse", { looks = "minecraft:iron_golem", scale = 2, width = 1, height = 2 })
 ```
 
-Créatures de départ possibles (`looks`) : `cow, pig, sheep, chicken, rabbit, mooshroom, goat, llama, horse, donkey, mule, wolf, cat, villager, iron_golem`.
+Créatures de départ possibles (`looks`) : `cow, pig, sheep, chicken, rabbit, mooshroom, goat, llama, horse, donkey, mule, wolf, cat, villager, iron_golem`, et les monstres : `zombie, husk, drowned, zombie_villager, skeleton, stray, creeper, spider, cave_spider, silverfish, wither_skeleton, vindicator, pillager, enderman, slime`.
 
 Le butin s'écrit avec une quantité fixe ou une fourchette :
 
 ```lua
 drops = { ["minecraft:gold_ingot"] = 2 }           -- toujours 2
 drops = { ["minecraft:gold_ingot"] = { 1, 3 } }    -- de 1 à 3
+```
+
+### Créatures hostiles
+
+Avec `hostile = true`, une créature s'en prend aux joueurs : elle repère le plus proche,
+le poursuit et le frappe au contact, une fois par seconde.
+
+```lua
+-- Un ogre : une grande vache qui attaque
+server.entities.create("monserveur:ogre", {
+  looks = "minecraft:cow", name = "Ogre", scale = 1.8,
+  health = 60, hostile = true, attackDamage = 6, sight = 20,
+  drops = { ["minecraft:emerald"] = { 1, 2 } }, xp = 10,
+})
+
+-- Un zombie d'élite : plus de vie, plus rapide, frappe plus fort
+server.entities.create("monserveur:zombie_elite", {
+  looks = "minecraft:zombie", name = "Zombie d'élite",
+  health = 40, speed = 0.3, attackDamage = 5,
+})
+
+-- Un zombie apprivoisé, qui ne fait de mal à personne
+server.entities.create("monserveur:zombie_doux", { looks = "minecraft:zombie", hostile = false })
+```
+
+- Elle n'attaque que les joueurs en **survie ou en aventure**, jamais en créatif ni en
+  spectateur.
+- Elle suit sa cible un peu au-delà de `sight`, puis abandonne et reprend sa promenade.
+- Frappée par un joueur, elle se retourne contre lui au lieu de fuir.
+- Le message de mort du joueur porte son nom : « tué par Ogre ».
+- `CreatureDamageEvent` et `CreatureDeathEvent` valent pour elle comme pour les autres ;
+  les coups qu'elle porte à un joueur passent par `EntityDamageEvent`.
+
+Basalt connaît quinze monstres du jeu, hostiles d'eux-mêmes :
+
+| Monstre | Vie | Attaque |
+|---|---|---|
+| `zombie`, `husk`, `drowned`, `zombie_villager` | 20 | frappe (3) |
+| `skeleton`, `stray` | 20 | **tire des flèches** (3) à 15 blocs |
+| `creeper` | 20 | **explose** au contact (puissance 3) |
+| `spider` | 16 | frappe (2) |
+| `cave_spider` | 12 | frappe (2) et **empoisonne** sept secondes |
+| `silverfish` | 8 | frappe (1) |
+| `wither_skeleton` | 20 | frappe (8) |
+| `vindicator` | 24 | frappe (13) |
+| `pillager` | 24 | **tire des flèches** (4) à 12 blocs |
+| `enderman` | 40 | **neutre** : ne frappe (7) que le joueur qui l'a frappé, et se téléporte une fois sur deux quand on le touche |
+| `slime` | 1, 4 ou 16 | trois tailles ; frappe (0, 2 ou 4) ; un gros se divise en plus petits à sa mort |
+
+Zombies, squelettes, creepers et araignées apparaissent d'eux-mêmes dans le noir autour des
+joueurs en survie (voir [MONDE.md](MONDE.md), « Monstres dans le noir ») ; les autres
+s'obtiennent par `summon` ou `server.entities.spawn`. `CreatureSpawnEvent` est appelé pour
+chacun : l'annuler l'empêche d'apparaître. Les créatures créées, elles, n'apparaissent que
+si un plugin les fait apparaître.
+
+### Tireurs et explosifs
+
+`projectile` fait d'une créature un tireur : à portée et la vue dégagée, elle s'arrête et
+tire sur le joueur ; sinon elle s'approche. `explosion` en fait une bombe : au contact,
+elle allume sa mèche et explose une seconde et demie plus tard si le joueur ne s'est pas
+éloigné de plus de 7 blocs. L'une ou l'autre rend hostile une créature paisible.
+
+```lua
+-- Un archer de glace : un squelette qui tire des boules de neige, vite et de loin
+server.entities.create("monserveur:archer_glace", {
+  looks = "minecraft:stray", name = "Archer de glace", health = 30,
+  projectile = "minecraft:snowball", projectileDamage = 2, shootInterval = 0.8, shootRange = 24,
+})
+
+-- Un mage : un villageois qui lance des boules de feu (elles explosent en touchant)
+server.entities.create("monserveur:mage", {
+  looks = "minecraft:villager", name = "Mage", hostile = true,
+  projectile = "minecraft:small_fireball", projectileDamage = 4, shootInterval = 3,
+})
+
+-- Une vache piégée
+server.entities.create("monserveur:vache_piegee", { looks = "minecraft:cow", explosion = 2 })
+```
+
+- Un projectile dont le nom contient `fireball` file droit et **explose** à l'impact ; les
+  autres retombent comme une flèche et blessent ce qu'ils touchent.
+- `projectile` attend une entité que le jeu sait afficher (`arrow`, `snowball`, `egg`,
+  `small_fireball`, `fireball`, `thrown_trident`, `llama_spit`…). Un nom inconnu du jeu
+  ne s'affiche pas, mais blesse quand même.
+- `mob-griefing=false` dans `server.properties` : les explosions blessent sans rien casser.
+
+### Tirer un projectile depuis un plugin
+
+```lua
+-- nom, point de départ (x, y, z), direction (dx, dy, dz), réglages
+server.entities.shoot("minecraft:arrow", x, y + 1.6, z, 0, 0, 1, { speed = 1.6, damage = 3 })
+```
+
+| Réglage | Sens | Par défaut |
+|---|---|---|
+| `speed` | vitesse, en blocs par tick (de 0,05 à 4) | 1,6 (une flèche) |
+| `damage` | dégâts, en points de vie | 3 |
+| `gravity` | ce qu'il perd vers le bas à chaque tick ; 0 : il file droit | 0,05 |
+| `explosion` | puissance de l'explosion à l'impact ; 0 : aucune | 0 |
+
+La direction n'a pas besoin d'être de longueur 1. Le projectile vole dix secondes au plus,
+et s'arrête sur le premier bloc plein, joueur (en survie ou aventure) ou créature touché.
+
+Deux événements suivent les projectiles et les explosions :
+
+| Événement | Annulable | Méthodes | Modifiable |
+|---|---|---|---|
+| `ProjectileHitEvent` | oui (il disparaît sans blesser ni exploser) | `getProjectile()`, `getX()`, `getY()`, `getZ()`, `getTarget()` (`"block"`, `"player"`, `"creature"`), `getPlayer()`, `getEntity()` | — |
+| `ExplosionEvent` | oui (rien n'explose) | `getX()`, `getY()`, `getZ()`, `getPower()` | `setPower(n)` |
+
+```lua
+-- Une baguette : clic avec un bâton, une boule de feu part là où on regarde
+local Baguette = {}
+function Baguette:onPlayerItemUse(event)
+  local joueur = event:getPlayer()
+  if event:getItem().name ~= "minecraft:stick" then return end
+  local x, y, z = joueur:getPosition()
+  -- Le regard, d'après les angles du joueur
+  local lacet, tangage = math.rad(joueur:getYaw()), math.rad(joueur:getPitch())
+  local dx, dy, dz = -math.sin(lacet) * math.cos(tangage), -math.sin(tangage), math.cos(lacet) * math.cos(tangage)
+  server.entities.shoot("minecraft:small_fireball", x + dx, y + 1.5 + dy, z + dz, dx, dy, dz, { speed = 1, gravity = 0, explosion = 1.5 })
+end
+server.registerEvents(Baguette)
 ```
 
 ### Lui donner sa propre apparence
@@ -930,8 +1064,8 @@ Trois événements concernent toutes les créatures, celles du jeu comme celles 
   (un loup, une chute).
 - `getCause()` vaut `"PLAYER_ATTACK"` ou `"CREATURE_ATTACK"`.
 - `CreatureSpawnEvent` est appelé pour les créatures qu'on fait apparaître (`summon`,
-  `server.entities.spawn`), pas encore pour celles que le monde place tout seul ni pour
-  les naissances.
+  `server.entities.spawn`) et pour les monstres de la nuit ; pas encore pour les animaux
+  que le monde place tout seul ni pour les naissances.
 
 `getEntity()` rend la créature :
 
@@ -994,7 +1128,8 @@ de l'événement, et `setHealth` ou `setNameTag` sont appliqués juste après le
   celle-ci ; le petit est une créature ordinaire de l'espèce.
 - Elles n'apparaissent pas toutes seules dans le monde : c'est le plugin qui les fait
   apparaître.
-- Pas encore possible : un comportement nouveau (créature hostile, attaques).
+- Pas encore possible : attaques à distance (flèches, projectiles), créatures qui volent
+  ou nagent, et créatures créées qui apparaissent d'elles-mêmes.
 
 ## Écrire ses plugins dans VS Code
 
@@ -1400,8 +1535,7 @@ prend environ 0,6 milliseconde par chunk, contre 3 pour le terrain du jeu : pré
 
 L'API suit l'avancement du serveur. Ne sont pas encore accessibles aux plugins :
 
-- pour les créatures créées : des comportements nouveaux, comme l'attaque (voir « Créer
-  des créatures ») ;
+- pour les créatures : attaques à distance, vol, et apparition naturelle des monstres ;
 - un événement de déplacement (`PlayerMoveEvent`), trop fréquent pour le fil des plugins ;
 - le contenu des inventaires (seuls `joueur:give` et `joueur:getItemInHand` existent) ;
 - les entités autres que les joueurs et les PNJ (animaux, monstres) ;

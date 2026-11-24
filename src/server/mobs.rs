@@ -57,6 +57,22 @@ pub(super) enum Species {
     Cat,
     Villager,
     IronGolem,
+    /// Monstres : ils s'en prennent aux joueurs qu'ils voient
+    Zombie,
+    Spider,
+    Skeleton,
+    Stray,
+    Creeper,
+    Husk,
+    Drowned,
+    ZombieVillager,
+    CaveSpider,
+    Silverfish,
+    WitherSkeleton,
+    Vindicator,
+    Pillager,
+    Enderman,
+    Slime,
 }
 
 /// Basalt sait-il faire vivre cette créature du jeu (`minecraft:cow`) ?
@@ -117,7 +133,7 @@ const WOLF_TAMED_HEALTH: f32 = 40.0;
 
 impl Species {
     const FARM: [Species; 4] = [Species::Cow, Species::Pig, Species::Sheep, Species::Chicken];
-    const ALL: [Species; 15] = [
+    const ALL: [Species; 30] = [
         Species::Cow,
         Species::Pig,
         Species::Sheep,
@@ -133,7 +149,104 @@ impl Species {
         Species::Cat,
         Species::Villager,
         Species::IronGolem,
+        Species::Zombie,
+        Species::Spider,
+        Species::Skeleton,
+        Species::Stray,
+        Species::Creeper,
+        Species::Husk,
+        Species::Drowned,
+        Species::ZombieVillager,
+        Species::CaveSpider,
+        Species::Silverfish,
+        Species::WitherSkeleton,
+        Species::Vindicator,
+        Species::Pillager,
+        Species::Enderman,
+        Species::Slime,
     ];
+
+    /// Monstre : (dégâts d'un coup, distance à laquelle il repère un joueur, son nom dans le
+    /// message de mort). None pour une créature paisible.
+    fn hostile(self) -> Option<(f32, f32, &'static str)> {
+        match self {
+            Species::Zombie => Some((3.0, 24.0, "un zombie")),
+            Species::Spider => Some((2.0, 16.0, "une araignée")),
+            Species::Skeleton => Some((2.0, 16.0, "un squelette")),
+            Species::Stray => Some((2.0, 16.0, "un vagabond")),
+            Species::Creeper => Some((0.0, 16.0, "un creeper")),
+            Species::Husk => Some((3.0, 24.0, "un zombie momifié")),
+            Species::Drowned => Some((3.0, 24.0, "un noyé")),
+            Species::ZombieVillager => Some((3.0, 24.0, "un zombie-villageois")),
+            Species::CaveSpider => Some((2.0, 16.0, "une araignée venimeuse")),
+            Species::Silverfish => Some((1.0, 16.0, "un poisson d'argent")),
+            Species::WitherSkeleton => Some((8.0, 16.0, "un wither squelette")),
+            Species::Vindicator => Some((13.0, 16.0, "un vindicateur")),
+            Species::Pillager => Some((3.0, 16.0, "un pillard")),
+            Species::Enderman => Some((7.0, 32.0, "un enderman")),
+            Species::Slime => Some((2.0, 16.0, "un slime")),
+            _ => None,
+        }
+    }
+
+    /// Prend feu au soleil, comme le zombie et le squelette du jeu.
+    fn burns(self) -> bool {
+        matches!(self, Species::Zombie | Species::Skeleton | Species::Stray | Species::Drowned | Species::ZombieVillager)
+    }
+
+    /// Tireur : (projectile, dégâts, ticks entre deux tirs, portée en blocs).
+    fn ranged(self) -> Option<(&'static str, f32, u32, f32)> {
+        match self {
+            Species::Skeleton | Species::Stray => Some(("minecraft:arrow", 3.0, 40, 15.0)),
+            Species::Pillager => Some(("minecraft:arrow", 4.0, 50, 12.0)),
+            _ => None,
+        }
+    }
+
+    /// Multiplicateur de vitesse en poursuite (« speed_multiplier » de l'attaque dans les
+    /// fichiers du jeu) : la plupart des monstres poursuivent à leur vitesse de marche.
+    fn chase(self) -> f32 {
+        match self {
+            Species::Creeper | Species::WitherSkeleton => 1.25,
+            _ => 1.0,
+        }
+    }
+
+    /// Neutre : il ne s'en prend qu'au joueur qui l'a frappé (l'enderman).
+    fn neutral(self) -> bool {
+        self == Species::Enderman
+    }
+
+    /// Points d'armure naturels (ceux du jeu) : chaque point retire 4 % des dégâts reçus.
+    fn armor(self) -> u32 {
+        match self {
+            Species::Zombie | Species::Husk | Species::Drowned | Species::ZombieVillager => 2,
+            Species::WitherSkeleton => 4,
+            _ => 0,
+        }
+    }
+
+    /// Grimpe aux murs, comme les araignées du jeu.
+    fn climbs(self) -> bool {
+        matches!(self, Species::Spider | Species::CaveSpider)
+    }
+
+    /// Explose au contact : la puissance de l'explosion (3 pour le creeper).
+    fn explodes(self) -> Option<f32> {
+        (self == Species::Creeper).then_some(3.0)
+    }
+
+    /// Ce qu'il tient en main (montré aux joueurs).
+    fn held(self) -> Option<&'static str> {
+        match self {
+            Species::Skeleton | Species::Stray => Some("minecraft:bow"),
+            Species::WitherSkeleton => Some("minecraft:stone_sword"),
+            Species::Vindicator => Some("minecraft:iron_axe"),
+            Species::Pillager => Some("minecraft:crossbow"),
+            _ => None,
+        }
+    }
+
 
     fn id(self) -> &'static str {
         match self {
@@ -149,6 +262,21 @@ impl Species {
             Species::Donkey => "minecraft:donkey",
             Species::Mule => "minecraft:mule",
             Species::Wolf => "minecraft:wolf",
+            Species::Zombie => "minecraft:zombie",
+            Species::Spider => "minecraft:spider",
+            Species::Skeleton => "minecraft:skeleton",
+            Species::Stray => "minecraft:stray",
+            Species::Creeper => "minecraft:creeper",
+            Species::Husk => "minecraft:husk",
+            Species::Drowned => "minecraft:drowned",
+            Species::ZombieVillager => "minecraft:zombie_villager_v2",
+            Species::CaveSpider => "minecraft:cave_spider",
+            Species::Silverfish => "minecraft:silverfish",
+            Species::WitherSkeleton => "minecraft:wither_skeleton",
+            Species::Vindicator => "minecraft:vindicator",
+            Species::Pillager => "minecraft:pillager",
+            Species::Enderman => "minecraft:enderman",
+            Species::Slime => "minecraft:slime",
             Species::Cat => "minecraft:cat",
             Species::Villager => "minecraft:villager_v2",
             Species::IronGolem => "minecraft:iron_golem",
@@ -157,6 +285,9 @@ impl Species {
     fn from_id(s: &str) -> Option<Species> {
         if s == "minecraft:villager" {
             return Some(Species::Villager);
+        }
+        if s == "minecraft:zombie_villager" {
+            return Some(Species::ZombieVillager);
         }
         Species::ALL.into_iter().find(|k| k.id() == s)
     }
@@ -221,8 +352,15 @@ impl Species {
             Species::Llama | Species::Horse | Species::Donkey | Species::Mule => 30.0,
             // (apprivoisé ; sauvage : 8)
             Species::Wolf => WOLF_TAMED_HEALTH,
-            Species::Villager => 20.0,
+            Species::Villager | Species::Zombie | Species::Skeleton | Species::Stray | Species::Creeper | Species::Husk | Species::Drowned | Species::ZombieVillager | Species::WitherSkeleton => 20.0,
             Species::IronGolem => 100.0,
+            Species::Spider => 16.0,
+            Species::CaveSpider => 12.0,
+            Species::Silverfish => 8.0,
+            Species::Vindicator | Species::Pillager => 24.0,
+            Species::Enderman => 40.0,
+            // (taille 1 ; une plus grosse a sa taille au carré)
+            Species::Slime => 1.0,
         }
     }
     /// Largeur et hauteur de la boîte de collision d'un adulte (celles du jeu)
@@ -237,8 +375,16 @@ impl Species {
             Species::Horse | Species::Donkey | Species::Mule => (1.4, 1.6),
             Species::Wolf => (0.6, 0.8),
             Species::Cat => (0.6, 0.7),
-            Species::Villager => (0.6, 1.9),
+            Species::Villager | Species::Zombie | Species::Skeleton | Species::Stray | Species::Husk | Species::Drowned | Species::ZombieVillager | Species::Vindicator | Species::Pillager => (0.6, 1.9),
             Species::IronGolem => (1.4, 2.9),
+            Species::Spider => (1.4, 0.9),
+            Species::Creeper => (0.6, 1.8),
+            Species::CaveSpider => (0.7, 0.5),
+            Species::Silverfish => (0.4, 0.3),
+            Species::WitherSkeleton => (0.72, 2.01),
+            Species::Enderman => (0.6, 2.9),
+            // (taille 1 ; multipliée par sa taille)
+            Species::Slime => (0.52, 0.52),
         }
     }
     /// Taille d'affichage (« minecraft:scale » des fichiers du jeu) : le lapin est un petit
@@ -256,7 +402,10 @@ impl Species {
     /// Vitesse du jeu (« minecraft:movement ») ; celle du cheval est tirée à sa naissance
     fn movement(self) -> f32 {
         match self {
-            Species::Rabbit | Species::Wolf | Species::Cat => 0.3,
+            Species::Rabbit | Species::Wolf | Species::Cat | Species::Spider | Species::CaveSpider | Species::Enderman => 0.3,
+            Species::Vindicator | Species::Pillager => 0.35,
+            Species::Zombie | Species::Husk | Species::Drowned | Species::ZombieVillager => 0.23,
+            Species::Creeper => 0.2,
             Species::Goat => 0.4,
             Species::Villager => 0.5,
             Species::Donkey | Species::Mule => 0.175,
@@ -276,7 +425,7 @@ impl Species {
             Species::Wolf => (0.8, 1.0, 1.0, 1.0),
             Species::Cat => (0.8, 1.33, 0.5, 1.0),
             Species::Villager => (0.6, 1.0, 0.6, 0.6),
-            Species::IronGolem => (0.6, 1.0, 1.0, 1.0),
+            Species::IronGolem | Species::Zombie | Species::Spider | Species::Skeleton | Species::Stray | Species::Creeper | Species::Husk | Species::Drowned | Species::ZombieVillager | Species::CaveSpider | Species::Silverfish | Species::WitherSkeleton | Species::Vindicator | Species::Pillager | Species::Enderman | Species::Slime => (0.6, 1.0, 1.0, 1.0),
         }
     }
     /// Ce qui l'attire : il suit le joueur qui le tient
@@ -291,7 +440,7 @@ impl Species {
             Species::Horse | Species::Donkey | Species::Mule => &["golden_apple", "enchanted_golden_apple", "golden_carrot"],
             Species::Wolf => &[],
             Species::Cat => &["cod", "salmon"],
-            Species::Villager | Species::IronGolem => &[],
+            Species::Villager | Species::IronGolem | Species::Zombie | Species::Spider | Species::Skeleton | Species::Stray | Species::Creeper | Species::Husk | Species::Drowned | Species::ZombieVillager | Species::CaveSpider | Species::Silverfish | Species::WitherSkeleton | Species::Vindicator | Species::Pillager | Species::Enderman | Species::Slime => &[],
         }
     }
     /// Ce qui le rend amoureux (les montures doivent d'abord être apprivoisées ; la mule
@@ -317,7 +466,7 @@ impl Species {
             Species::Rabbit => &[("carrot", 0.1), ("golden_carrot", 0.1), ("dandelion", 0.1)],
             Species::Wolf => &WOLF_GROW,
             Species::Cat => &[("cod", 0.1), ("salmon", 0.1)],
-            Species::Villager | Species::IronGolem => &[],
+            Species::Villager | Species::IronGolem | Species::Zombie | Species::Spider | Species::Skeleton | Species::Stray | Species::Creeper | Species::Husk | Species::Drowned | Species::ZombieVillager | Species::CaveSpider | Species::Silverfish | Species::WitherSkeleton | Species::Vindicator | Species::Pillager | Species::Enderman | Species::Slime => &[],
         }
     }
     /// Ce qui le soigne : (objet, points de vie rendus)
@@ -342,6 +491,17 @@ impl Species {
             Species::Chicken => &[("minecraft:chicken", 1, 1), ("minecraft:feather", 0, 2)],
             Species::Rabbit => &[("minecraft:rabbit", 0, 1), ("minecraft:rabbit_hide", 0, 1)],
             Species::Llama | Species::Horse | Species::Donkey | Species::Mule => &[("minecraft:leather", 0, 2)],
+            Species::Zombie => &[("minecraft:rotten_flesh", 0, 2)],
+            Species::Spider | Species::CaveSpider => &[("minecraft:string", 0, 2)],
+            Species::Skeleton | Species::Stray => &[("minecraft:bone", 0, 2), ("minecraft:arrow", 0, 2)],
+            Species::Creeper => &[("minecraft:gunpowder", 0, 2)],
+            Species::Husk | Species::Drowned | Species::ZombieVillager => &[("minecraft:rotten_flesh", 0, 2)],
+            Species::WitherSkeleton => &[("minecraft:coal", 0, 1), ("minecraft:bone", 0, 2)],
+            Species::Vindicator => &[("minecraft:emerald", 0, 1)],
+            Species::Pillager => &[("minecraft:arrow", 0, 2)],
+            Species::Silverfish => &[],
+            Species::Enderman => &[("minecraft:ender_pearl", 0, 1)],
+            Species::Slime => &[("minecraft:slime_ball", 0, 2)],
             Species::Goat | Species::Wolf => &[],
             Species::Cat => &[("minecraft:string", 0, 2)],
             Species::Villager => &[],
@@ -629,6 +789,19 @@ pub(super) struct Mob {
     custom_box: Option<(f32, f32)>,
     /// Nom sous lequel elle est annoncée au jeu quand son apparence vient du pack de ressources
     ident: Option<String>,
+    /// Monstre apparu de lui-même la nuit : il disparaît quand plus aucun joueur n'est près
+    natural: bool,
+    /// En feu (un zombie au soleil)
+    burning: bool,
+    /// Rendue hostile (ou paisible) par sa fiche : Some(None) paisible, Some(Some(…)) hostile
+    /// avec ses dégâts, sa vue et son nom dans le message de mort ; None : comme son espèce
+    custom_hostile: Option<Option<(f32, f32, &'static str)>>,
+    /// Tir voulu par sa fiche : (projectile, dégâts, ticks entre deux tirs, portée)
+    custom_ranged: Option<(String, f32, u32, f32)>,
+    /// Explosion voulue par sa fiche (puissance)
+    custom_explode: Option<f32>,
+    /// Creeper : ticks écoulés depuis qu'il a allumé sa mèche (0 : éteinte)
+    fuse: u8,
     /// Nom affiché au-dessus d'elle, et s'il reste visible de loin
     label: String,
     label_always: bool,
@@ -727,14 +900,20 @@ impl Mob {
     /// (indicateur 76) pour un villageois couché.
     fn flags2(&self) -> i64 {
         const BASE: i64 = -9_223_372_036_821_221_376;
+        let mut f = BASE;
         if self.asleep.is_some() {
-            BASE | (1 << 12)
-        } else {
-            BASE
+            f |= 1 << 12;
         }
+        f
     }
     fn flags(&self) -> i64 {
         let mut f = bedrock::MOB_FLAGS;
+        if self.burning {
+            f |= 1; // en feu
+        }
+        if self.fuse > 0 {
+            f |= 1 << 10; // mèche allumée : le creeper gonfle et clignote
+        }
         if self.baby() {
             f |= bedrock::FLAG_BABY;
         }
@@ -811,8 +990,18 @@ impl Mob {
     fn driven_by_rider(&self) -> bool {
         self.rider.is_some() && self.tamed && self.saddled && self.species.steerable()
     }
-    fn size(&self) -> (f32, f32) {
+    /// Slime : sa taille (1, 2 ou 4).
+    fn slime_size(&self) -> f32 {
+        if self.species == Species::Slime { self.variant.clamp(1, 4) as f32 } else { 1.0 }
+    }
+    /// Taille d'affichage : celle de l'espèce et de la fiche du plugin (le jeu grossit
+    /// lui-même un slime d'après sa taille, donnée comme variante).
+    fn shown_scale(&self) -> f32 {
+        self.species.scale(self.baby()) * self.custom_scale
+    }
+    pub(super) fn size(&self) -> (f32, f32) {
         let (w, h) = self.species.size();
+        let (w, h) = (w * self.slime_size(), h * self.slime_size());
         // (boîte de la fiche si le plugin en a donné une ; sinon celle de l'espèce, à sa taille)
         let (w, h) = self.custom_box.unwrap_or((w * self.custom_scale, h * self.custom_scale));
         if self.baby() {
@@ -832,6 +1021,18 @@ impl Mob {
         self.custom_scale = def.scale;
         self.custom_box = def.hitbox;
         self.ident = def.own_model.then(|| def.name.clone());
+        // Hostile ou paisible d'après la fiche ; ses dégâts et sa vue, ou ceux de l'espèce
+        let natural = self.species.hostile();
+        self.custom_hostile = match def.hostile {
+            Some(true) => Some(Some((def.attack_damage.or(natural.map(|n| n.0)).unwrap_or(3.0), def.sight.or(natural.map(|n| n.1)).unwrap_or(16.0), def.cause))),
+            Some(false) => Some(None),
+            // (une vache qui tire ou qui explose s'en prend forcément aux joueurs)
+            None if natural.is_none() && (def.ranged.is_some() || def.explosion.is_some()) => Some(Some((def.attack_damage.unwrap_or(0.0), def.sight.unwrap_or(16.0), def.cause))),
+            None if def.attack_damage.is_some() || def.sight.is_some() => natural.map(|n| Some((def.attack_damage.unwrap_or(n.0), def.sight.unwrap_or(n.1), def.cause))),
+            None => None,
+        };
+        self.custom_ranged = def.ranged.clone();
+        self.custom_explode = def.explosion;
         self.label = def.display.clone();
         self.label_always = def.name_visible;
         if let Some(health) = def.health {
@@ -842,6 +1043,21 @@ impl Mob {
             self.health = self.health.min(health);
         }
     }
+    /// Monstre : (dégâts, vue, nom dans le message de mort), d'après sa fiche ou son espèce.
+    fn hostile(&self) -> Option<(f32, f32, &'static str)> {
+        match self.custom_hostile {
+            Some(own) => own,
+            None => self.species.hostile(),
+        }
+    }
+    /// Tireur : (projectile, dégâts, ticks entre deux tirs, portée), d'après sa fiche ou son espèce.
+    fn ranged(&self) -> Option<(String, f32, u32, f32)> {
+        self.custom_ranged.clone().or_else(|| self.species.ranged().map(|r| (r.0.to_string(), r.1, r.2, r.3)))
+    }
+    /// Explose au contact : la puissance, d'après sa fiche ou son espèce.
+    fn explodes(&self) -> Option<f32> {
+        self.custom_explode.or(self.species.explodes())
+    }
     fn hitbox(&self) -> (f32, f32) {
         let adult = self.species.scale(false);
         match self.custom_box {
@@ -850,7 +1066,7 @@ impl Mob {
             Some((w, h)) => (w / (adult * self.custom_scale), h / (adult * self.custom_scale)),
             None => {
                 let (w, h) = self.species.size();
-                (w / adult, h / adult)
+                (w * self.slime_size() / adult, h * self.slime_size() / adult)
             }
         }
     }
@@ -859,6 +1075,8 @@ impl Mob {
 /// Au plus tant de créatures en mémoire à la fois (au-delà, les terres neuves n'en reçoivent
 /// plus ; celles qui sont enregistrées reviennent toujours)
 const MAX_MOBS: usize = 4000;
+/// Monstres apparus d'eux-mêmes autour d'un joueur, au plus.
+const MONSTERS_PER_PLAYER: usize = 8;
 /// Rayon d'affichage
 const VIEW: f32 = 80.0;
 /// Chunks examinés autour de chaque joueur pour y installer des animaux
@@ -877,6 +1095,8 @@ pub(super) struct MobRecord {
     pub max_health: f32,
     /// Nom de la créature créée par un plugin (vide : une créature du jeu)
     pub custom: String,
+    /// Monstre apparu de lui-même (voir `Mob::natural`)
+    pub natural: bool,
     pub mark: i32,
     pub tamed: bool,
     pub move_speed: f32,
@@ -921,6 +1141,7 @@ impl MobRecord {
             ("sheared".into(), Json::Bool(self.sheared)),
             ("max_health".into(), n(self.max_health)),
             ("custom".into(), Json::Str(self.custom.clone())),
+            ("natural".into(), Json::Bool(self.natural)),
             ("mark".into(), Json::Num(self.mark as f64)),
             ("tamed".into(), Json::Bool(self.tamed)),
             ("speed".into(), Json::Num((self.move_speed as f64 * 10000.0).round() / 10000.0)),
@@ -968,6 +1189,7 @@ impl MobRecord {
             health: (num("health").unwrap_or(max_health as f64) as f32).clamp(0.5, max_health),
             max_health,
             custom,
+            natural: v.get("natural").and_then(|s| s.as_bool()).unwrap_or(false),
             mark: num("mark").unwrap_or(0.0) as i32,
             tamed: v.get("tamed").and_then(|s| s.as_bool()).unwrap_or(false),
             move_speed: num("speed").unwrap_or(0.0) as f32,
@@ -1025,6 +1247,7 @@ impl Mob {
             sheared: self.sheared,
             max_health: self.max_health,
             custom: self.custom.and_then(crate::entity::custom::get).map(|def| def.name).unwrap_or_default(),
+            natural: self.natural,
             mark: self.mark,
             tamed: self.tamed,
             move_speed: self.move_speed,
@@ -1119,10 +1342,7 @@ impl Server {
                         if self.mobs.len() >= MAX_MOBS {
                             break;
                         }
-                        let spot = [(2, 0), (0, 2), (-2, 0), (0, -2), (2, 2), (-2, -2), (3, 0), (0, 3)].iter().find_map(|&(dx, dz)| {
-                            let (x, z) = (bell.0 + dx, bell.2 + dz);
-                            self.surface_y(x, z, bell.1 + 2).filter(|y| (*y - bell.1).abs() <= 3).map(|y| (x, y, z))
-                        });
+                        let spot = self.golem_spot(bell);
                         if let Some((x, y, z)) = spot {
                             let id = self.add_mob(Species::IronGolem, (x as f32 + 0.5, y as f32, z as f32 + 0.5));
                             if let Some(m) = self.mobs.get_mut(&id) {
@@ -1344,6 +1564,87 @@ impl Server {
         }
     }
 
+    /// Ce qu'un bloc fait à la lumière (voir `world/light.rs`).
+    pub(super) fn light_cell(&self, state: u32) -> crate::world::light::Cell {
+        use crate::world::light::Cell;
+        let gen = self.world.generator();
+        if state == gen.blocks.air {
+            return Cell::CLEAR;
+        }
+        if state == gen.blocks.water {
+            return Cell { emit: 0, damp: 2 };
+        }
+        let Some(d) = self.data.as_ref() else { return Cell::OPAQUE };
+        let Some(name) = d.block_name(state) else { return Cell::OPAQUE };
+        let short = name.strip_prefix("minecraft:").unwrap_or(name);
+        let props = d.block_props(name);
+        let emit = props.map(|p| p.light).unwrap_or(0);
+        // Les feuilles, la toile et la glace retiennent un peu ; le reste laisse passer ou arrête
+        let damp = if short.contains("leaves") || short == "web" || short == "ice" || short == "frosted_ice" {
+            1
+        } else if short.contains("water") {
+            2
+        } else {
+            match props {
+                Some(p) if p.opacity >= 1.0 => 15,
+                Some(_) => 0,
+                // Bloc absent de la table du jeu : ce que l'on traverse laisse passer
+                None if self.npc_passable(state) => 0,
+                None => 15,
+            }
+        };
+        Cell { emit, damp }
+    }
+
+    /// Lumière reçue à un endroit : celle des blocs lumineux, et celle du ciel en plein jour.
+    pub(super) fn light_at(&self, x: i32, y: i32, z: i32) -> crate::world::light::Light {
+        // Les mêmes blocs reviennent sans cesse : leur fiche n'est lue qu'une fois par question
+        let known: std::cell::RefCell<HashMap<u32, crate::world::light::Cell>> = std::cell::RefCell::new(HashMap::new());
+        let of = |s: u32| *known.borrow_mut().entry(s).or_insert_with(|| self.light_cell(s));
+        let air = self.world.generator().blocks.air;
+        let cell = |x: i32, y: i32, z: i32| of(self.mob_get(x, y, z));
+        let top = |x: i32, z: i32| {
+            if !self.world.is_ready(x >> 4, z >> 4) {
+                return crate::world::MAX_Y;
+            }
+            self.world.highest(x, z, &|s| s != air && of(s).damp > 0)
+        };
+        crate::world::light::light_at((x, y, z), &cell, &top)
+    }
+
+    /// Un monstre peut-il apparaître ici ? Aucune lumière de bloc (une torche suffit à
+    /// l'empêcher), et peu de lumière du ciel : la nuit partout, le jour à l'abri seulement.
+    fn dark_for_monsters(&self, x: i32, y: i32, z: i32, night: bool) -> bool {
+        // (en plein jour et à ciel ouvert : inutile de chercher des torches)
+        let air = self.world.generator().blocks.air;
+        if !night && y > self.world.highest(x, z, &|s| s != air && self.light_cell(s).damp > 0) {
+            return false;
+        }
+        let light = self.light_at(x, y, z);
+        light.block == 0 && light.sky_now(night) <= 7
+    }
+
+    /// Premier sol sous une hauteur donnée (12 blocs au plus), avec deux blocs libres
+    /// au-dessus : un endroit où tenir debout dans une grotte.
+    fn floor_below(&self, x: i32, from: i32, z: i32) -> Option<i32> {
+        let water = self.world.generator().blocks.water;
+        let top = from.min(crate::world::MAX_Y - 2);
+        let bottom = (from - 12).max(crate::world::MIN_Y + 1);
+        // (parti de la roche : il n'y a pas de sol à chercher)
+        if !self.mob_free(x, top, z) || !self.world.is_ready(x >> 4, z >> 4) {
+            return None;
+        }
+        let mut y = top;
+        while y > bottom {
+            if !self.mob_free(x, y - 1, z) {
+                let dry = self.mob_get(x, y, z) != water && self.mob_get(x, y - 1, z) != water;
+                return (dry && self.mob_free(x, y + 1, z)).then_some(y);
+            }
+            y -= 1;
+        }
+        None
+    }
+
     /// Un bloc que l'on traverse (air, herbe haute, fleur, eau…).
     fn mob_free(&self, x: i32, y: i32, z: i32) -> bool {
         let s = self.mob_get(x, y, z);
@@ -1525,6 +1826,12 @@ impl Server {
             custom_scale: 1.0,
             custom_box: None,
             ident: None,
+            custom_hostile: None,
+            custom_ranged: None,
+            custom_explode: None,
+            fuse: 0,
+            natural: false,
+            burning: false,
             label: String::new(),
             label_always: false,
             mark: 0,
@@ -1583,7 +1890,7 @@ impl Server {
     fn mob_meta(m: &Mob, holder: i64) -> Vec<(u32, bedrock::Meta)> {
         let (w, h) = m.hitbox();
         let mut meta = bedrock::mob_metadata(w, h, m.variant, m.color, m.flags());
-        let scale = m.species.scale(m.baby()) * m.custom_scale;
+        let scale = m.shown_scale();
         // Nom d'une créature créée par un plugin (données 4 : le nom ; 81 : toujours visible)
         if !m.label.is_empty() {
             for (k, v) in [(4u32, bedrock::Meta::Text(m.label.clone())), (81, bedrock::Meta::Byte(m.label_always as u8))] {
@@ -1665,7 +1972,7 @@ impl Server {
     /// tondu, amoureux).
     fn mob_changed(&mut self, id: i64) {
         let Some(m) = self.mobs.get(&id) else { return };
-        let scale = m.species.scale(m.baby()) * m.custom_scale;
+        let scale = m.shown_scale();
         let (w, h) = m.hitbox();
         let holder = self.holder_id(m);
         let packet = bedrock::set_actor_data(
@@ -1696,6 +2003,8 @@ impl Server {
         let refused_attributes = self.refused_extras.contains(&bedrock::ID_UPDATE_ATTRIBUTES);
         // Identifiants des armures et tapis portés
         let item_ids: HashMap<String, i16> = self.mobs.values().filter_map(|m| m.body_item()).filter_map(|n| self.item_id(n).map(|id| (n.to_string(), id))).collect();
+        // Ce que les monstres tiennent en main (arc, épée, hache)
+        let held_ids: HashMap<&'static str, i16> = Species::ALL.into_iter().filter_map(|s| s.held()).filter_map(|n| self.item_id(n).map(|id| (n, id))).collect();
         let holder_of = |m: &Mob| match m.leash {
             Some(Leash::Player(a)) => ids.get(&a).copied().unwrap_or(-1),
             Some(Leash::Knot(k, _)) => k,
@@ -1730,6 +2039,9 @@ impl Server {
                         // Monture : sa vitesse et son saut (le jeu du cavalier s'en sert)
                         if m.species.mount() && !refused_attributes {
                             out.push((*addr, bedrock::ID_UPDATE_ATTRIBUTES, bedrock::mount_attributes(m.id, m.movement(), m.jump)));
+                        }
+                        if let Some(held) = m.species.held().and_then(|n| held_ids.get(n)) {
+                            out.push((*addr, bedrock::ID_MOB_EQUIPMENT, bedrock::mob_equipment(m.id, (*held, 1, 0), 0)));
                         }
                         // Armure du cheval, tapis du lama
                         if let Some(body) = m.body_item().and_then(|n| item_ids.get(n)) {
@@ -1803,6 +2115,7 @@ impl Server {
             .collect();
         self.villager_doors();
         let ids: Vec<i64> = self.mobs.keys().copied().collect();
+        let crowd = self.crowd();
         let tick = self.tick;
         // Distance de simulation, comme le jeu : au-delà, les créatures restent figées
         let active = (self.cfg.tick_distance * 16) as f32;
@@ -1933,6 +2246,13 @@ impl Server {
             let had_love = m.love > 0;
             let grew = self.mob_age(&mut m);
             self.mob_think(&mut m, &players, leash_to);
+            // Les corps ne se traversent pas : ceux qui se chevauchent s'écartent (sauf deux
+            // amoureux, qui doivent se rejoindre)
+            if !m.sitting && m.love == 0 {
+                let (px, pz) = Self::push_from(&crowd, &m);
+                m.vel.0 += px;
+                m.vel.2 += pz;
+            }
             let before = m.pos;
             self.mob_physics(&mut m);
             // Chèvre arrêtée net par un bloc en pleine charge : une corne peut tomber
@@ -1977,6 +2297,13 @@ impl Server {
                 self.mob_changed(id); // l'envie passe
             }
             self.mob_habits(id);
+        }
+        // Les creepers arrivés au bout de leur mèche
+        for (id, at, power, cause) in std::mem::take(&mut self.booms) {
+            if self.mobs.contains_key(&id) {
+                self.remove_mob(id);
+                self.explode(at, power, Some(id), cause);
+            }
         }
         self.breed();
         if self.tick % 40 == 7 {
@@ -2137,7 +2464,15 @@ impl Server {
         let mut stop_at = 0.4;
         let tempting: &[&str] = if m.species.mount() && !m.tamed { &[] } else { m.species.tempt() };
         // Loup : assis, à la poursuite d'une proie, ou sur les talons de son maître
-        let wolf = if m.species.pet() { self.wolf_think(m) } else if m.species == Species::IronGolem { self.golem_think(m) } else { None };
+        let wolf = if let Some((damage, sight, name)) = m.hostile() {
+            self.hostile_think(m, damage, sight, name)
+        } else if m.species.pet() {
+            self.wolf_think(m)
+        } else if m.species == Species::IronGolem {
+            self.golem_think(m)
+        } else {
+            None
+        };
         // Villageois : ce que l'heure lui dicte (sauf en pleine fuite)
         let villager = if m.species == Species::Villager && m.panic == 0 { self.villager_think(m) } else { None };
         let near_player = |p: &(f32, f32, f32), r: f32| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2) < r * r && (p.1 - m.pos.1).abs() < 4.0;
@@ -2699,6 +3034,272 @@ impl Server {
         }
     }
 
+    /// Les monstres et la nuit, une fois par seconde :
+    ///
+    /// - la nuit, quelques monstres apparaissent à la surface autour des joueurs en survie, à
+    ///   bonne distance (de 24 à 48 blocs), jusqu'à `MONSTERS_PER_PLAYER` chacun ;
+    /// - ceux qui sont apparus ainsi disparaissent loin de tout joueur (toujours au-delà de
+    ///   128 blocs, peu à peu au-delà de 48) ;
+    /// - le jour, un zombie à ciel ouvert prend feu et perd un point de vie par seconde.
+    pub(super) fn monsters_tick(&mut self) {
+        let day_time = self.world_time().rem_euclid(24000);
+        let night = (13000..23000).contains(&day_time);
+        let players: Vec<(f32, f32, f32, bool)> =
+            self.clients.values().filter(|c| c.joined && c.stage == Stage::InGame && c.dead.is_none()).map(|c| (c.pos.0, c.pos.1 - EYE, c.pos.2, c.mode.takes_damage())).collect();
+        let nearest2 = |p: (f32, f32, f32)| players.iter().map(|q| (q.0 - p.0).powi(2) + (q.2 - p.2).powi(2)).fold(f32::MAX, f32::min);
+        // Disparition, et feu au soleil
+        let mut gone = Vec::new();
+        let mut scorched = Vec::new();
+        let mut changed = Vec::new();
+        let ids: Vec<i64> = self.mobs.iter().filter(|(_, m)| m.dead.is_none() && (m.natural || m.species.burns())).map(|(id, _)| *id).collect();
+        for id in ids {
+            let Some(m) = self.mobs.get(&id) else { continue };
+            let (pos, natural, burns, was) = (m.pos, m.natural, m.species.burns() && !m.baby(), m.burning);
+            if natural && m.leash.is_none() && m.label.is_empty() {
+                let d2 = nearest2(pos);
+                if d2 > 128.0 * 128.0 || (d2 > 48.0 * 48.0 && self.mob_rng.below(40) == 0) {
+                    gone.push(id);
+                    continue;
+                }
+            }
+            let (bx, by, bz) = (pos.0.floor() as i32, pos.1.floor() as i32, pos.2.floor() as i32);
+            let sunlit = burns && !night && !self.mob_water(pos.0, pos.1, pos.2) && (by + 2..(by + 66).min(crate::world::MAX_Y)).all(|y| self.mob_free(bx, y, bz) && self.mob_get(bx, y, bz) != self.world.generator().blocks.water);
+            if sunlit {
+                scorched.push((id, pos));
+            }
+            if sunlit != was {
+                changed.push((id, sunlit));
+            }
+        }
+        for id in gone {
+            self.remove_mob(id);
+        }
+        for (id, burning) in changed {
+            if let Some(m) = self.mobs.get_mut(&id) {
+                m.burning = burning;
+            }
+            self.mob_changed(id);
+        }
+        for (id, pos) in scorched {
+            self.hit_mob(id, pos, 1.0, Attacker::Mob(id));
+        }
+        // Apparition : là où il fait noir, autour des joueurs en survie ou en aventure.
+        // La nuit, c'est toute la surface sans torche ; le jour, les grottes.
+        if !self.cfg.spawn_monsters {
+            return;
+        }
+        for (px, py, pz, fair) in players.iter().copied() {
+            if !fair || self.mobs.len() >= MAX_MOBS {
+                continue;
+            }
+            let around = self.mobs.values().filter(|m| m.natural && m.dead.is_none() && (m.pos.0 - px).powi(2) + (m.pos.2 - pz).powi(2) < 96.0 * 96.0).count();
+            if around >= MONSTERS_PER_PLAYER {
+                continue;
+            }
+            // Douze essais par seconde et par joueur, un seul monstre au plus : en surface
+            // d'abord (la nuit), puis à des hauteurs prises au hasard, plutôt vers le bas (les
+            // grottes). La plupart tombent dans la roche et ne coûtent qu'une lecture de bloc.
+            let mut spot = None;
+            for attempt in 0..12 {
+                let angle = self.mob_rng.unit() as f32 * std::f32::consts::TAU;
+                let far = 24.0 + self.mob_rng.unit() as f32 * 24.0;
+                let (x, z) = ((px + angle.cos() * far).floor() as i32, (pz + angle.sin() * far).floor() as i32);
+                let found = if attempt == 0 && night {
+                    self.surface_y(x, z, py.floor() as i32).filter(|y| (*y as f32 - py).abs() < 24.0)
+                } else {
+                    let start = py.floor() as i32 - 32 + self.mob_rng.below(44) as i32;
+                    self.floor_below(x, start, z)
+                };
+                let Some(y) = found else { continue };
+                // (pas perché sur un arbre)
+                if self.block_name_of(self.mob_get(x, y - 1, z)).map(|n| n.contains("leaves")).unwrap_or(false) {
+                    continue;
+                }
+                // (pas au nez d'un autre joueur)
+                if nearest2((x as f32, y as f32, z as f32)) < 20.0 * 20.0 {
+                    continue;
+                }
+                // (pas à la lumière : une torche à portée, ou le jour qui entre, l'en empêche)
+                if !self.dark_for_monsters(x, y, z, night) {
+                    continue;
+                }
+                spot = Some((x, y, z));
+                break;
+            }
+            let Some((x, y, z)) = spot else { continue };
+            // Comme dans le jeu : surtout des zombies, puis squelettes, creepers et araignées
+            let species = match self.mob_rng.below(100) {
+                0..=34 => Species::Zombie,
+                35..=37 => Species::ZombieVillager,
+                38..=62 => Species::Skeleton,
+                63..=82 => Species::Creeper,
+                _ => Species::Spider,
+            };
+            let id = self.add_mob(species, (x as f32 + 0.5, y as f32, z as f32 + 0.5));
+            if let Some(m) = self.mobs.get_mut(&id) {
+                m.natural = true;
+            }
+            if self.plugins.listens("CreatureSpawnEvent") {
+                let out = self.fire("CreatureSpawnEvent", vec![("entity", self.mob_json(id))]);
+                if super::cancelled(&out) {
+                    self.remove_mob(id);
+                }
+            }
+        }
+    }
+
+    /// Monstre : il repère le joueur le plus proche (en survie ou en aventure), le poursuit
+    /// et le frappe au contact, une fois par seconde. Sans joueur en vue, il se promène.
+    fn hostile_think(&mut self, m: &mut Mob, damage: f32, sight: f32, name: &'static str) -> Option<(f32, f32)> {
+        m.bite_in = m.bite_in.saturating_sub(1);
+        let attr = m.movement();
+        let flat2 = |p: (f32, f32, f32)| (p.0 - m.pos.0).powi(2) + (p.2 - m.pos.2).powi(2);
+        let fair = |c: &Client| c.joined && c.dead.is_none() && c.mode.takes_damage();
+        let feet = |c: &Client| (c.pos.0, c.pos.1 - EYE, c.pos.2);
+        // Sa cible est-elle toujours là ? (il la suit un peu au-delà de ce qu'il voit)
+        let mut prey = match m.attack {
+            Some(Prey::Player(a)) => self.clients.get(&a).filter(|c| fair(c)).map(|c| (a, c.id, feet(c))),
+            _ => None,
+        }
+        .filter(|(_, _, p)| flat2(*p) < (sight * 1.5).powi(2));
+        if m.attack.is_some() && prey.is_none() {
+            m.attack = None;
+            m.target = None;
+        }
+        // Slime : ses dégâts suivent sa taille (le plus petit ne blesse pas)
+        let damage = if m.species == Species::Slime { [0.0, 0.0, 2.0, 3.0, 4.0][m.variant.clamp(1, 4) as usize] } else { damage };
+        // Sans cible : un coup d'œil alentour de temps en temps (toutes les demi-secondes
+        // environ, sans que tous les monstres regardent au même instant). Une créature
+        // neutre ne cherche personne : elle ne répond qu'aux coups.
+        if prey.is_none() && !m.species.neutral() && self.mob_rng.below(8) == 0 {
+            prey = self
+                .clients
+                .iter()
+                .filter(|(_, c)| fair(c) && flat2(feet(c)) < sight * sight && (c.pos.1 - EYE - m.pos.1).abs() < 8.0)
+                .min_by(|a, b| flat2(feet(a.1)).total_cmp(&flat2(feet(b.1))))
+                .map(|(a, c)| (*a, c.id, feet(c)));
+            if let Some((a, _, _)) = prey {
+                m.attack = Some(Prey::Player(a));
+                m.panic = 0;
+            }
+        }
+        let (a, pid, p) = prey?;
+        m.target = Some((p.0, p.2));
+        let (width, height) = m.size();
+        let far2 = flat2(p);
+        // Creeper : au contact il allume sa mèche, et explose une seconde et demie plus tard
+        // si sa proie ne s'est pas éloignée
+        if let Some(power) = m.explodes() {
+            if m.fuse == 0 && far2 < 3.0 * 3.0 && (p.1 - m.pos.1).abs() < 3.0 {
+                m.fuse = 1;
+                m.refresh = true;
+                self.send_near(m.pos, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound("fuse", m.pos, "", false, -1));
+            } else if m.fuse > 0 {
+                if far2 > 7.0 * 7.0 {
+                    m.fuse = 0;
+                    m.refresh = true;
+                } else {
+                    m.fuse += 1;
+                    if m.fuse >= 30 {
+                        self.booms.push((m.id, (m.pos.0, m.pos.1 + height / 2.0, m.pos.2), power, name));
+                    }
+                }
+            }
+            if m.fuse > 0 {
+                m.yaw = (-(p.0 - m.pos.0)).atan2(p.2 - m.pos.2).to_degrees().rem_euclid(360.0);
+                return Some((0.0, 64.0));
+            }
+            return Some((ground_speed(attr * m.species.chase()), 1.0));
+        }
+        // Tireur : à portée et la vue dégagée, il s'arrête et tire ; sinon il s'approche
+        if let Some((kind, shot_damage, interval, range)) = m.ranged() {
+            let eye = (m.pos.0, m.pos.1 + height * 0.85, m.pos.2);
+            let aim = (p.0, p.1 + 1.2, p.2);
+            if far2 < range * range && self.clear_shot(eye, aim) {
+                m.yaw = (-(p.0 - m.pos.0)).atan2(p.2 - m.pos.2).to_degrees().rem_euclid(360.0);
+                if m.bite_in == 0 {
+                    m.bite_in = (interval + self.mob_rng.below(20) as u32).min(60_000) as _;
+                    self.mob_shoots(m, &kind, aim, shot_damage, name);
+                }
+                return Some((ground_speed(attr), range * 0.6));
+            }
+            return Some((ground_speed(attr * m.species.chase()), 1.0));
+        }
+        let reach = 1.2 + width / 2.0;
+        if damage > 0.0 && flat2(p) < reach * reach && (p.1 - m.pos.1).abs() < height.max(1.8) && m.bite_in == 0 {
+            m.bite_in = 20;
+            self.send_to_viewers(m.id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(m.id, bedrock::EVENT_ARM_SWING, 0));
+            self.hurt(&a, damage, Cause::Mob(name));
+            // Araignée venimeuse : sept secondes de poison
+            if m.species == Species::CaveSpider {
+                if let Some(c) = self.clients.get_mut(&a) {
+                    c.poison_until = self.tick + 140;
+                }
+            }
+            // Le coup repousse un peu sa victime
+            if !self.refused_extras.contains(&bedrock::ID_SET_ACTOR_MOTION) {
+                let d = flat2(p).sqrt().max(0.01);
+                self.send(&a, bedrock::ID_SET_ACTOR_MOTION, &bedrock::set_actor_motion(pid, ((p.0 - m.pos.0) / d * 0.4, 0.36, (p.2 - m.pos.2) / d * 0.4)));
+            }
+        }
+        Some((ground_speed(attr * m.species.chase()), reach * 0.6))
+    }
+
+    /// La vue est-elle dégagée entre deux points ? (aucun bloc plein sur la ligne)
+    fn clear_shot(&self, from: (f32, f32, f32), to: (f32, f32, f32)) -> bool {
+        let (dx, dy, dz) = (to.0 - from.0, to.1 - from.1, to.2 - from.2);
+        let steps = ((dx * dx + dy * dy + dz * dz).sqrt() * 2.0).ceil().clamp(1.0, 64.0) as i32;
+        (1..steps).all(|i| {
+            let t = i as f32 / steps as f32;
+            self.mob_free((from.0 + dx * t).floor() as i32, (from.1 + dy * t).floor() as i32, (from.2 + dz * t).floor() as i32)
+        })
+    }
+
+    /// Les créatures et les joueurs, rangés par cases de deux blocs : qui pousse qui.
+    fn crowd(&self) -> HashMap<(i32, i32), Vec<(i64, (f32, f32, f32), f32, f32)>> {
+        let mut grid: HashMap<(i32, i32), Vec<(i64, (f32, f32, f32), f32, f32)>> = HashMap::new();
+        let cell = |p: (f32, f32, f32)| ((p.0 / 2.0).floor() as i32, (p.2 / 2.0).floor() as i32);
+        for m in self.mobs.values().filter(|m| m.dead.is_none() && m.asleep.is_none()) {
+            let (w, h) = m.size();
+            grid.entry(cell(m.pos)).or_default().push((m.id, m.pos, w, h));
+        }
+        for c in self.clients.values().filter(|c| c.joined && c.stage == Stage::InGame && c.dead.is_none() && !c.mode.is_spectator()) {
+            let feet = (c.pos.0, c.pos.1 - EYE, c.pos.2);
+            grid.entry(cell(feet)).or_default().push((c.id, feet, 0.6, 1.8));
+        }
+        grid
+    }
+
+    /// Poussée reçue des corps qui chevauchent celui-ci : ils s'écartent doucement, comme
+    /// dans le jeu, au lieu de se traverser.
+    fn push_from(grid: &HashMap<(i32, i32), Vec<(i64, (f32, f32, f32), f32, f32)>>, m: &Mob) -> (f32, f32) {
+        let (w, h) = m.size();
+        let (cx, cz) = ((m.pos.0 / 2.0).floor() as i32, (m.pos.2 / 2.0).floor() as i32);
+        let mut push = (0.0f32, 0.0f32);
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                let Some(list) = grid.get(&(cx + dx, cz + dz)) else { continue };
+                for (id, p, ow, oh) in list {
+                    if *id == m.id || p.1 >= m.pos.1 + h || m.pos.1 >= p.1 + oh {
+                        continue;
+                    }
+                    let room = (w + ow) / 2.0 * 0.9;
+                    let (ax, az) = (m.pos.0 - p.0, m.pos.2 - p.2);
+                    let d = (ax * ax + az * az).sqrt();
+                    if d >= room {
+                        continue;
+                    }
+                    // (exactement au même endroit : chacun part de son côté, d'après son numéro)
+                    let (ux, uz) = if d < 0.01 { if m.id > *id { (1.0, 0.3) } else { (-1.0, -0.3) } } else { (ax / d, az / d) };
+                    let force = (1.0 - d / room) * 0.06;
+                    push.0 += ux * force;
+                    push.1 += uz * force;
+                }
+            }
+        }
+        (push.0.clamp(-0.1, 0.1), push.1.clamp(-0.1, 0.1))
+    }
+
     /// Golem de fer : il fonce sur le joueur qui l'a frappé, lui ou un villageois, et l'envoie
     /// en l'air d'un coup de bras ; sinon il reste près du cœur du village.
     fn golem_think(&mut self, m: &mut Mob) -> Option<(f32, f32)> {
@@ -2729,14 +3330,79 @@ impl Server {
             }
             return Some((ground_speed(attr * 1.3), 1.6));
         }
-        // Trop loin de la cloche : il revient
         if let Some(h) = m.home {
+            // Coincé sur un puits ou perché sur un toit (là où d'anciennes versions le
+            // faisaient naître) : il est reposé sur la place, près de la cloche
+            if self.mob_rng.below(40) == 0 {
+                let feet = (m.pos.0.floor() as i32, m.pos.1.round() as i32, m.pos.2.floor() as i32);
+                if self.golem_trapped(feet) {
+                    if let Some((x, y, z)) = self.golem_spot((h.0.floor() as i32, h.1.floor() as i32, h.2.floor() as i32)) {
+                        m.pos = (x as f32 + 0.5, y as f32, z as f32 + 0.5);
+                        m.vel = (0.0, 0.0, 0.0);
+                        m.target = None;
+                        return None;
+                    }
+                }
+            }
+            // Trop loin de la cloche : il revient
             if flat2(h) > 24.0 * 24.0 {
                 m.target = Some((h.0, h.2));
                 return Some((ground_speed(attr * 0.6), 4.0));
             }
         }
         None
+    }
+
+    /// Un endroit dégagé pour un golem de fer (large de 1,4 bloc, haut de 2,9) : un sol plein
+    /// de 3 × 3, sans eau, trois blocs libres au-dessus, pas de toit, et de la vraie terre
+    /// dessous (pas un toit ni une margelle).
+    fn golem_open(&self, (x, y, z): (i32, i32, i32)) -> bool {
+        let water = self.world.generator().blocks.water;
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                let floor = self.mob_get(x + dx, y - 1, z + dz);
+                if floor == water || self.mob_free(x + dx, y - 1, z + dz) || self.no_step(x + dx, y - 1, z + dz) {
+                    return false;
+                }
+                if (0..3).any(|h| !self.mob_free(x + dx, y + h, z + dz) || self.mob_get(x + dx, y + h, z + dz) == water) {
+                    return false;
+                }
+            }
+        }
+        (3..10).all(|h| self.mob_free(x, y + h, z)) && (2..=3).all(|d| !self.mob_free(x, y - d, z))
+    }
+
+    /// L'endroit dégagé le plus proche de la cloche, à sa hauteur à deux blocs près.
+    fn golem_spot(&self, bell: (i32, i32, i32)) -> Option<(i32, i32, i32)> {
+        for r in 2i32..=8 {
+            for dx in -r..=r {
+                for dz in -r..=r {
+                    if dx.abs().max(dz.abs()) != r {
+                        continue;
+                    }
+                    let (x, z) = (bell.0 + dx, bell.2 + dz);
+                    let found = self.surface_y(x, z, bell.1 + 2).filter(|y| (*y - bell.1).abs() <= 2).filter(|y| self.golem_open((x, *y, z)));
+                    if let Some(y) = found {
+                        return Some((x, y, z));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Le golem est-il là où il ne peut pas vivre ? Perché (du vide sous son sol), ou au bord
+    /// d'une eau sous un toit ou sur une margelle (un puits).
+    fn golem_trapped(&self, (x, y, z): (i32, i32, i32)) -> bool {
+        if !self.world.is_ready(x >> 4, z >> 4) || self.mob_free(x, y - 1, z) {
+            return false; // (terrain pas prêt, ou en pleine chute)
+        }
+        let water = self.world.generator().blocks.water;
+        let perched = (2..=3).any(|d| self.mob_free(x, y - d, z) && self.mob_get(x, y - d, z) != water);
+        let wet = (-1..=1).any(|dx| (-1..=1).any(|dz| (-2..=0).any(|dy| self.mob_get(x + dx, y + dy, z + dz) == water)));
+        let roof = (3..8).any(|h| !self.mob_free(x, y + h, z));
+        let rim = self.block_name_of(self.mob_get(x, y - 1, z)).map(|n| n.contains("slab") || n.contains("wall") || n.contains("stairs") || n.contains("fence")).unwrap_or(false);
+        perched || (wet && (roof || rim))
     }
 
     /// Citrouille sculptée (ou citrouille-lanterne) posée au sommet d'un T de quatre blocs de
@@ -3249,6 +3915,10 @@ impl Server {
                 } else {
                     m.pos.2 = nz;
                 }
+            } else if m.species.climbs() && m.attack.is_some() && !in_water {
+                // Araignée à la poursuite d'un joueur : le mur ne l'arrête pas, elle l'escalade
+                m.vel.1 = 0.2;
+                m.on_ground = false;
             } else if grounded && !self.no_step(ex.floor() as i32, m.pos.1.floor() as i32, ez.floor() as i32) && body_free(self, ex, m.pos.1.floor() + 1.01, ez) {
                 // Marche d'un bloc : saute
                 m.vel.1 = m.vel.1.max(0.42);
@@ -3416,6 +4086,19 @@ impl Server {
                 }
             }
         }
+        // Enderman : une fois sur deux, le coup le fait se téléporter à quelques blocs
+        let mut blink = None;
+        if self.mobs.get(&id).map(|m| m.species == Species::Enderman).unwrap_or(false) && self.mob_rng.below(2) == 0 {
+            let at = self.mobs.get(&id).map(|m| m.pos).unwrap_or(from);
+            for _ in 0..12 {
+                let (x, z) = (at.0.floor() as i32 + self.mob_rng.below(17) as i32 - 8, at.2.floor() as i32 + self.mob_rng.below(17) as i32 - 8);
+                let far = (x as f32 - at.0).abs() + (z as f32 - at.2).abs() >= 4.0;
+                if let Some(y) = self.surface_y(x, z, at.1.floor() as i32).filter(|y| far && self.mob_free(x, y + 2, z)) {
+                    blink = Some((x as f32 + 0.5, y as f32, z as f32 + 0.5));
+                    break;
+                }
+            }
+        }
         let Some(m) = self.mobs.get_mut(&id) else { return false };
         if m.dead.is_some() || tick.saturating_sub(m.hurt_tick) < 10 {
             return true;
@@ -3425,7 +4108,8 @@ impl Server {
             return true;
         }
         m.hurt_tick = tick;
-        m.health -= damage;
+        // (son armure naturelle absorbe une part du coup, comme celle d'un joueur)
+        m.health -= damage * crate::item::armor::armor_factor(m.species.armor());
         // (le golem de fer ne recule pas et ne fuit pas)
         if m.species != Species::IronGolem {
             let flat = (dx * dx + dz * dz).sqrt().max(0.01);
@@ -3433,7 +4117,18 @@ impl Server {
             m.knock = 8;
             m.on_ground = false;
         }
-        m.panic = if matches!(m.species, Species::Wolf | Species::IronGolem) { 0 } else { 100 };
+        if let Some(p) = blink.filter(|_| m.health > 0.0) {
+            m.pos = p;
+            m.vel = (0.0, 0.0, 0.0);
+            m.knock = 0;
+            m.sent = (f32::MAX, 0.0, 0.0);
+        }
+        // (un monstre ne fuit pas : il se retourne contre le joueur qui l'a frappé)
+        let monster = m.hostile().is_some();
+        m.panic = if monster || matches!(m.species, Species::Wolf | Species::IronGolem) { 0 } else { 100 };
+        if let (true, Attacker::Player(a)) = (monster, by) {
+            m.attack = Some(Prey::Player(a));
+        }
         // Un loup assis qu'on frappe se relève, un villageois endormi se réveille
         m.sitting = false;
         if m.asleep.take().is_some() {
@@ -3516,7 +4211,24 @@ impl Server {
                 Attacker::Player(a) => Some(a),
                 _ => None,
             });
-            self.mob_loot(id);
+            // Slime : un gros se divise en deux à quatre plus petits ; seuls les petits laissent du butin
+            let split = self.mobs.get(&id).filter(|m| m.species == Species::Slime && m.variant > 1 && m.custom.is_none()).map(|m| (m.pos, m.variant / 2));
+            if let Some((at, size)) = split {
+                for _ in 0..2 + self.mob_rng.below(3) {
+                    if self.mobs.len() >= MAX_MOBS {
+                        break;
+                    }
+                    let spot = (at.0 + (self.mob_rng.unit() as f32 - 0.5), at.1 + 0.2, at.2 + (self.mob_rng.unit() as f32 - 0.5));
+                    let child = self.add_mob(Species::Slime, spot);
+                    if let Some(c) = self.mobs.get_mut(&child) {
+                        c.variant = size;
+                        c.max_health = (size * size) as f32;
+                        c.health = c.max_health;
+                    }
+                }
+            } else {
+                self.mob_loot(id);
+            }
             // Tuée par un joueur : un peu d'expérience (rien pour un petit)
             if let Attacker::Player(a) = by {
                 if !self.mobs.get(&id).map(|m| m.baby()).unwrap_or(true) {
@@ -3992,6 +4704,8 @@ impl Server {
             Species::Goat => (self.mob_rng.below(100) < 2) as i32,
             Species::Cat => self.cat_variant(),
             Species::Villager => self.villager_job(),
+            // Slime : petit, moyen ou gros
+            Species::Slime => [1, 2, 4][self.mob_rng.below(3) as usize],
             _ => 0,
         };
         let mark = if species == Species::Horse { self.mob_rng.below(5) as i32 } else { 0 };
@@ -3999,6 +4713,10 @@ impl Server {
         if let Some(m) = self.mobs.get_mut(&id) {
             m.variant = variant;
             m.mark = mark;
+            if species == Species::Slime {
+                m.max_health = (variant * variant) as f32;
+                m.health = m.max_health;
+            }
             if baby {
                 m.age = -GROW_TICKS;
             }
@@ -4015,9 +4733,6 @@ impl Server {
                 self.remove_mob(id);
                 return Ok(());
             }
-        }
-        if self.mobs.contains_key(&id) {
-
         }
         // Son chunk compte désormais parmi ceux qui sont en mémoire (sinon il serait rangé aussitôt)
         let chunk = mob_store::chunk_of(pos.0, pos.2);
@@ -4680,6 +5395,7 @@ impl Server {
             m.max_health = r.max_health;
             // Créature d'un plugin : elle retrouve sa fiche (sans le plugin, c'est une créature
             // ordinaire de son espèce, à la vie de celle-ci)
+            m.natural = r.natural;
             match crate::entity::custom::find(&r.custom) {
                 Some((rank, def)) => m.take_custom(rank, &def, false),
                 None => {
@@ -4887,7 +5603,7 @@ mod tests {
         for s in Species::ALL {
             assert_eq!(Species::from_id(s.id()), Some(s));
             // (le villageois ne se nourrit pas à la main)
-            assert!(matches!(s, Species::Villager | Species::IronGolem) || !s.grow_items().is_empty(), "{:?} : un petit doit pouvoir grandir plus vite", s);
+            assert!(matches!(s, Species::Villager | Species::IronGolem) || s.hostile().is_some() || !s.grow_items().is_empty(), "{:?} : un petit doit pouvoir grandir plus vite", s);
         }
     }
 
@@ -4940,6 +5656,7 @@ mod tests {
             variant: 3,
             sheared: false,
             custom: String::new(),
+            natural: false,
             max_health: 27.0,
             mark: 4,
             tamed: true,
