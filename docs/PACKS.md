@@ -123,7 +123,9 @@ dit au jeu de le télécharger de nouveau.
 
 ## Pack d'exemple
 
-`docs/exemples/pack-exemple.mcpack` contient deux images (`exemple_rubis`, `exemple_lame`)
+`docs/exemples/pack-exemple.mcpack` contient deux images d'objets (`exemple_rubis`,
+`exemple_lame`), celles des blocs (minerai, bloc de rubis, tronc, fourneau, trois stades d'une culture),
+et une créature complète (modèle, image et définition du « Gardien de rubis »)
 et `docs/exemples/rubis_pack.lua` les objets qui s'en servent. Pour essayer : copiez le
 premier dans `resource_packs/`, ajoutez `- pack-exemple.mcpack` à `resource_stack`, copiez
 le second dans `plugins/`, et redémarrez.

@@ -142,18 +142,6 @@ impl Perlin {
     pub(crate) fn noise2(&self, x: f64, z: f64) -> f64 {
         self.noise3(x, 0.5, z)
     }
-
-    /// Plusieurs octaves superposées, environ -1..1.
-    fn fbm2(&self, x: f64, z: f64, octaves: u32) -> f64 {
-        let (mut sum, mut amp, mut freq, mut norm) = (0.0, 1.0, 1.0, 0.0);
-        for _ in 0..octaves {
-            sum += self.noise2(x * freq, z * freq) * amp;
-            norm += amp;
-            amp *= 0.5;
-            freq *= 2.0;
-        }
-        sum / norm
-    }
 }
 
 // --- Biomes ----------------------------------------------------------------------------
@@ -429,8 +417,6 @@ impl Column {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Flat,
-    /// Premier terrain de Basalt (mondes créés avec lui : gardé pour ne pas les changer)
-    Normal,
     /// Terrain à la manière du jeu depuis la 1.18 (bruits de climat, biomes, grottes)
     Vanilla,
     /// Générateur fourni par un plugin (`level-type=plugin:<nom>`)
@@ -438,29 +424,29 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// Nom enregistré dans `level.nbt`.
+    /// Nom enregistré dans `level.nbt`, ou réglage `level-type` de `server.properties`.
+    /// Tout ce qui n'est ni plat ni un plugin est le terrain du jeu (`vanilla`, `normal`,
+    /// `default`… ; l'ancien terrain propre à Basalt n'existe plus).
     pub fn parse(text: &str) -> Kind {
         match text.trim().to_ascii_lowercase().as_str() {
             "flat" | "plat" => Kind::Flat,
-            "normal" => Kind::Normal,
             t if t.starts_with("plugin:") => Kind::Plugin,
             _ => Kind::Vanilla,
         }
     }
     /// Réglage `level-type` de `server.properties`, pour un nouveau monde.
     pub fn from_config(text: &str) -> Kind {
-        match text.trim().to_ascii_lowercase().as_str() {
-            "flat" | "plat" => Kind::Flat,
-            "basalt" | "legacy" => Kind::Normal,
-            t if t.starts_with("plugin:") => Kind::Plugin,
-            _ => Kind::Vanilla,
-        }
+        Kind::parse(text)
+    }
+    /// Vrai si ce nom, lu dans un monde enregistré, désigne l'ancien terrain de Basalt,
+    /// retiré : le monde continue avec le terrain du jeu.
+    pub fn was_legacy(text: &str) -> bool {
+        text.trim().eq_ignore_ascii_case("normal")
     }
     /// Nom de la sorte de terrain dans server.properties.
     pub fn name(self) -> &'static str {
         match self {
             Kind::Flat => "flat",
-            Kind::Normal => "normal",
             Kind::Vanilla => "vanilla",
             Kind::Plugin => "plugin",
         }
@@ -471,27 +457,10 @@ pub struct Generator {
     pub kind: Kind,
     pub seed: u64,
     pub blocks: Palette,
-    height: Perlin,
-    hills: Perlin,
-    ridge: Perlin,
-    temperature: Perlin,
-    humidity: Perlin,
-    caves: Perlin,
-    tunnels_a: Perlin,
-    tunnels_b: Perlin,
-    detail: Perlin,
     vanilla: Option<super::vanilla::Vanilla>,
     /// Générateur d'un plugin, et son nom (gardé même s'il n'a pas pu être chargé)
     plugin: Option<std::sync::Arc<crate::plugin::generator::LuaGenerator>>,
     plugin_name: String,
-}
-
-/// Arbre à poser : position du pied du tronc et essence.
-#[derive(Clone, Copy)]
-enum Tree {
-    Oak,
-    Birch,
-    Spruce,
 }
 
 impl Generator {
@@ -502,20 +471,10 @@ impl Generator {
 
     /// Générateur de cette sorte, avec une graine.
     pub fn new(kind: Kind, seed: u64, blocks: Palette) -> Generator {
-        let p = |salt: u64| Perlin::new(mix(seed, 0, 0, salt));
         Generator {
             kind,
             seed,
             blocks,
-            height: p(1),
-            hills: p(2),
-            ridge: p(3),
-            temperature: p(4),
-            humidity: p(5),
-            caves: p(6),
-            tunnels_a: p(7),
-            tunnels_b: p(8),
-            detail: p(9),
             vanilla: if kind == Kind::Vanilla { Some(super::vanilla::Vanilla::new(seed)) } else { None },
             plugin: None,
             plugin_name: String::new(),
@@ -536,79 +495,31 @@ impl Generator {
         }
     }
 
-    /// Hauteur du sol (dernier bloc plein) d'une colonne, avant grottes et arbres.
+    /// Hauteur du sol (dernier bloc plein) d'une colonne, avant grottes et arbres. Pour le
+    /// terrain d'un plugin, que le serveur ne sait pas prévoir : le niveau de la mer.
     pub fn surface(&self, x: i32, z: i32) -> i32 {
-        if self.kind == Kind::Flat {
-            return -61;
-        }
-        if let Some(v) = &self.vanilla {
-            return v.surface(x, z).0;
-        }
-        let (fx, fz) = (x as f64, z as f64);
-        let continent = self.height.fbm2(fx / 512.0, fz / 512.0, 5);
-        let hills = self.hills.fbm2(fx / 128.0, fz / 128.0, 4);
-        let ridge = 1.0 - self.ridge.fbm2(fx / 256.0, fz / 256.0, 4).abs() * 2.0;
-        // Les montagnes ne poussent que sur les terres hautes
-        let mountain = ((continent - 0.15) * 4.0).clamp(0.0, 1.0) * ridge.max(0.0).powf(1.5);
-        let h = SEA_LEVEL as f64 + 2.0 + continent * 28.0 + hills * 7.0 * (0.4 + continent.max(0.0)) + mountain * 70.0;
-        (h.round() as i32).clamp(MIN_Y + 8, MAX_Y - 40)
-    }
-
-    /// Climat simple (température, humidité) des terrains non vanilla.
-    fn climate(&self, x: i32, z: i32) -> (f64, f64) {
-        let t = self.temperature.fbm2(x as f64 / 700.0, z as f64 / 700.0, 3);
-        let h = self.humidity.fbm2(x as f64 / 500.0, z as f64 / 500.0, 3);
-        (t, h)
-    }
-
-    /// Biome d'une colonne.
-    pub fn biome(&self, x: i32, z: i32) -> Biome {
-        if self.kind == Kind::Flat {
-            return Biome::Plains;
-        }
-        let height = self.surface(x, z);
-        let (t, h) = self.climate(x, z);
-        if height < SEA_LEVEL - 1 {
-            return if t < -0.45 { Biome::FrozenOcean } else { Biome::Ocean };
-        }
-        if height <= SEA_LEVEL + 1 && t > -0.45 {
-            return Biome::Beach;
-        }
-        if height > SEA_LEVEL + 45 {
-            return Biome::Mountains;
-        }
-        if t < -0.4 {
-            Biome::SnowyPlains
-        } else if t > 0.35 && h < 0.1 {
-            Biome::Desert
-        } else if h > 0.25 {
-            Biome::BirchForest
-        } else if h > 0.0 {
-            Biome::Forest
-        } else {
-            Biome::Plains
+        match (&self.vanilla, self.kind) {
+            (Some(v), _) => v.surface(x, z).0,
+            (None, Kind::Flat) => -61,
+            (None, _) => SEA_LEVEL,
         }
     }
 
-    /// Point d'apparition : la première terre ferme en partant de (0, 0) et en tournant
-    /// autour. Renvoie (x, hauteur du sol, z).
+    /// Biome d'une colonne des terrains plat et de plugin : des plaines. (Le terrain du jeu
+    /// a ses propres biomes, voir `vanilla.rs`.)
+    pub fn biome(&self, _x: i32, _z: i32) -> Biome {
+        Biome::Plains
+    }
+
+    /// Point d'apparition : (x, hauteur du sol, z).
     pub fn spawn(&self) -> (i32, i32, i32) {
         if self.kind == Kind::Plugin {
             return self.plugin.as_ref().and_then(|p| p.spawn()).unwrap_or((8, 64, 8));
         }
-        if let Some(v) = &self.vanilla {
-            return v.spawn();
+        match &self.vanilla {
+            Some(v) => v.spawn(),
+            None => (0, self.surface(0, 0), 0),
         }
-        for r in 0..64i32 {
-            for (dx, dz) in ring(r) {
-                let (x, z) = (dx * 8, dz * 8);
-                let y = self.surface(x, z);
-                if y >= SEA_LEVEL && !matches!(self.biome(x, z), Biome::Mountains) {
-                    return (x, y, z);
-                }
-            }
-        }
-        (0, self.surface(0, 0).max(SEA_LEVEL), 0)
     }
 
     /// Génère un chunk entier.
@@ -623,342 +534,21 @@ impl Generator {
         if let Some(v) = &self.vanilla {
             return v.generate(&self.blocks, cx, cz);
         }
+        // Terrain plat : roche, deux couches de terre, herbe
         let b = &self.blocks;
         let height = (MAX_Y - MIN_Y + 1) as usize;
         let mut blocks = vec![b.air; 16 * 16 * height];
         let at = |x: usize, z: usize, y: i32| (x * 16 + z) * height + (y - MIN_Y) as usize;
-        if self.kind == Kind::Flat {
-            for x in 0..16 {
-                for z in 0..16 {
-                    blocks[at(x, z, -64)] = b.stone;
-                    blocks[at(x, z, -63)] = b.dirt;
-                    blocks[at(x, z, -62)] = b.dirt;
-                    blocks[at(x, z, -61)] = b.grass;
-                }
-            }
-            return Column::from_blocks(&blocks, b.air, Biome::Plains);
-        }
-        let (bx, bz) = (cx * 16, cz * 16);
-        let mut rng = Rng::new(mix(self.seed, cx as i64, cz as i64, 100));
-
-        // 1. Relief et couches de surface
-        let mut heights = [[0i32; 16]; 16];
-        let mut biomes = [[Biome::Plains; 16]; 16];
         for x in 0..16 {
             for z in 0..16 {
-                let (wx, wz) = (bx + x as i32, bz + z as i32);
-                let top = self.surface(wx, wz);
-                let biome = self.biome(wx, wz);
-                heights[x][z] = top;
-                biomes[x][z] = biome;
-                let depth = 3 + (self.detail.noise2(wx as f64 / 8.0, wz as f64 / 8.0) * 1.5).round() as i32;
-                for y in MIN_Y..=top {
-                    let block = if y == MIN_Y || (y < MIN_Y + 5 && rng.below(5) as i32 >= y - MIN_Y) {
-                        b.bedrock
-                    } else if y < top - depth {
-                        if y < 0 || (y < 8 && rng.below(8) as i32 > y) {
-                            b.deepslate
-                        } else {
-                            b.stone
-                        }
-                    } else {
-                        let under_water = top < SEA_LEVEL;
-                        match biome {
-                            Biome::Desert => {
-                                if y >= top - 3 {
-                                    b.sand
-                                } else {
-                                    b.sandstone
-                                }
-                            }
-                            Biome::Beach => {
-                                if y >= top - 3 {
-                                    b.sand
-                                } else {
-                                    b.sandstone
-                                }
-                            }
-                            Biome::Ocean | Biome::FrozenOcean => {
-                                if top < SEA_LEVEL - 12 {
-                                    b.gravel
-                                } else if y == top && rng.below(12) == 0 {
-                                    b.clay
-                                } else {
-                                    b.sand
-                                }
-                            }
-                            Biome::Mountains if top > SEA_LEVEL + 60 => b.stone,
-                            _ => {
-                                if y == top && !under_water {
-                                    b.grass
-                                } else {
-                                    b.dirt
-                                }
-                            }
-                        }
-                    };
-                    blocks[at(x, z, y)] = block;
-                }
-                // Mer, glace en eau froide
-                for y in (top + 1)..=SEA_LEVEL {
-                    blocks[at(x, z, y)] = if y == SEA_LEVEL && biome == Biome::FrozenOcean { b.ice } else { b.water };
-                }
-                // Neige sur les sommets et les plaines froides
-                if top >= SEA_LEVEL && (biome == Biome::SnowyPlains || (biome == Biome::Mountains && top > SEA_LEVEL + 55)) {
-                    if top > SEA_LEVEL + 85 {
-                        blocks[at(x, z, top)] = b.snow;
-                    }
-                    blocks[at(x, z, top + 1)] = b.snow_layer;
-                }
+                blocks[at(x, z, -64)] = b.stone;
+                blocks[at(x, z, -63)] = b.dirt;
+                blocks[at(x, z, -62)] = b.dirt;
+                blocks[at(x, z, -61)] = b.grass;
             }
         }
-
-        // 2. Poches de granite, diorite, andésite et tuf dans la pierre
-        for (block, count, low, high) in [(b.granite, 3, 0, 80), (b.diorite, 3, 0, 80), (b.andesite, 3, 0, 80), (b.tuff, 2, -60, 0)] {
-            for _ in 0..count {
-                let (x, y, z) = (rng.below(16) as i32, low + rng.below((high - low) as u32) as i32, rng.below(16) as i32);
-                self.blob(&mut blocks, at, (x, y, z), 2.5 + rng.unit() * 1.5, &[b.stone, b.deepslate], block);
-            }
-        }
-
-        // 3. Minerais : (minerai, essais, hauteur min, hauteur max, taille)
-        let ores = [(b.coal, 18, 0, 128, 1.6), (b.iron, 12, -24, 72, 1.3), (b.copper, 8, -16, 96, 1.4), (b.gold, 4, -64, 32, 1.1), (b.redstone, 6, -64, 15, 1.2), (b.lapis, 2, -32, 32, 1.1), (b.diamond, 2, -64, 16, 1.0)];
-        for (ore, tries, low, high, size) in ores {
-            for _ in 0..tries {
-                let (x, y, z) = (rng.below(16) as i32, low + rng.below((high - low) as u32) as i32, rng.below(16) as i32);
-                if y > heights[x as usize][z as usize] - 4 {
-                    continue;
-                }
-                let block = if y < 0 { ore.1 } else { ore.0 };
-                self.blob(&mut blocks, at, (x, y, z), size + rng.unit(), &[b.stone, b.deepslate, b.granite, b.diorite, b.andesite, b.tuff], block);
-            }
-        }
-
-        // 4. Grottes : grandes cavités (« fromage ») et galeries (« spaghettis »), calculées
-        // sur une grille de 4 blocs puis interpolées
-        self.carve(&mut blocks, at, bx, bz, &heights);
-
-        // 5. Arbres, cactus et plantes (y compris ceux des chunks voisins qui débordent ici)
-        for ncx in (cx - 1)..=(cx + 1) {
-            for ncz in (cz - 1)..=(cz + 1) {
-                for (wx, wz, tree) in self.trees(ncx, ncz) {
-                    self.place_tree(&mut blocks, at, bx, bz, wx, wz, tree);
-                }
-            }
-        }
-        let mut plants = Rng::new(mix(self.seed, cx as i64, cz as i64, 200));
-        for x in 0..16 {
-            for z in 0..16 {
-                let top = heights[x][z];
-                if top < SEA_LEVEL || top + 1 > MAX_Y {
-                    continue;
-                }
-                let ground = blocks[at(x, z, top)];
-                let above = blocks[at(x, z, top + 1)];
-                if above != b.air {
-                    continue;
-                }
-                let roll = plants.below(100);
-                match biomes[x][z] {
-                    Biome::Desert if ground == b.sand && roll < 1 => {
-                        let tall = 1 + plants.below(3) as i32;
-                        for dy in 1..=tall {
-                            blocks[at(x, z, top + dy)] = b.cactus;
-                        }
-                    }
-                    Biome::Plains | Biome::Forest | Biome::BirchForest if ground == b.grass => {
-                        if roll < 12 {
-                            blocks[at(x, z, top + 1)] = b.short_grass;
-                        } else if roll < 14 {
-                            blocks[at(x, z, top + 1)] = if plants.below(2) == 0 { b.dandelion } else { b.poppy };
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // Biome du chunk : celui de son centre
-        Column::from_blocks(&blocks, b.air, biomes[8][8])
+        Column::from_blocks(&blocks, b.air, Biome::Plains)
     }
-
-    /// Boule irrégulière d'un bloc, qui ne remplace que les blocs de `into`, sans sortir du chunk.
-    fn blob(&self, blocks: &mut [u32], at: impl Fn(usize, usize, i32) -> usize, center: (i32, i32, i32), radius: f64, into: &[u32], block: u32) {
-        let r = radius.ceil() as i32;
-        for dx in -r..=r {
-            for dy in -r..=r {
-                for dz in -r..=r {
-                    let (x, y, z) = (center.0 + dx, center.1 + dy, center.2 + dz);
-                    if !(0..16).contains(&x) || !(0..16).contains(&z) || y <= MIN_Y || y > MAX_Y {
-                        continue;
-                    }
-                    if ((dx * dx + dy * dy + dz * dz) as f64) > radius * radius {
-                        continue;
-                    }
-                    let i = at(x as usize, z as usize, y);
-                    if into.contains(&blocks[i]) {
-                        blocks[i] = block;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Grottes : creuse le chunk sous la surface.
-    fn carve(&self, blocks: &mut [u32], at: impl Fn(usize, usize, i32) -> usize, bx: i32, bz: i32, heights: &[[i32; 16]; 16]) {
-        let b = &self.blocks;
-        let top = heights.iter().flatten().copied().max().unwrap_or(0).min(MAX_Y - 8);
-        // Grille : 5 × 5 points horizontaux, un point tous les 4 blocs en hauteur
-        let ny = ((top - MIN_Y) / 4 + 2) as usize;
-        let mut grid = vec![0f64; 5 * 5 * ny];
-        for gx in 0..5 {
-            for gz in 0..5 {
-                for gy in 0..ny {
-                    let (x, y, z) = ((bx + gx as i32 * 4) as f64, (MIN_Y + gy as i32 * 4) as f64, (bz + gz as i32 * 4) as f64);
-                    let cheese = self.caves.noise3(x / 48.0, y / 24.0, z / 48.0);
-                    let a = self.tunnels_a.noise3(x / 64.0, y / 40.0, z / 64.0);
-                    let c = self.tunnels_b.noise3(x / 64.0 + 100.0, y / 40.0, z / 64.0);
-                    // Négatif : vide. Les galeries sont là où deux bruits passent tous deux par zéro
-                    let tunnel = a * a + c * c - 0.012;
-                    let open = (0.42 - cheese).min(tunnel * 8.0);
-                    grid[(gx * 5 + gz) * ny + gy] = open;
-                }
-            }
-        }
-        for x in 0..16usize {
-            for z in 0..16usize {
-                let (gx, fx) = (x / 4, (x % 4) as f64 / 4.0);
-                let (gz, fz) = (z / 4, (z % 4) as f64 / 4.0);
-                let limit = heights[x][z] - 7;
-                for y in (MIN_Y + 5)..=limit.min(top) {
-                    let gy = ((y - MIN_Y) / 4) as usize;
-                    let fy = ((y - MIN_Y) % 4) as f64 / 4.0;
-                    let g = |i: usize, j: usize, k: usize| grid[((gx + i) * 5 + gz + j) * ny + gy + k];
-                    let v = lerp(
-                        fx,
-                        lerp(fz, lerp(fy, g(0, 0, 0), g(0, 0, 1)), lerp(fy, g(0, 1, 0), g(0, 1, 1))),
-                        lerp(fz, lerp(fy, g(1, 0, 0), g(1, 0, 1)), lerp(fy, g(1, 1, 0), g(1, 1, 1))),
-                    );
-                    if v < 0.0 {
-                        let i = at(x, z, y);
-                        if blocks[i] != b.bedrock && blocks[i] != b.water {
-                            // Lave tout en bas, comme dans le jeu
-                            blocks[i] = if y < -54 { b.lava } else { b.air };
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Arbres dont le tronc est dans ce chunk : (x, z du tronc, essence).
-    fn trees(&self, cx: i32, cz: i32) -> Vec<(i32, i32, Tree)> {
-        let mut rng = Rng::new(mix(self.seed, cx as i64, cz as i64, 300));
-        let center = self.biome(cx * 16 + 8, cz * 16 + 8);
-        let (count, kind) = match center {
-            Biome::Forest => (5 + rng.below(4), None),
-            Biome::BirchForest => (5 + rng.below(4), Some(Tree::Birch)),
-            Biome::Plains => (if rng.below(3) == 0 { 1 } else { 0 }, Some(Tree::Oak)),
-            Biome::SnowyPlains => (rng.below(2), Some(Tree::Spruce)),
-            Biome::Mountains => (rng.below(2), Some(Tree::Spruce)),
-            _ => (0, None),
-        };
-        let mut out = Vec::new();
-        for _ in 0..count {
-            let (x, z) = (cx * 16 + 2 + rng.below(12) as i32, cz * 16 + 2 + rng.below(12) as i32);
-            let tree = kind.unwrap_or(if rng.below(5) == 0 { Tree::Birch } else { Tree::Oak });
-            let roll = rng.next();
-            // Pas d'arbre dans l'eau, sur la plage ou sur le sable
-            let top = self.surface(x, z);
-            if top < SEA_LEVEL || matches!(self.biome(x, z), Biome::Beach | Biome::Desert | Biome::Ocean | Biome::FrozenOcean) {
-                continue;
-            }
-            if center == Biome::Mountains && top > SEA_LEVEL + 70 {
-                continue;
-            }
-            let _ = roll;
-            out.push((x, z, tree));
-        }
-        out
-    }
-
-    /// Pose un arbre dont le tronc est en (wx, wz), coupé aux limites du chunk.
-    #[allow(clippy::too_many_arguments)]
-    fn place_tree(&self, blocks: &mut [u32], at: impl Fn(usize, usize, i32) -> usize, bx: i32, bz: i32, wx: i32, wz: i32, tree: Tree) {
-        let b = &self.blocks;
-        let ground = self.surface(wx, wz);
-        let mut rng = Rng::new(mix(self.seed, wx as i64, wz as i64, 400));
-        let (log, leaves, trunk) = match tree {
-            Tree::Oak => (b.oak_log, b.oak_leaves, 4 + rng.below(3) as i32),
-            Tree::Birch => (b.birch_log, b.birch_leaves, 5 + rng.below(3) as i32),
-            Tree::Spruce => (b.spruce_log, b.spruce_leaves, 6 + rng.below(4) as i32),
-        };
-        let mut put = |x: i32, y: i32, z: i32, block: u32, replace_only_air: bool| {
-            let (lx, lz) = (x - bx, z - bz);
-            if !(0..16).contains(&lx) || !(0..16).contains(&lz) || y <= MIN_Y || y > MAX_Y {
-                return;
-            }
-            let i = at(lx as usize, lz as usize, y);
-            let current = blocks[i];
-            if !replace_only_air || current == b.air || current == b.snow_layer || current == b.short_grass {
-                blocks[i] = block;
-            }
-        };
-        let base = ground + 1;
-        let top = base + trunk;
-        match tree {
-            Tree::Spruce => {
-                // Cône de branches qui s'élargit vers le bas
-                let mut radius: i32 = 0;
-                for y in ((base + 2)..=(top + 1)).rev() {
-                    for dx in -radius..=radius {
-                        for dz in -radius..=radius {
-                            if dx.abs() + dz.abs() <= radius + 1 && !(dx == 0 && dz == 0 && y <= top) {
-                                put(wx + dx, y, wz + dz, leaves, true);
-                            }
-                        }
-                    }
-                    radius = if radius >= 2 { 1 } else { radius + 1 };
-                }
-            }
-            _ => {
-                for y in (top - 3)..=(top + 1) {
-                    let r: i32 = if y >= top { 1 } else { 2 };
-                    for dx in -r..=r {
-                        for dz in -r..=r {
-                            // Coins arrondis, un peu au hasard
-                            if dx.abs() == r && dz.abs() == r && (y >= top || rng.below(2) == 0) {
-                                continue;
-                            }
-                            put(wx + dx, y, wz + dz, leaves, true);
-                        }
-                    }
-                }
-            }
-        }
-        for y in base..top {
-            put(wx, y, wz, log, false);
-        }
-        // Sous le tronc : de la terre plutôt que de l'herbe
-        put(wx, ground, wz, b.dirt, false);
-    }
-}
-
-/// Points d'un carré de rayon `r` autour de l'origine (son pourtour seulement).
-fn ring(r: i32) -> Vec<(i32, i32)> {
-    if r == 0 {
-        return vec![(0, 0)];
-    }
-    let mut out = Vec::new();
-    for i in -r..=r {
-        out.push((i, -r));
-        out.push((i, r));
-    }
-    for i in (-r + 1)..r {
-        out.push((-r, i));
-        out.push((r, i));
-    }
-    out
 }
 
 /// Graine écrite dans `server.properties` : un nombre, ou un texte (comme dans le jeu, le
@@ -992,69 +582,14 @@ mod tests {
     }
 
     #[test]
-    fn the_same_seed_gives_the_same_terrain() {
-        let (a, b) = (generator(Kind::Normal, 42), generator(Kind::Normal, 42));
-        let (ca, cb) = (a.generate(3, -7), b.generate(3, -7));
-        for y in [-64, -30, 0, 40, 62, 70, 100] {
-            for (x, z) in [(0, 0), (5, 9), (15, 15)] {
-                assert_eq!(ca.get(x, y, z), cb.get(x, y, z));
-            }
+    fn every_other_name_is_the_game_terrain() {
+        for name in ["vanilla", "normal", "default", "", "Basalt", "legacy"] {
+            assert_eq!(Kind::parse(name), Kind::Vanilla, "{}", name);
+            assert_eq!(Kind::from_config(name), Kind::Vanilla, "{}", name);
         }
-        let other = generator(Kind::Normal, 43).generate(3, -7);
-        let differs = (0..16).any(|x| (MIN_Y..100).any(|y| other.get(x, y, 8) != ca.get(x, y, 8)));
-        assert!(differs, "une autre graine donne un autre terrain");
-    }
-
-    #[test]
-    fn terrain_looks_like_minecraft() {
-        let g = generator(Kind::Normal, 12345);
-        let b = g.blocks.clone();
-        let mut land = 0;
-        let mut water = 0;
-        let mut heights = Vec::new();
-        let mut ores = 0;
-        let mut caves = 0;
-        for cx in -4..4 {
-            for cz in -4..4 {
-                let col = g.generate(cx, cz);
-                for x in 0..16 {
-                    for z in 0..16 {
-                        assert_eq!(col.get(x, MIN_Y, z), b.bedrock, "roche-mère tout en bas");
-                        let top = g.surface(cx * 16 + x as i32, cz * 16 + z as i32);
-                        heights.push(top);
-                        if top >= SEA_LEVEL {
-                            land += 1;
-                        } else {
-                            water += 1;
-                            assert_eq!(col.get(x, SEA_LEVEL, z) == b.water || col.get(x, SEA_LEVEL, z) == b.ice, true);
-                        }
-                        for y in (MIN_Y + 5)..(top - 8) {
-                            let block = col.get(x, y, z);
-                            if [b.coal.0, b.iron.0, b.coal.1, b.iron.1, b.diamond.1, b.redstone.1, b.copper.0].contains(&block) {
-                                ores += 1;
-                            }
-                            if block == b.air {
-                                caves += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let (min, max) = (heights.iter().min().unwrap(), heights.iter().max().unwrap());
-        assert!(max - min >= 8, "du relief : de {} à {}", min, max);
-        assert!(land > 0 && water + land == 64 * 256, "terres et mers : {} / {}", land, water);
-        assert!(ores > 50, "des minerais : {}", ores);
-        assert!(caves > 100, "des grottes : {}", caves);
-    }
-
-    #[test]
-    fn spawn_is_on_dry_land() {
-        for seed in [1, 2, 3, 4, 5] {
-            let g = generator(Kind::Normal, seed);
-            let (x, y, z) = g.spawn();
-            assert!(y >= SEA_LEVEL, "graine {} : apparition en {} {} {}", seed, x, y, z);
-        }
+        assert_eq!((Kind::parse("flat"), Kind::parse("plugin:iles")), (Kind::Flat, Kind::Plugin));
+        // (un monde enregistré sous l'ancien nom est reconnu, pour prévenir)
+        assert!(Kind::was_legacy("normal") && !Kind::was_legacy("vanilla"));
     }
 
     #[test]
@@ -1063,19 +598,6 @@ mod tests {
         let c = g.generate(10, -3);
         let b = &g.blocks;
         assert_eq!((c.get(0, -64, 0), c.get(3, -63, 4), c.get(3, -62, 4), c.get(15, -61, 15), c.get(1, -60, 1)), (b.stone, b.dirt, b.dirt, b.grass, b.air));
-    }
-
-    #[test]
-    #[ignore]
-    fn generation_speed() {
-        let g = generator(Kind::Normal, 99);
-        let start = std::time::Instant::now();
-        for cx in 0..20 {
-            for cz in 0..20 {
-                g.generate(cx, cz);
-            }
-        }
-        eprintln!("400 chunks en {:?}", start.elapsed());
     }
 
     #[test]

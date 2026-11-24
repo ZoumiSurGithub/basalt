@@ -131,6 +131,109 @@ local function modifier(kind, keys, usage)
   return api
 end
 server.items = modifier("item", ITEM_KEYS, "server.items.modify(nom, { food = 8, ... })")
+server.blocks = modifier("block", BLOCK_KEYS, "server.blocks.modify(nom, { falls = true, ... })")
+-- Créer un contenu : vérifie le nom et les réglages, puis transmet la fiche au serveur
+local function creator(kind, keys, usage)
+  return function(name, values)
+    if type(name) ~= "string" or (values ~= nil and type(values) ~= "table") then error(usage, 2) end
+    if not name:match("^[a-z0-9_]+:[a-z0-9_]+$") then
+      error("nom invalide « " .. name .. " » : minuscules, chiffres et _ autour de « : », par exemple monserveur:rubis", 2)
+    end
+    if name:match("^minecraft:") then
+      error("l'espace de noms « minecraft » est réservé au jeu : pour changer un contenu du jeu, utilisez modify", 2)
+    end
+    local lines, after = {}, {}
+    for key, value in pairs(values or {}) do
+      local expected = keys[key]
+      if not expected then
+        local known = {}
+        for k in pairs(keys) do known[#known + 1] = k end
+        table.sort(known)
+        error("réglage inconnu « " .. tostring(key) .. " » ; réglages possibles : " .. table.concat(known, ", "), 2)
+      end
+      if type(value) ~= expected then
+        error(key .. " attend " .. expected .. ", reçu " .. type(value), 2)
+      end
+      if expected == "table" then
+        after[key] = value
+      elseif key == "_stages" then
+        lines[#lines + 1] = "stages\t" .. value
+      elseif key == "_drops" then
+        lines[#lines + 1] = "drops\t" .. value
+      else
+        lines[#lines + 1] = key .. "\t" .. tostring(value):gsub("[\t\r\n]", " ")
+      end
+    end
+    table.sort(lines)
+    modify(kind, name, "", table.concat(lines, "\n"))
+    return after
+  end
+end
+-- Créer un bloc (voir docs/PLUGINS.md, « Créer des blocs »)
+local NEW_BLOCK_KEYS = {
+  name = "string", texture = "string", textureTop = "string", textureBottom = "string", textureFront = "string", rotation = "string", stages = "table",
+  hardness = "number", light = "number", friction = "number",
+  transparent = "boolean", solid = "boolean", geometry = "string", tool = "string", tier = "string", xp = "number", xpMax = "number",
+  category = "string", group = "string", creative = "boolean", drops = "table", falls = "boolean", needsFloor = "boolean", breakable = "boolean",
+  _stages = "string",
+}
+local create_block = creator("new-block", NEW_BLOCK_KEYS, "server.blocks.create(\"monserveur:minerai\", { name = \"Minerai\", texture = \"minerai\" })")
+function server.blocks.create(name, values)
+  -- Butin, chute, appui : les mêmes réglages que pour un bloc du jeu, appliqués ensuite
+  local behaviour, rest = {}, {}
+  for key, value in pairs(values or {}) do
+    if BLOCK_KEYS[key] then behaviour[key] = value else rest[key] = value end
+  end
+  if type(values) ~= "table" and values ~= nil then rest = values end
+  -- Stades de croissance : la liste de leurs images, de la pousse à la maturité
+  local stages = rest.stages
+  if type(stages) == "table" then
+    for i, image in ipairs(stages) do
+      if type(image) ~= "string" then error("stages attend une liste d'images, par exemple { \"pousse\", \"epi\" }", 2) end
+    end
+    rest.stages = nil
+    rest._stages = table.concat(stages, ",")
+  end
+  create_block(name, rest)
+  if next(behaviour) then server.blocks.modify(name, behaviour) end
+end
+-- Créer une créature (voir docs/PLUGINS.md, « Créer des créatures »)
+local NEW_ENTITY_KEYS = {
+  looks = "string", ownModel = "boolean", name = "string", nameVisible = "boolean", health = "number", speed = "number", scale = "number",
+  width = "number", height = "number",
+  xp = "number", xpMax = "number", drops = "table", _drops = "string",
+}
+local create_entity = creator("new-entity", NEW_ENTITY_KEYS, "server.entities.create(\"monserveur:vache_doree\", { looks = \"minecraft:cow\", health = 30 })")
+server.entities = {}
+function server.entities.create(name, values)
+  local rest = {}
+  for key, value in pairs(type(values) == "table" and values or {}) do rest[key] = value end
+  if type(values) ~= "table" and values ~= nil then rest = values end
+  -- Butin : { ["objet"] = 2 }, { ["objet"] = { 1, 3 } } (de 1 à 3) ou { "objet" }
+  if type(rest) == "table" and type(rest.drops) == "table" then
+    local parts = {}
+    for k, v in pairs(rest.drops) do
+      local item, lo, hi
+      if type(k) == "string" then item = k else item, v = v, 1 end
+      if type(v) == "table" then lo, hi = v[1], v[2] or v[1] else lo, hi = v, v end
+      if type(item) ~= "string" or type(lo) ~= "number" or type(hi) ~= "number" or lo < 0 or hi < lo or item:find("[=,%-]") then
+        error("drops attend des objets et des quantités, par exemple { [\"minecraft:gold_ingot\"] = { 1, 3 } }", 2)
+      end
+      parts[#parts + 1] = item .. "=" .. math.floor(lo) .. "-" .. math.floor(hi)
+    end
+    table.sort(parts)
+    rest.drops = nil
+    rest._drops = table.concat(parts, ",")
+  end
+  create_entity(name, rest)
+end
+-- Faire apparaître une créature, du jeu ou créée par un plugin
+function server.entities.spawn(name, x, y, z)
+  if type(name) ~= "string" or type(x) ~= "number" or type(y) ~= "number" or type(z) ~= "number" then
+    error("server.entities.spawn(nom, x, y, z)", 2)
+  end
+  modify("spawn-entity", name, "", x .. "\t" .. y .. "\t" .. z)
+end
 -- Créer un objet (voir docs/PLUGINS.md, « Créer des objets »)
 local NEW_ITEM_KEYS = {
   name = "string", icon = "string", category = "string", group = "string", creative = "boolean", maxStack = "number", food = "number", saturation = "number", alwaysEdible = "boolean",
@@ -162,7 +265,6 @@ function server.items.create(name, values)
   table.sort(lines)
   modify("new-item", name, "", table.concat(lines, "\n"))
 end
-server.blocks = modifier("block", BLOCK_KEYS, "server.blocks.modify(nom, { falls = true, ... })")
 
 -- Objet joueur. Il ne contient que le pseudo : chaque lecture interroge le serveur, donc
 -- un objet gardé dans une variable reste juste, et `isOnline` dit si le joueur est là.
@@ -562,6 +664,9 @@ local EVENTS = {
   LeavesDecayEvent = { cancellable = true, fields = { { "block", "block" } } },
   BlockFallEvent = { cancellable = true, fields = { { "block", "block" } } },
   BlockGrowEvent = { cancellable = true, fields = { { "block", "block" } } },
+  CreatureSpawnEvent = { cancellable = true, fields = { { "entity", "creature" } } },
+  CreatureDamageEvent = { cancellable = true, fields = { { "entity", "creature" }, { "damage", "number", true }, { "cause", "string" }, { "damager", "player" } } },
+  CreatureDeathEvent = { fields = { { "entity", "creature" }, { "killer", "player" } } },
 }
 -- Événements « enfants » : un écouteur de EntityDamageByEntityEvent ne reçoit que les dégâts
 -- causés par un autre joueur (et un écouteur de EntityDamageEvent reçoit tout).
@@ -667,6 +772,31 @@ local the_world = setmetatable({}, World)
 function server.getWorld() return the_world end
 server._block, server._blocks, server._setblocks = nil, nil, nil
 
+-- Créature (animal, villageois, créature créée par un plugin) telle qu'un événement la donne.
+-- C'est un instantané : ses valeurs sont celles du moment de l'événement.
+local Creature = {}
+Creature.__index = Creature
+Creature.__name = "Creature"
+function Creature:getId() return self.id end
+function Creature:getType() return self.type end
+function Creature:getLooks() return self.looks end
+function Creature:isCustom() return self.custom == true end
+function Creature:isBaby() return self.baby == true end
+function Creature:getPosition() return self.x, self.y, self.z end
+function Creature:getHealth() return self.health end
+function Creature:getMaxHealth() return self.maxHealth end
+function Creature:getNameTag() return self.name end
+function Creature:remove() modify("mob-act", string.format("%d", self.id), "remove", "") end
+function Creature:kill() modify("mob-act", string.format("%d", self.id), "kill", "") end
+function Creature:setHealth(value)
+  if type(value) ~= "number" or value <= 0 then error("creature:setHealth(nombre positif)", 2) end
+  modify("mob-act", string.format("%d", self.id), "health", tostring(value))
+end
+function Creature:setNameTag(text)
+  if type(text) ~= "string" then error("creature:setNameTag(texte)", 2) end
+  modify("mob-act", string.format("%d", self.id), "name", (text:gsub("[\t\r\n]", " ")))
+end
+
 local Event = {}
 Event.__index = Event
 Event.__name = "Event"
@@ -697,6 +827,11 @@ for name, spec in pairs(EVENTS) do
       local v = self._data[field]
       if v == nil then return nil end
       if kind == "player" then return wrap(v) end
+      if kind == "creature" then
+        local copy = {}
+        for k, value in pairs(v) do copy[k] = value end
+        return setmetatable(copy, Creature)
+      end
       if kind == "block" then return setmetatable({ name = v.name, x = v.x, y = v.y, z = v.z }, Block) end
       if kind == "position" then return v.x, v.y, v.z end
       if kind == "drops" or kind == "item" then
@@ -733,7 +868,7 @@ for name, spec in pairs(EVENTS) do
     end
   end
   -- Noms à la PocketMine pour les plus courants
-  if spec.fields[1][1] == "entity" then class.getPlayer = class.getEntity end
+  if spec.fields[1][1] == "entity" and spec.fields[1][2] == "player" then class.getPlayer = class.getEntity end
   if name == "EntityDamageEvent" then
     class.getDamage = class.getBaseDamage
     class.setDamage = class.setBaseDamage

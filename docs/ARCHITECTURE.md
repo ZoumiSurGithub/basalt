@@ -208,7 +208,11 @@ table, pas encore un gabarit par espèce. À ranger de la même manière.
 | Modifier un objet ou un bloc existant (ce que nourrit un aliment, durabilité, dégâts, butin, chute, appui, incassable) | **disponible** : `server.items.modify`, `server.blocks.modify` |
 | Créer un objet nouveau, rangé dans le menu créatif | **disponible** : `server.items.create` |
 | Lui donner sa propre image | **disponible** : pack de ressources, voir [PACKS.md](PACKS.md) |
-| Créer un bloc ou une entité | **plus tard** : pour les blocs, il faut renuméroter toute la palette |
+| Créer un bloc (images par face, forme, transparence, outil exigé, expérience) | **disponible** : `server.blocks.create` ; fiche, gabarit et déclaration au jeu dans `src/block/custom.rs` |
+| Blocs à états : orientation à la pose (`rotation`), stades de croissance (`stages`) | **disponible** : `Variants` dans `src/block/custom.rs` |
+| Créer une créature à partir d'une créature du jeu (vie, vitesse, taille, butin, nom) | **disponible** : `server.entities.create` ; fiche dans `src/entity/custom.rs`, portée par `Mob::custom` |
+| Apparence propre d'une créature (modèle et image du pack) | **disponible** : `ownModel` ; la créature est ajoutée à la liste des entités envoyée au jeu |
+| Comportements nouveaux pour les créatures (attaque) | **plus tard** |
 
 Le mode d'emploi est dans [PLUGINS.md](PLUGINS.md), « Modifier objets et blocs ».
 
@@ -271,4 +275,4 @@ chose que le serveur.
 
 - L'état du bloc dans le trait `Block`, pour y ranger appuis, croissance et récoltes.
 - Un gabarit par espèce d'entité.
-- La création de blocs et d'entités.
+- Pour les créatures créées : des comportements nouveaux (créatures hostiles).

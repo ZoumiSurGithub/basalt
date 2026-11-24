@@ -200,7 +200,7 @@ function Event:setAmount(n) end
 ---| "PlayerCommandPreprocessEvent" | "ServerCommandEvent" | "BlockBreakEvent" | "BlockPlaceEvent"
 ---| "PlayerInteractEvent" | "EntityDamageEvent" | "EntityDamageByEntityEvent" | "PlayerDeathEvent"
 ---| "PlayerRespawnEvent" | "PlayerDropItemEvent" | "EntityItemPickupEvent" | "PlayerGameModeChangeEvent"
----| "PlayerItemUseEvent" | "PlayerItemConsumeEvent" | "PlayerExhaustEvent" | "PlayerExperienceChangeEvent"
+---| "CreatureSpawnEvent" | "CreatureDamageEvent" | "CreatureDeathEvent" | "PlayerItemUseEvent" | "PlayerItemConsumeEvent" | "PlayerExhaustEvent" | "PlayerExperienceChangeEvent"
 ---| "PlayerBedEnterEvent" | "PlayerBedLeaveEvent" | "LeavesDecayEvent" | "BlockFallEvent" | "BlockGrowEvent"
 
 ---@alias SimpleEvent
@@ -250,8 +250,38 @@ function ItemModifier.modify(nom, valeurs) end
 ---@param nom string
 function ItemModifier.reset(nom) end
 
+---@class NewBlock
+---@field name? string nom affiché au joueur
+---@field texture? string image : nom de terrain_texture.json (pack de ressources) ou d'un bloc du jeu
+---@field textureTop? string image du dessus, si elle diffère des côtés
+---@field textureBottom? string image du dessous, si elle diffère des côtés
+---@field textureFront? string image de la face avant (avec rotation = "facing")
+---@field rotation? "axis"|"facing" orientation à la pose : couché comme une bûche, ou tourné vers le joueur
+---@field stages? string[] images des stades de croissance, de la pousse à la maturité
+---@field transparent? boolean laisse voir à travers les parties vides de l'image
+---@field geometry? string forme : "minecraft:geometry.cross" ou un modèle du pack ("geometry.ma_dalle")
+---@field solid? boolean arrête les joueurs (faux pour une plante)
+---@field tool? "pickaxe"|"axe"|"shovel"|"hoe"|"sword"|"shears"|"none" outil qui convient
+---@field tier? "wood"|"gold"|"stone"|"copper"|"iron"|"diamond"|"netherite" matériau minimal de l'outil pour le butin
+---@field xp? number expérience rendue quand il est cassé
+---@field xpMax? number borne haute de l'expérience (tirée entre xp et xpMax)
+---@field hardness? number dureté (pierre : 1.5)
+---@field light? number lumière émise, de 0 à 15
+---@field friction? number glissance (0.6 par défaut)
+---@field category? "construction"|"nature"|"equipment"|"items" onglet du menu créatif
+---@field group? string groupe du menu créatif
+---@field creative? boolean présent dans le menu créatif (vrai par défaut)
+---@field drops? table butin, comme dans server.blocks.modify
+---@field falls? boolean tombe quand rien ne le porte
+---@field needsFloor? boolean se détache si le bloc du dessous disparaît
+---@field breakable? boolean peut être cassé en survie
+
 ---@class BlockModifier
 local BlockModifier = {}
+--- Crée un bloc nouveau (cube plein), déclaré aux joueurs à leur connexion. À appeler au chargement du plugin.
+---@param nom string "espace:bloc", par exemple "monserveur:minerai_rubis"
+---@param reglages? NewBlock
+function BlockModifier.create(nom, reglages) end
 --- Change ce que répond un bloc du jeu.
 ---@param nom string nom complet, par exemple "minecraft:gravel"
 ---@param valeurs BlockChanges
@@ -260,8 +290,67 @@ function BlockModifier.modify(nom, valeurs) end
 ---@param nom string
 function BlockModifier.reset(nom) end
 
+---@class Creature
+local Creature = {}
+--- Sa sorte : "monserveur:vache_doree" pour une créature créée, "minecraft:cow" sinon.
+---@return string
+function Creature:getType() end
+--- La créature du jeu dont elle a l'apparence.
+---@return string
+function Creature:getLooks() end
+---@return boolean
+function Creature:isCustom() end
+---@return boolean
+function Creature:isBaby() end
+---@return number x, number y, number z
+function Creature:getPosition() end
+---@return number
+function Creature:getHealth() end
+---@return number
+function Creature:getMaxHealth() end
+---@return string
+function Creature:getNameTag() end
+---@return integer
+function Creature:getId() end
+---@param vie number
+function Creature:setHealth(vie) end
+---@param texte string
+function Creature:setNameTag(texte) end
+--- Elle meurt et rend son butin.
+function Creature:kill() end
+--- Elle disparaît sans rien rendre.
+function Creature:remove() end
+
+---@class NewEntity
+---@field looks string obligatoire : la créature du jeu dont elle part ("minecraft:cow")
+---@field ownModel? boolean son apparence vient du pack de ressources, qui la définit sous le même nom
+---@field name? string nom affiché au-dessus d'elle
+---@field nameVisible? boolean le nom se voit de loin (vrai par défaut)
+---@field health? number points de vie
+---@field speed? number vitesse, à l'échelle du jeu (vache : 0.25)
+---@field scale? number taille par rapport à l'espèce
+---@field width? number largeur de la boîte de collision, en blocs (avec height)
+---@field height? number hauteur de la boîte de collision, en blocs (avec width)
+---@field drops? table butin : { ["minecraft:gold_ingot"] = 2 } ou { ["minecraft:gold_ingot"] = { 1, 3 } }
+---@field xp? number expérience quand un joueur la tue
+---@field xpMax? number borne haute de l'expérience
+
+---@class EntityCreator
+local EntityCreator = {}
+--- Crée une créature à partir d'une créature du jeu : même apparence et même comportement, ses propres valeurs.
+---@param nom string "espace:creature", par exemple "monserveur:vache_doree"
+---@param reglages NewEntity
+function EntityCreator.create(nom, reglages) end
+--- Fait apparaître une créature, du jeu ou créée par un plugin.
+---@param nom string
+---@param x number
+---@param y number
+---@param z number
+function EntityCreator.spawn(nom, x, y, z) end
+
 ---@class Server
 ---@field items ItemModifier
+---@field entities EntityCreator
 ---@field blocks BlockModifier
 ---@field version string version de Basalt
 ---@field game_version string version du jeu annoncée

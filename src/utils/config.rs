@@ -32,7 +32,8 @@ pub struct Config {
     pub keep_inventory: bool,
     /// Compresser ce que le serveur envoie (chunks, gros paquets)
     pub network_compression: bool,
-    /// Terrain des nouveaux mondes : « normal » (relief, biomes, grottes) ou « flat » (plat)
+    /// Terrain des nouveaux mondes : « vanilla » (relief, biomes, grottes), « flat » (plat) ou
+    /// « plugin:<nom> »
     pub level_type: String,
     /// Graine des nouveaux mondes (vide : au hasard)
     pub level_seed: String,
@@ -96,7 +97,7 @@ impl Default for Config {
             white_list: false,
             keep_inventory: false,
             network_compression: true,
-            level_type: "normal".into(),
+            level_type: "vanilla".into(),
             level_seed: String::new(),
             root: std::path::PathBuf::from("."),
             file: None,
@@ -162,10 +163,10 @@ keep-inventory=false
 # Compression de ce que le serveur envoie (chunks environ 8 fois plus petits, connexion
 # 7 fois plus légère). false : moins de calcul, beaucoup plus de bande passante (réseau local).
 network-compression=true
-# Terrain d'un nouveau monde : normal (comme le jeu : biomes, montagnes, grottes), flat (plat),
+# Terrain d'un nouveau monde : vanilla (comme le jeu : biomes, montagnes, grottes), flat (plat),
 # ou plugin:<nom> pour le générateur d'un plugin (plugins/<plugin>/generators/<nom>.lua).
 # Un monde déjà créé garde son terrain : pour en changer, utilisez un autre world-dir.
-level-type=normal
+level-type=vanilla
 # Graine d'un nouveau monde : un nombre ou un texte. Vide : au hasard.
 level-seed=
 world-name=Monde
@@ -240,7 +241,7 @@ impl Config {
             if !more.ends_with('\n') {
                 more.push('\n');
             }
-            more.push_str("# Terrain d'un nouveau monde : normal (comme le jeu : biomes, montagnes, grottes), flat (plat),\n# ou plugin:<nom> pour le générateur d'un plugin (plugins/<plugin>/generators/<nom>.lua).\n# Un monde déjà créé garde son terrain : pour en changer, utilisez un autre world-dir.\nlevel-type=normal\n# Graine d'un nouveau monde : un nombre ou un texte. Vide : au hasard.\nlevel-seed=\n");
+            more.push_str("# Terrain d'un nouveau monde : vanilla (comme le jeu : biomes, montagnes, grottes), flat (plat),\n# ou plugin:<nom> pour le générateur d'un plugin (plugins/<plugin>/generators/<nom>.lua).\n# Un monde déjà créé garde son terrain : pour en changer, utilisez un autre world-dir.\nlevel-type=vanilla\n# Graine d'un nouveau monde : un nombre ou un texte. Vide : au hasard.\nlevel-seed=\n");
             let _ = std::fs::write(path, &more);
         }
         let text = std::fs::read_to_string(path).unwrap_or(text);
@@ -313,7 +314,7 @@ impl Config {
         c.white_list = map.get("white-list").map(|v| v == "true" || v == "on").unwrap_or(false);
         c.keep_inventory = map.get("keep-inventory").map(|v| v == "true" || v == "on").unwrap_or(false);
         c.network_compression = map.get("network-compression").map(|v| v != "false" && v != "off").unwrap_or(true);
-        c.level_type = text_of("level-type", "normal");
+        c.level_type = text_of("level-type", "vanilla");
         c.level_seed = map.get("level-seed").cloned().unwrap_or_default();
         c.auth_keys_file = text_of("auth-keys-file", "");
         c.debug = map.get("debug-packets").map(|v| v == "true").unwrap_or(false);

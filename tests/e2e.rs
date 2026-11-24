@@ -310,7 +310,7 @@ fn start_opts(dir: &PathBuf, max_per_ip: usize, xbox_auth: bool) -> (SocketAddr,
         cfg.level_type = if let Ok(kind) = std::fs::read_to_string(dir.join("terrain-type")) {
             kind.trim().to_string()
         } else if dir.join("terrain-normal").exists() {
-            "normal".into()
+            "vanilla".into()
         } else {
             "flat".into()
         };
@@ -2379,6 +2379,9 @@ fn plugin_items_are_declared_to_the_game() {
         r#"
 server.items.create("e2e:rubis", { name = "Rubis du test", icon = "emerald", maxStack = 16, category = "nature", group = "Gemmes du test" })
 server.items.create("e2e:secret", { name = "Secret", creative = false })
+server.blocks.create("e2e:pousse", { stages = { "wheat_stage_0", "wheat_stage_7" }, solid = false, transparent = true, needsFloor = true })
+server.blocks.create("e2e:tronc", { texture = "log_oak", rotation = "axis" })
+server.blocks.create("e2e:minerai", { name = "Minerai du test", texture = "diamond_block", hardness = 3, light = 7, drops = { ["e2e:rubis"] = 2 } })
 server.items.create("e2e:galette", { name = "Galette", icon = "bread", food = 8, saturation = 9.6 })
 pcall(server.items.create, "minecraft:faux", { name = "Refusé" })
 "#,
@@ -2396,9 +2399,15 @@ pcall(server.items.create, "minecraft:faux", { name = "Refusé" })
     c.game(8, &[3, 0, 0], Some(0xff));
     c.wait_for(7);
     c.game(8, &[4, 0, 0], Some(0xff));
-    c.wait_for(11);
+    // Le bloc du plugin est déclaré dans l'entrée dans le monde, avec son image
+    let start_game = c.wait_for(11);
+    let declared = |needle: &[u8]| start_game.windows(needle.len()).any(|w| w == needle);
+    assert!(declared(b"e2e:minerai") && declared(b"minecraft:material_instances") && declared(b"diamond_block") && declared(b"vanilla_block_data"), "bloc du plugin absent de StartGame");
+    // Les blocs à états déclarent leur propriété et une condition par état
+    assert!(declared(b"basalt:stage") && declared(b"basalt:axis") && declared(b"q.block_state('basalt:axis') == 2") && declared(b"minecraft:transformation"));
     let registry = c.wait_for(162);
     let has = |needle: &[u8]| registry.windows(needle.len()).any(|w| w == needle);
+    assert!(has(b"e2e:minerai"), "l'objet qui pose le bloc manque à la liste");
     // Les objets du jeu sont toujours là, ceux du plugin les suivent avec leurs composants
     assert!(has(b"minecraft:apple"), "la liste du jeu a disparu");
     assert!(has(b"e2e:rubis") && has(b"Rubis du test") && has(b"emerald"), "objet du plugin absent de la liste");
@@ -2414,7 +2423,105 @@ pcall(server.items.create, "minecraft:faux", { name = "Refusé" })
     let has = |needle: &[u8]| menu.windows(needle.len()).any(|w| w == needle);
     assert!(has(b"itemGroup.name.planks") && has(b"Gemmes du test"), "groupe du plugin absent du menu créatif");
     let mut pos = 0;
-    assert_eq!(read_varu32(&menu, &mut pos), Some(124 + 2), "le groupe nommé et celui de la galette");
+    assert_eq!(read_varu32(&menu, &mut pos), Some(124 + 5), "les trois blocs, le groupe nommé et celui de la galette");
+    // (le bloc y figure avec son identifiant réseau : le hachage de son nom)
+    let hash = basalt::bedrock::block_hash("e2e:minerai");
+    let mut w = Vec::new();
+    write_varu32(&mut w, hash);
+    assert!(menu.windows(w.len()).any(|x| x == &w[..]), "bloc du plugin absent du menu créatif");
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn plugin_creatures_appear_with_their_own_values() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-creature-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("vache.lua"),
+        r#"
+server.entities.create("e2e:vache_doree", {
+  looks = "minecraft:cow", name = "Vache du test", health = 40, scale = 2,
+  drops = { ["minecraft:gold_ingot"] = { 1, 3 } }, xp = 5,
+})
+pcall(server.entities.create, "e2e:sans_modele", { health = 5 })
+server.entities.create("e2e:gardien", { looks = "minecraft:iron_golem", ownModel = true, width = 0.9, height = 2 })
+local Arrivee = {}
+function Arrivee:onPlayerJoin(event)
+  local x, y, z = event:getPlayer():getPosition()
+  server.entities.spawn("e2e:vache_doree", x + 2, y, z)
+  server.entities.spawn("e2e:gardien", x - 2, y, z)
+end
+server.registerEvents(Arrivee)
+-- Les écouteurs voient la créature apparaître, avec sa sorte et sa vie, et peuvent agir sur elle
+local Garde = {}
+function Garde:onCreatureSpawn(event)
+  local creature = event:getEntity()
+  if creature:getType() == "e2e:vache_doree" and creature:isCustom() and creature:getLooks() == "minecraft:cow" then
+    creature:setNameTag("Vue par le plugin, vie " .. math.floor(creature:getHealth()))
+  end
+end
+function Garde:onCreatureDamage(event)
+  local creature = event:getEntity()
+  if creature:getType() == "e2e:vache_doree" and event:getDamager() then
+    event:setDamage(3)
+    creature:setNameTag("Touchée, reste " .. math.floor(creature:getHealth() - event:getDamage()))
+  end
+end
+server.registerEvents(Garde)
+"#,
+    )
+    .unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut c = Client::join(addr, "Steve");
+    // Une vache du jeu, à la vie de la fiche, renommée par l'écouteur du plugin
+    let (mut seen, mut renamed, mut own) = (false, false, false);
+    let mut cow = 0u32;
+    for _ in 0..3000 {
+        let (id, body) = c.recv_game(true);
+        let has = |needle: &[u8]| body.windows(needle.len()).any(|w| w == needle);
+        if id == 13 && (has(b"Vache du test") || has(b"Vue par le plugin")) {
+            // (identifiant unique, puis identifiant d'exécution : celui qu'on vise)
+            let mut pos = 0;
+            read_varu32(&body, &mut pos).unwrap();
+            cow = read_varu32(&body, &mut pos).unwrap();
+            assert!(has(b"minecraft:cow"), "elle garde l'apparence de la vache");
+            // Sa vie : 40, celle de la fiche (attribut de santé, en flottants petit-boutistes)
+            assert!(has(&40.0f32.to_le_bytes()), "vie de la fiche absente");
+            seen = true;
+        }
+        renamed |= has("Vue par le plugin, vie 40".as_bytes());
+        // Celle dont l'apparence vient du pack est annoncée sous son propre nom, pas en golem
+        if id == 13 && has(b"e2e:gardien") {
+            assert!(!has(b"minecraft:iron_golem"));
+            own = true;
+        }
+        if seen && renamed && own {
+            break;
+        }
+    }
+    assert!(seen, "la créature du plugin n'est jamais apparue");
+    assert!(renamed, "l'écouteur CreatureSpawnEvent n'a pas renommé la créature");
+    assert!(own, "la créature à l'apparence du pack n'est jamais apparue sous son nom");
+    // Un coup : l'écouteur ramène les dégâts à 3 et affiche la vie restante au-dessus d'elle,
+    // chez un joueur qui la voit déjà
+    let mut attack = vec![0x00, 0x03, 0x00];
+    write_varu32(&mut attack, cow);
+    attack.push(0x01);
+    attack.extend_from_slice(&[0x00, 0, 0, 0, 0, 0, 0, 0, 0]);
+    c.game(30, &attack, Some(0xff));
+    let mut told = false;
+    for _ in 0..3000 {
+        let (id, body) = c.recv_game(true);
+        if id == 39 && body.windows(18).any(|w| w == "Touchée, reste 37".as_bytes()) {
+            told = true;
+            break;
+        }
+    }
+    assert!(told, "le nom changé par CreatureDamageEvent n'est pas arrivé au joueur");
     stop.store(true, Ordering::Relaxed);
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);

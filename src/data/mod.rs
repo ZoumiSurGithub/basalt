@@ -274,6 +274,36 @@ impl GameData {
         }
     }
 
+    /// Ajoute un bloc créé par un plugin : ses états (le premier est celui par défaut), ses
+    /// propriétés, et l'objet du même nom qui le pose.
+    pub fn add_block(&mut self, name: &str, states: &[u32], props: crate::block::BlockProps, item_id: i16) {
+        if let Some(old) = self.block_states.insert(name.to_string(), states.to_vec()) {
+            for s in old {
+                self.block_names.remove(&s);
+            }
+        }
+        for state in states {
+            self.block_names.insert(*state, name.to_string());
+        }
+        self.hardness.insert(name.to_string(), props.hardness);
+        self.props.insert(name.to_string(), props);
+        self.add_item(ItemDef { name: name.to_string(), id: item_id, version: 2, components: None });
+    }
+
+    /// Retire des blocs créés par les plugins, avec leurs objets.
+    pub fn remove_blocks(&mut self, names: &[String]) {
+        for name in names {
+            for state in self.block_states.remove(name).unwrap_or_default() {
+                self.block_names.remove(&state);
+            }
+            self.hardness.remove(name);
+            self.props.remove(name);
+        }
+        self.items.retain(|i| !names.contains(&i.name));
+        self.item_by_name = self.items.iter().enumerate().map(|(i, it)| (it.name.clone(), i)).collect();
+        self.item_by_id = self.items.iter().enumerate().map(|(i, it)| (it.id, i)).collect();
+    }
+
     /// Retire les objets créés par les plugins (identifiants à partir de `from`).
     pub fn remove_items_from(&mut self, from: i16) {
         self.items.retain(|i| i.id < from);

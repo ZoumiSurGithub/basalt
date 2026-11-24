@@ -59,6 +59,16 @@ pub(super) enum Species {
     IronGolem,
 }
 
+/// Basalt sait-il faire vivre cette créature du jeu (`minecraft:cow`) ?
+pub(super) fn species_known(id: &str) -> bool {
+    Species::from_id(id).is_some()
+}
+
+/// Les créatures du jeu que Basalt sait faire vivre.
+pub(super) fn species_names() -> Vec<&'static str> {
+    Species::ALL.iter().map(|s| s.id()).collect()
+}
+
 /// Ce qu'un loup attaque.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(super) enum Prey {
@@ -609,6 +619,19 @@ pub(super) struct Mob {
     egg: u32,
     /// Vie maximale (tirée au sort pour les montures)
     max_health: f32,
+    /// Créature créée par un plugin : le rang de sa fiche (`entity/custom.rs`). Elle garde le
+    /// comportement de son espèce ; la fiche change ce qui suit.
+    custom: Option<u16>,
+    /// Vitesse et taille données par la fiche (0 et 1 : celles de l'espèce)
+    custom_speed: f32,
+    custom_scale: f32,
+    /// Boîte de collision donnée par la fiche : (largeur, hauteur) en blocs
+    custom_box: Option<(f32, f32)>,
+    /// Nom sous lequel elle est annoncée au jeu quand son apparence vient du pack de ressources
+    ident: Option<String>,
+    /// Nom affiché au-dessus d'elle, et s'il reste visible de loin
+    label: String,
+    label_always: bool,
     /// Motif de la robe (cheval)
     mark: i32,
     /// Apprivoisé (montures)
@@ -776,7 +799,9 @@ impl Mob {
     }
     /// Vitesse du jeu de cette créature (le cheval a la sienne)
     fn movement(&self) -> f32 {
-        if self.species == Species::Horse && self.move_speed > 0.0 {
+        if self.custom_speed > 0.0 {
+            self.custom_speed
+        } else if self.species == Species::Horse && self.move_speed > 0.0 {
             self.move_speed
         } else {
             self.species.movement()
@@ -788,6 +813,8 @@ impl Mob {
     }
     fn size(&self) -> (f32, f32) {
         let (w, h) = self.species.size();
+        // (boîte de la fiche si le plugin en a donné une ; sinon celle de l'espèce, à sa taille)
+        let (w, h) = self.custom_box.unwrap_or((w * self.custom_scale, h * self.custom_scale));
         if self.baby() {
             (w / 2.0, h / 2.0)
         } else {
@@ -797,10 +824,35 @@ impl Mob {
     /// Boîte annoncée au jeu (données 53 et 54) : celle des fichiers du jeu, avant la taille
     /// d'affichage, que le jeu applique lui-même. Réduite ici aussi, celle d'un petit (ou d'un
     /// lapin) était réduite deux fois : trop petite pour le viser.
+    /// Reçoit les valeurs de la fiche d'une créature créée par un plugin. `fresh` : elle vient
+    /// d'apparaître, sa vie est celle de la fiche (rechargée, elle garde la sienne).
+    fn take_custom(&mut self, rank: u16, def: &crate::entity::custom::CustomEntity, fresh: bool) {
+        self.custom = Some(rank);
+        self.custom_speed = def.speed.unwrap_or(0.0);
+        self.custom_scale = def.scale;
+        self.custom_box = def.hitbox;
+        self.ident = def.own_model.then(|| def.name.clone());
+        self.label = def.display.clone();
+        self.label_always = def.name_visible;
+        if let Some(health) = def.health {
+            self.max_health = health;
+            if fresh {
+                self.health = health;
+            }
+            self.health = self.health.min(health);
+        }
+    }
     fn hitbox(&self) -> (f32, f32) {
-        let (w, h) = self.species.size();
         let adult = self.species.scale(false);
-        (w / adult, h / adult)
+        match self.custom_box {
+            // Boîte voulue par un plugin : annoncée divisée par la taille d'affichage, pour
+            // que le jeu, qui la multiplie, retombe sur les dimensions demandées
+            Some((w, h)) => (w / (adult * self.custom_scale), h / (adult * self.custom_scale)),
+            None => {
+                let (w, h) = self.species.size();
+                (w / adult, h / adult)
+            }
+        }
     }
 }
 
@@ -823,6 +875,8 @@ pub(super) struct MobRecord {
     pub variant: i32,
     pub sheared: bool,
     pub max_health: f32,
+    /// Nom de la créature créée par un plugin (vide : une créature du jeu)
+    pub custom: String,
     pub mark: i32,
     pub tamed: bool,
     pub move_speed: f32,
@@ -866,6 +920,7 @@ impl MobRecord {
             ("variant".into(), Json::Num(self.variant as f64)),
             ("sheared".into(), Json::Bool(self.sheared)),
             ("max_health".into(), n(self.max_health)),
+            ("custom".into(), Json::Str(self.custom.clone())),
             ("mark".into(), Json::Num(self.mark as f64)),
             ("tamed".into(), Json::Bool(self.tamed)),
             ("speed".into(), Json::Num((self.move_speed as f64 * 10000.0).round() / 10000.0)),
@@ -902,13 +957,17 @@ impl MobRecord {
     pub fn from_json(v: &Json) -> Option<MobRecord> {
         let species = v.get("kind").and_then(|k| k.as_str()).and_then(Species::from_id)?;
         let num = |k: &str| v.get(k).and_then(|n| n.as_f64()).filter(|n| n.abs() < 3.0e7);
-        let max_health = (num("max_health").unwrap_or(species.health() as f64) as f32).clamp(1.0, species.health());
+        // (une créature créée par un plugin peut avoir plus de vie que son espèce)
+        let custom = v.get("custom").and_then(|c| c.as_str()).unwrap_or("").to_string();
+        let ceiling = if custom.is_empty() { species.health() } else { 1024.0 };
+        let max_health = (num("max_health").unwrap_or(species.health() as f64) as f32).clamp(1.0, ceiling);
         Some(MobRecord {
             species,
             pos: (num("x")? as f32, num("y")? as f32, num("z")? as f32),
             yaw: num("yaw").unwrap_or(0.0) as f32,
             health: (num("health").unwrap_or(max_health as f64) as f32).clamp(0.5, max_health),
             max_health,
+            custom,
             mark: num("mark").unwrap_or(0.0) as i32,
             tamed: v.get("tamed").and_then(|s| s.as_bool()).unwrap_or(false),
             move_speed: num("speed").unwrap_or(0.0) as f32,
@@ -965,6 +1024,7 @@ impl Mob {
             variant: self.variant,
             sheared: self.sheared,
             max_health: self.max_health,
+            custom: self.custom.and_then(crate::entity::custom::get).map(|def| def.name).unwrap_or_default(),
             mark: self.mark,
             tamed: self.tamed,
             move_speed: self.move_speed,
@@ -1460,6 +1520,13 @@ impl Server {
             variant: 0,
             egg,
             max_health,
+            custom: None,
+            custom_speed: 0.0,
+            custom_scale: 1.0,
+            custom_box: None,
+            ident: None,
+            label: String::new(),
+            label_always: false,
             mark: 0,
             tamed: false,
             move_speed,
@@ -1516,7 +1583,16 @@ impl Server {
     fn mob_meta(m: &Mob, holder: i64) -> Vec<(u32, bedrock::Meta)> {
         let (w, h) = m.hitbox();
         let mut meta = bedrock::mob_metadata(w, h, m.variant, m.color, m.flags());
-        let scale = m.species.scale(m.baby());
+        let scale = m.species.scale(m.baby()) * m.custom_scale;
+        // Nom d'une créature créée par un plugin (données 4 : le nom ; 81 : toujours visible)
+        if !m.label.is_empty() {
+            for (k, v) in [(4u32, bedrock::Meta::Text(m.label.clone())), (81, bedrock::Meta::Byte(m.label_always as u8))] {
+                match meta.iter_mut().find(|(key, _)| *key == k) {
+                    Some(cell) => cell.1 = v,
+                    None => meta.push((k, v)),
+                }
+            }
+        }
         for (k, v) in meta.iter_mut() {
             match *k {
                 38 => *v = bedrock::Meta::Float(scale),
@@ -1573,7 +1649,7 @@ impl Server {
 
     /// Paquet d'apparition d'une créature.
     fn mob_packet(m: &Mob, rider: Option<i64>, holder: i64) -> Vec<u8> {
-        bedrock::add_actor(m.id, m.species.id(), m.pos, m.vel, m.yaw, (m.health.max(0.5), m.max_health), m.species.mount().then_some((m.move_speed, m.jump)), rider, &Self::mob_meta(m, holder))
+        bedrock::add_actor(m.id, m.ident.as_deref().unwrap_or(m.species.id()), m.pos, m.vel, m.yaw, (m.health.max(0.5), m.max_health), m.species.mount().then_some((m.move_speed, m.jump)), rider, &Self::mob_meta(m, holder))
     }
 
     /// Identifiant de celui qui tient la laisse (-1 : personne).
@@ -1589,7 +1665,7 @@ impl Server {
     /// tondu, amoureux).
     fn mob_changed(&mut self, id: i64) {
         let Some(m) = self.mobs.get(&id) else { return };
-        let scale = m.species.scale(m.baby());
+        let scale = m.species.scale(m.baby()) * m.custom_scale;
         let (w, h) = m.hitbox();
         let holder = self.holder_id(m);
         let packet = bedrock::set_actor_data(
@@ -3242,12 +3318,104 @@ impl Server {
                 self.dismount(&r);
             }
             self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_DEATH, 0));
+            self.mob_died(id, None);
             self.mob_loot(id);
         }
     }
 
+    /// Créature telle que les écouteurs des plugins la voient : identifiant, sorte (le nom
+    /// donné par le plugin pour une créature créée, celui du jeu sinon), position, vie, nom.
+    pub(super) fn mob_json(&self, id: i64) -> Json {
+        let Some(m) = self.mobs.get(&id) else { return Json::Null };
+        let custom = m.custom.and_then(crate::entity::custom::get);
+        let n = |v: f32| Json::Num(v as f64);
+        Json::Obj(vec![
+            ("id".into(), Json::Num(id as f64)),
+            ("type".into(), Json::Str(custom.as_ref().map(|def| def.name.clone()).unwrap_or_else(|| m.species.id().to_string()))),
+            ("looks".into(), Json::Str(m.species.id().into())),
+            ("custom".into(), Json::Bool(custom.is_some())),
+            ("x".into(), n(m.pos.0)),
+            ("y".into(), n(m.pos.1)),
+            ("z".into(), n(m.pos.2)),
+            ("health".into(), n(m.health.max(0.0))),
+            ("maxHealth".into(), n(m.max_health)),
+            ("name".into(), Json::Str(m.label.clone())),
+            ("baby".into(), Json::Bool(m.baby())),
+        ])
+    }
+
+    /// Écouteurs : une créature vient de mourir (son butin tombe juste après).
+    fn mob_died(&mut self, id: i64, killer: Option<SocketAddr>) {
+        if !self.plugins.listens("CreatureDeathEvent") {
+            return;
+        }
+        let mut fields = vec![("entity", self.mob_json(id))];
+        if let Some(a) = killer {
+            fields.push(("killer", self.name_json(&a)));
+        }
+        self.fire("CreatureDeathEvent", fields);
+    }
+
+    /// Ce qu'un plugin demande pour une créature : la retirer, la tuer, changer sa vie ou
+    /// le nom affiché au-dessus d'elle.
+    pub(super) fn mob_order(&mut self, id: i64, verb: &str, value: &str) -> Result<(), String> {
+        if !self.mobs.contains_key(&id) {
+            return Err("cette créature n'existe plus".into());
+        }
+        match verb {
+            "remove" => self.remove_mob(id),
+            "kill" => {
+                let at = self.mobs.get(&id).map(|m| m.pos).unwrap_or_default();
+                if let Some(m) = self.mobs.get_mut(&id) {
+                    m.hurt_tick = 0;
+                }
+                self.hit_mob(id, at, 1.0e6, Attacker::Mob(id));
+            }
+            "health" => {
+                let health = value.parse::<f32>().ok().filter(|v| v.is_finite() && *v > 0.0).ok_or("setHealth attend un nombre positif")?;
+                if let Some(m) = self.mobs.get_mut(&id) {
+                    m.health = health.min(m.max_health);
+                    let (now, max) = (m.health, m.max_health);
+                    self.send_to_viewers(id, bedrock::ID_UPDATE_ATTRIBUTES, &bedrock::health_attribute(id, now, max));
+                }
+            }
+            "name" => {
+                let label: String = value.chars().filter(|c| !c.is_control()).take(64).collect();
+                if let Some(m) = self.mobs.get_mut(&id) {
+                    m.label = label.clone();
+                    m.label_always = true;
+                }
+                // Ceux qui la voient déjà reçoivent le nouveau nom (données 4 et 81) ; les
+                // autres l'auront avec la créature
+                let packet = bedrock::set_actor_data(id, &[(4u32, bedrock::Meta::Text(label)), (81, bedrock::Meta::Byte(1))]);
+                self.send_to_viewers(id, bedrock::ID_SET_ACTOR_DATA, &packet);
+                self.mobs_dirty = true;
+            }
+            _ => return Err(format!("ordre inconnu « {} »", verb)),
+        }
+        Ok(())
+    }
+
     pub(super) fn hit_mob(&mut self, id: i64, from: (f32, f32, f32), damage: f32, by: Attacker) -> bool {
         let tick = self.tick;
+        // Écouteurs : le coup peut être annulé, ou ses dégâts changés
+        let mut damage = damage;
+        if self.plugins.listens("CreatureDamageEvent") {
+            let lands = self.mobs.get(&id).map(|m| m.dead.is_none() && tick.saturating_sub(m.hurt_tick) >= 10 && (m.pos.0 - from.0).powi(2) + (m.pos.2 - from.2).powi(2) <= 36.0).unwrap_or(false);
+            if lands {
+                let mut fields = vec![("entity", self.mob_json(id)), ("damage", Json::Num(damage as f64)), ("cause", Json::Str(if matches!(by, Attacker::Player(_)) { "PLAYER_ATTACK" } else { "CREATURE_ATTACK" }.into()))];
+                if let Attacker::Player(a) = by {
+                    fields.push(("damager", self.name_json(&a)));
+                }
+                let out = self.fire("CreatureDamageEvent", fields);
+                if super::cancelled(&out) {
+                    return true;
+                }
+                if let Some(n) = out.as_ref().and_then(|v| v.get("damage")).and_then(|n| n.as_f64()) {
+                    damage = n.clamp(0.0, 1.0e6) as f32;
+                }
+            }
+        }
         let Some(m) = self.mobs.get_mut(&id) else { return false };
         if m.dead.is_some() || tick.saturating_sub(m.hurt_tick) < 10 {
             return true;
@@ -3344,11 +3512,17 @@ impl Server {
                 self.dismount(&r);
             }
             self.send_to_viewers(id, bedrock::ID_ACTOR_EVENT, &bedrock::actor_event(id, bedrock::EVENT_DEATH, 0));
+            self.mob_died(id, match by {
+                Attacker::Player(a) => Some(a),
+                _ => None,
+            });
             self.mob_loot(id);
             // Tuée par un joueur : un peu d'expérience (rien pour un petit)
             if let Attacker::Player(a) = by {
                 if !self.mobs.get(&id).map(|m| m.baby()).unwrap_or(true) {
-                    let xp = self.xp_between(1, 3);
+                    // (celle de sa fiche pour une créature créée par un plugin)
+                    let (lo, hi) = self.mobs.get(&id).and_then(|m| m.custom).and_then(crate::entity::custom::get).and_then(|def| def.xp).unwrap_or((1, 3));
+                    let xp = self.xp_between(lo, hi);
                     let _ = a;
                     if let Some(at) = self.mobs.get(&id).map(|m| m.pos) {
                         self.drop_xp((at.0, at.1 + 0.5, at.2), xp);
@@ -3802,9 +3976,12 @@ impl Server {
     /// `/summon` : fait apparaître un animal (pelage, robe, qualités tirés au sort comme à
     /// l'apparition naturelle). `baby` : un petit (événement « minecraft:entity_born »).
     pub(super) fn summon_mob(&mut self, name: &str, pos: (f32, f32, f32), baby: bool, tamed: bool) -> Result<(), String> {
-        let short = name.trim_start_matches("minecraft:").to_ascii_lowercase();
+        // Créature créée par un plugin : celle du jeu dont elle part, avec sa fiche
+        let custom = crate::entity::custom::find(&name.to_ascii_lowercase());
+        let base = custom.as_ref().map(|(_, def)| def.looks.clone()).unwrap_or_else(|| name.to_string());
+        let short = base.trim_start_matches("minecraft:").to_ascii_lowercase();
         let Some(species) = Species::from_id(&format!("minecraft:{}", short)) else {
-            return Err(format!("Basalt ne sait pas encore faire apparaître : {}", name));
+            return Err(format!("Basalt ne sait pas encore faire apparaître : {}", base));
         };
         if !pos.1.is_finite() || pos.1 < crate::world::MIN_Y as f32 || pos.1 > crate::world::MAX_Y as f32 {
             return Err("Position hors du monde".into());
@@ -3827,6 +4004,19 @@ impl Server {
             }
             // Événement « minecraft:on_tame » du jeu : une monture déjà apprivoisée
             m.tamed = tamed && species.mount();
+            if let Some((rank, def)) = &custom {
+                m.take_custom(*rank, def, true);
+            }
+        }
+        // Écouteurs : une créature apparaît (annulé, elle n'apparaît pas)
+        if self.plugins.listens("CreatureSpawnEvent") {
+            let out = self.fire("CreatureSpawnEvent", vec![("entity", self.mob_json(id))]);
+            if super::cancelled(&out) {
+                self.remove_mob(id);
+                return Ok(());
+            }
+        }
+        if self.mobs.contains_key(&id) {
 
         }
         // Son chunk compte désormais parmi ceux qui sont en mémoire (sinon il serait rangé aussitôt)
@@ -4392,6 +4582,16 @@ impl Server {
         if m.baby() {
             return;
         }
+        // Créature créée par un plugin : le butin de sa fiche, s'il en a fixé un
+        if let Some(drops) = m.custom.and_then(crate::entity::custom::get).and_then(|def| def.drops) {
+            for (name, lo, hi) in drops {
+                let count = lo + self.mob_rng.below((hi - lo) as u32 + 1) as u8;
+                let Some(item) = self.item_id(&name).filter(|_| count > 0) else { continue };
+                let vel = ((self.mob_rng.unit() as f32 - 0.5) * 0.2, 0.2, (self.mob_rng.unit() as f32 - 0.5) * 0.2);
+                self.drop_item((m.pos.0, m.pos.1 + 0.5, m.pos.2), vel, item, count, 10);
+            }
+            return;
+        }
         for &(name, lo, hi) in m.species.drops() {
             let count = lo + self.mob_rng.below((hi - lo) as u32 + 1) as u8;
             // La laine prend la couleur du mouton ; un mouton tondu n'en a plus
@@ -4478,6 +4678,15 @@ impl Server {
             m.variant = r.variant;
             m.sheared = r.sheared;
             m.max_health = r.max_health;
+            // Créature d'un plugin : elle retrouve sa fiche (sans le plugin, c'est une créature
+            // ordinaire de son espèce, à la vie de celle-ci)
+            match crate::entity::custom::find(&r.custom) {
+                Some((rank, def)) => m.take_custom(rank, &def, false),
+                None => {
+                    m.max_health = m.max_health.min(m.species.health().max(30.0));
+                    m.health = m.health.min(m.max_health);
+                }
+            }
             m.mark = r.mark;
             m.tamed = r.tamed;
             m.saddled = r.saddled;
@@ -4730,6 +4939,7 @@ mod tests {
             color: 0,
             variant: 3,
             sheared: false,
+            custom: String::new(),
             max_health: 27.0,
             mark: 4,
             tamed: true,

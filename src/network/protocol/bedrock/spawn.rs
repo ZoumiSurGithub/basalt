@@ -156,6 +156,8 @@ pub struct StartGame<'a> {
     /// Point d'apparition du monde (bloc où se tiennent les pieds)
     pub spawn: (i32, i32, i32),
     pub features: crate::versions::Features,
+    /// Blocs créés par les plugins : (nom, déclaration en NBT réseau)
+    pub custom_blocks: &'a [(String, Vec<u8>)],
 }
 
 /// Paquet StartGame, d'après la documentation officielle du protocole
@@ -237,7 +239,12 @@ pub fn start_game(s: &StartGame) -> Vec<u8> {
     w.bool(false); // casse de blocs autoritaire
     w.u64(0); // temps courant
     w.vari32(0); // graine d'enchantement
-    w.varu32(0); // propriétés de blocs personnalisés
+    // Blocs créés par les plugins : nom, puis déclaration (composants, menu, numéro)
+    w.varu32(s.custom_blocks.len() as u32);
+    for (name, definition) in s.custom_blocks {
+        w.string(name);
+        w.0.extend_from_slice(definition);
+    }
     w.string(""); // identifiant de corrélation
     w.bool(true); // gestion des piles d'objets côté serveur
     w.string(s.game_version);

@@ -12,6 +12,11 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Ajouté
 
+- Créatures créées par les plugins : apparence propre avec `ownModel = true` — le pack de ressources définit la créature sous son nom (modèle, image), et elle est déclarée au jeu à la connexion.
+- Plugins : événements sur les créatures, celles du jeu comme celles des plugins — `CreatureSpawnEvent` (annulable), `CreatureDamageEvent` (annulable, dégâts modifiables) et `CreatureDeathEvent`. `getEntity()` rend la créature (`getType`, `getHealth`, `getPosition`…) et permet d'agir sur elle (`setHealth`, `setNameTag`, `kill`, `remove`).
+- Plugins : créer des créatures à partir de celles du jeu. `server.entities.create("monserveur:vache_doree", { looks = "minecraft:cow", name, health, speed, scale, width, height, drops, xp })` garde l'apparence et le comportement de l'espèce avec ses propres valeurs ; `server.entities.spawn(nom, x, y, z)` fait apparaître une créature, du jeu ou créée. Voir « Créer des créatures » dans `docs/PLUGINS.md`.
+- Tutoriel `docs/VSCODE.md` pour écrire ses plugins dans Visual Studio Code, et fichier `.luarc.json` à la racine : il suffit d'installer l'extension Lua et d'ouvrir le dossier du serveur.
+- Plugins : créer des blocs nouveaux. `server.blocks.create("monserveur:minerai", { name, texture, hardness, light, friction, category, group, drops, falls… })` ; le bloc est déclaré au jeu des joueurs, avec l'objet qui le pose et sa place dans le menu créatif. Images par face (`textureTop`, `textureBottom`), `transparent`, forme (`geometry`), `solid`, outil exigé (`tool`, `tier`), expérience (`xp`, `xpMax`). Blocs à états : orientation à la pose (`rotation = "axis"` ou `"facing"`, `textureFront`) et stades de croissance (`stages`). Voir « Créer des blocs » dans `docs/PLUGINS.md`.
 - Packs de ressources, réglés comme sur PocketMine dans `resource_packs/resource_packs.yml` : `resource_stack` liste les `.mcpack` et `.zip` à envoyer aux joueurs, `force_resources` les rend obligatoires ; pack chiffré avec sa clé dans un fichier `.key`. Voir `docs/PACKS.md`.
 - Objets créés par les plugins : présents dans le menu créatif, dans l'onglet (`category`) et le groupe (`group`) choisis ; `creative = false` pour les en écarter.
 - Plugins : événement `PlayerItemUseEvent` (clic avec un objet en main, annulable), pour donner un effet à un objet.
@@ -123,6 +128,7 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ### Retiré
 
+- L'ancien terrain propre à Basalt. `level-type` vaut désormais `vanilla` (comme le jeu), `flat` ou `plugin:<nom>` ; `normal` reste accepté et désigne le terrain du jeu. Un monde créé avec l'ancien terrain est repris avec celui du jeu, et la console le signale.
 - RakNet : l'ancien transport du jeu (avant la 1.26.60) est retiré du serveur, avec son
   chiffrement, son écoute IPv6 (`server-portv6`), sa réponse aux pings et l'auto-test du
   démarrage. Les joueurs n'entrent plus que par NetherNet ; le port 19132 en UDP ne sert

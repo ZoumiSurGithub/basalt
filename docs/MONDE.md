@@ -123,16 +123,20 @@ la [feuille de route](ROADMAP.md).
 
 Dans `server.properties` :
 
-- `level-type=normal` (comme le jeu), `level-type=flat` (plat), ou `level-type=plugin:<nom>`
+- `level-type=vanilla` (comme le jeu ; `normal` est accepté et veut dire la même chose),
+  `level-type=flat` (plat), ou `level-type=plugin:<nom>`
   pour un générateur écrit en Lua par un plugin (relief, décorations, structures : voir
   [docs/PLUGINS.md](PLUGINS.md#générateurs-de-terrain) et l'exemple `plugins/Archipel`) ;
 - `level-seed=` : un nombre ou un texte ; vide, la graine est tirée au hasard.
 
 Ces deux réglages ne servent qu'à la création d'un monde : le type de terrain et la graine
 sont ensuite enregistrés dans `level.nbt`, et un monde existant garde les siens. Les mondes
-créés avant la génération de terrain restent plats, et ceux créés avec le premier terrain
-de Basalt gardent ce terrain. Pour un nouveau monde, changez
+créés avant la génération de terrain restent plats. Pour un nouveau monde, changez
 `world-dir` (ou supprimez le dossier du monde).
+
+Le premier terrain propre à Basalt a été retiré : un monde créé avec lui est repris avec le
+terrain du jeu. Ses constructions sont gardées, mais le relief autour d'elles n'est plus le
+même ; la console le signale au démarrage.
 
 Le terrain lui-même n'est jamais enregistré : il se régénère à l'identique à partir de la
 graine. Seuls les blocs modifiés par les joueurs le sont (avec l'eau gardée dans les blocs

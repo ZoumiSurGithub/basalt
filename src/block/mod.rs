@@ -13,6 +13,7 @@
 #[allow(clippy::module_inception)]
 pub mod behavior;
 mod block;
+pub mod custom;
 pub mod overrides;
 pub mod placement;
 mod types;

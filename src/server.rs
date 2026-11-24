@@ -449,6 +449,8 @@ pub struct Server {
     /// Les mêmes, déjà emballés et compressés (protocole, identifiant) : envoyés tels quels
     captured_ready: HashMap<(i32, u32), Arc<Vec<u8>>>,
     /// Packs de ressources proposés aux joueurs (dossier `resource_packs/`)
+    /// Blocs créés par les plugins, tels que déclarés aux joueurs : (nom, NBT réseau)
+    custom_blocks: Arc<Vec<(String, Vec<u8>)>>,
     packs: Vec<crate::utils::packs::ResourcePack>,
     /// Un joueur qui refuse les packs ne peut pas entrer (`force_resources`)
     force_packs: bool,
@@ -777,6 +779,7 @@ impl Server {
             refused_extras: HashSet::new(),
             captured: HashMap::new(),
             captured_ready: HashMap::new(),
+            custom_blocks: Arc::new(Vec::new()),
             packs: Vec::new(),
             force_packs: false,
             refused_captured: HashSet::new(),
@@ -1861,10 +1864,29 @@ impl Server {
     /// Le menu créatif du jeu, complété des objets créés par les plugins. None s'il n'y en a
     /// pas (le menu relevé part alors tel quel).
     fn creative_with_plugin_items(&self, addr: &SocketAddr) -> Option<Vec<u8>> {
-        if !crate::item::custom::any() {
+        if !crate::item::custom::any() && !crate::block::custom::any() {
             return None;
         }
-        let (groups, items) = crate::item::custom::creative_entries();
+        // (onglet, groupe, objet, bloc posé) : les blocs d'abord, puis les objets
+        let mut entries: Vec<(u8, String, i16, u32)> = Vec::new();
+        for (block, id) in crate::block::custom::all() {
+            entries.push((block.category, block.group.clone(), crate::block::custom::item_id_of(id), block.network_id()));
+        }
+        for (item, id) in crate::item::custom::all() {
+            entries.push((item.category, item.group.clone(), id, 0));
+        }
+        // Un contenu sans groupe reçoit un groupe sans nom à lui, comme le fait le jeu pour
+        // ses objets isolés ; un groupe nommé montre son premier contenu
+        let mut groups: Vec<(u8, String, i16, u32)> = Vec::new();
+        let mut items: Vec<(i16, u32, usize)> = Vec::new();
+        for (category, group, id, block) in entries.into_iter().filter(|e| e.0 != 0) {
+            let found = if group.is_empty() { None } else { groups.iter().position(|(c, n, _, _)| *c == category && *n == group) };
+            let index = found.unwrap_or_else(|| {
+                groups.push(if group.is_empty() { (category, String::new(), 0, 0) } else { (category, group.clone(), id, block) });
+                groups.len() - 1
+            });
+            items.push((id, block, index));
+        }
         if items.is_empty() {
             return None;
         }
@@ -1882,6 +1904,21 @@ impl Server {
                 continue;
             }
             Arc::make_mut(data).add_item(crate::data::ItemDef { name: def.name.clone(), id, version: 1, components: Some(components) });
+        }
+        // Blocs créés : leur état, leurs propriétés, l'objet qui les pose, et leur
+        // déclaration prête pour l'entrée des joueurs dans le monde
+        let blocks = crate::block::custom::all();
+        for (block, id) in &blocks {
+            let (states, item) = (block.states(), crate::block::custom::item_id_of(*id));
+            let known = states.iter().all(|s| data.block_name(*s) == Some(block.name.as_str()));
+            if known && data.default_state(&block.name) == Some(states[0]) && data.item(&block.name).map(|i| i.id) == Some(item) && data.hardness(states[0]) == Some(block.hardness) {
+                continue;
+            }
+            Arc::make_mut(data).add_block(&block.name, &states, block.props(), item);
+        }
+        self.custom_blocks = Arc::new(blocks.iter().map(|(block, id)| (block.name.clone(), crate::nbt::write_network(&block.definition(*id)))).collect());
+        if !blocks.is_empty() {
+            self.plugin_blocks = Some(Arc::new(data.block_names_for_plugins()));
         }
     }
 
@@ -1916,12 +1953,61 @@ impl Server {
                         Err(why) => warn!("[{}] server.items.create(\"{}\") : {}", plugin, name, why),
                     }
                 }
+                Action::Modify(plugin, kind, name, _, sheet) if kind == "new-entity" => {
+                    let made = crate::entity::custom::CustomEntity::parse(&name, &sheet).and_then(|def| {
+                        if mobs::species_known(&def.looks) {
+                            crate::entity::custom::define(def)
+                        } else {
+                            Err(format!("Basalt ne sait pas encore faire vivre « {} » ; créatures possibles : {}", def.looks, mobs::species_names().join(", ")))
+                        }
+                    });
+                    if let Err(why) = made {
+                        warn!("[{}] server.entities.create(\"{}\") : {}", plugin, name, why);
+                    }
+                }
+                Action::Modify(plugin, kind, id, verb, value) if kind == "mob-act" => {
+                    let done = match id.parse::<i64>() {
+                        Ok(id) => self.mob_order(id, &verb, &value),
+                        Err(_) => Err("créature invalide".to_string()),
+                    };
+                    if let Err(why) = done {
+                        warn!("[{}] créature : {}", plugin, why);
+                    }
+                }
+                Action::Modify(plugin, kind, name, _, place) if kind == "spawn-entity" => {
+                    let at: Vec<f32> = place.split('\t').filter_map(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite()).collect();
+                    let done = match at[..] {
+                        [x, y, z] => self.summon_mob(&name, (x, y, z), false, false),
+                        _ => Err("position invalide".to_string()),
+                    };
+                    if let Err(why) = done {
+                        warn!("[{}] server.entities.spawn(\"{}\") : {}", plugin, name, why);
+                    }
+                }
+                Action::Modify(plugin, kind, name, _, sheet) if kind == "new-block" => {
+                    let taken = self.data.as_ref().map(|d| d.default_state(&name).is_some() && !crate::block::custom::all().iter().any(|(b, _)| b.name == name)).unwrap_or(false);
+                    let made = if taken {
+                        Err("ce nom est déjà celui d'un bloc du jeu".to_string())
+                    } else {
+                        crate::block::custom::CustomBlock::parse(&name, &sheet).and_then(crate::block::custom::define)
+                    };
+                    match made {
+                        Ok(_) => {
+                            self.register_custom_items();
+                            modified = true;
+                            if self.clients.values().any(|c| c.joined) {
+                                warn!("[{}] {} créé alors que des joueurs sont en jeu : ils ne le verront qu'à leur prochaine connexion", plugin, name);
+                            }
+                        }
+                        Err(why) => warn!("[{}] server.blocks.create(\"{}\") : {}", plugin, name, why),
+                    }
+                }
                 Action::Modify(plugin, kind, name, key, value) => {
                     // Le nom doit désigner quelque chose du jeu : une faute de frappe se voit
                     let full = if name.contains(':') { name.clone() } else { format!("minecraft:{}", name) };
                     let known = match (kind.as_str(), &self.data) {
                         ("item", Some(d)) => d.item(&full).is_some(),
-                        ("block", Some(_)) => self.blocks.as_ref().map(|b| b.get(&full).is_some()).unwrap_or(true),
+                        ("block", Some(_)) => self.blocks.as_ref().map(|b| b.get(&full).is_some()).unwrap_or(true) || crate::block::custom::all().iter().any(|(b, _)| b.name == full),
                         _ => true,
                     };
                     let done = match (known, kind.as_str()) {
@@ -2457,7 +2543,7 @@ impl Server {
                     return usage(self);
                 }
                 if self.world.generator().vanilla().is_none() {
-                    return self.reply(sender, "§cCe monde n'a ni structures ni biomes du jeu (terrain plat ou ancien terrain de Basalt)");
+                    return self.reply(sender, "§cCe monde n'a ni structures ni biomes du jeu (terrain plat ou de plugin)");
                 }
                 enum Wanted {
                     Structure(Target),
@@ -3291,7 +3377,12 @@ impl Server {
         use crate::world::generator::{parse_seed, Generator, Kind, Palette};
         let dir = std::path::PathBuf::from(&self.cfg.world_dir);
         let (kind, seed, created) = match crate::world::World::stored_generator(&dir) {
-            Ok(Some((kind, seed))) => (kind, seed, false),
+            Ok(Some((kind, seed))) => {
+                if crate::world::World::stored_was_legacy(&dir) {
+                    warn!("Ce monde a été créé avec l'ancien terrain de Basalt, qui n'existe plus : il continue avec le terrain du jeu (vanilla). Vos constructions sont gardées, mais le relief autour d'elles a changé ; pour repartir d'un monde neuf, changez world-dir.");
+                }
+                (kind, seed, false)
+            }
             Ok(None) => (Kind::from_config(&self.cfg.level_type), parse_seed(&self.cfg.level_seed), true),
             Err(e) => {
                 warn!("Monde illisible ({}) : terrain plat, l'ancien fichier sera remplacé au prochain enregistrement", e);
@@ -3403,6 +3494,7 @@ impl Server {
             return false;
         }
         match self.data.as_ref().and_then(|d| d.block_name(state)) {
+            Some(n) if !n.starts_with("minecraft:") => crate::block::custom::find(n).map(|b| b.solid).unwrap_or(true),
             Some(n) => !(n.contains("water") || n.contains("lava") || (n.contains("grass") && !n.contains("grass_block")) || n.contains("snow_layer") || n.contains("dandelion") || n.contains("poppy") || n.contains("sapling")),
             None => true,
         }
@@ -3986,6 +4078,13 @@ impl Server {
             (true, Some(harvest)) => harvest,
             _ => loot,
         };
+        // Culture créée par un plugin : pas encore mûre, elle ne rend que de quoi la replanter
+        let loot = match crate::block::custom::variant_of(old) {
+            Some((custom, stage)) if survival && matches!(custom.variants, crate::block::custom::Variants::Stages(_)) && stage + 1 < custom.variants.count() => {
+                self.item_id(&custom.name).map(|id| vec![(id, 1)]).unwrap_or_default()
+            }
+            _ => loot,
+        };
         // Écouteurs : annulation, butin modifié
         let mut loot = loot;
         if self.plugins.listens("BlockBreakEvent") {
@@ -4025,7 +4124,8 @@ impl Server {
             if self.block_at_state(old).map(|b| b.hardness() > 0.0).unwrap_or(false) {
                 self.wear_held(addr, crate::item::Usage::Mine);
             }
-            let ore = self.data.as_ref().and_then(|d| d.block_name(old)).and_then(survival::ore_xp);
+            // Expérience : celle des minerais du jeu, ou celle qu'un plugin a donnée à son bloc
+            let ore = self.data.as_ref().and_then(|d| d.block_name(old)).and_then(|n| survival::ore_xp(n).or_else(|| crate::block::custom::find(n).map(|b| b.xp).filter(|xp| xp.1 > 0)));
             if let (Some((lo, hi)), false) = (ore, loot.is_empty()) {
                 let xp = self.xp_between(lo, hi);
                 self.drop_xp((x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5), xp);
@@ -4919,6 +5019,10 @@ impl Server {
         let (block, upper) = match (&self.data, self.items_level) {
             (Some(d), 2) => {
                 let mut placed = placement::placed_state(d, default, placement::Placement { face, click, looks });
+                // Bloc créé par un plugin : son orientation, d'après la face cliquée et le regard
+                if let Some((custom, _)) = crate::block::custom::variant_of(default) {
+                    placed = custom.placed_state(face, looks);
+                }
                 // Feuilles posées à la main : elles ne dépérissent pas
                 if d.block_name(placed).map(|n| n.contains("leaves")).unwrap_or(false) {
                     placed = d.with_props(placed, &[("persistent_bit", Prop::Int(1))]).unwrap_or(placed);
@@ -5982,6 +6086,7 @@ impl Server {
                         flat: self.world.generator().kind == crate::world::generator::Kind::Flat,
                         spawn: self.spawn,
                         features,
+                        custom_blocks: &self.custom_blocks.clone(),
                     });
                     if features.jigsaw_before_start {
                         self.send(&addr, bedrock::ID_JIGSAW_STRUCTURE_DATA, &bedrock::jigsaw_structure_data());
@@ -6003,8 +6108,9 @@ impl Server {
                         let level = if features.editor_migration_version { self.items_level } else { 0 };
                         // Objets créés par les plugins : ajoutés à la liste du jeu
                         let custom: Vec<(String, i16, i32, Option<Vec<u8>>)> = match (&self.data, level) {
-                            (Some(d), 2) if crate::item::custom::any() => {
-                                d.items.iter().filter(|i| i.id >= crate::item::custom::FIRST_ID).map(|i| (i.name.clone(), i.id, i.version, i.components.clone())).collect()
+                            (Some(d), 2) if crate::item::custom::any() || crate::block::custom::any() => {
+                                let blocks: Vec<String> = self.custom_blocks.iter().map(|(n, _)| n.clone()).collect();
+                                d.items.iter().filter(|i| i.id >= crate::item::custom::FIRST_ID || blocks.contains(&i.name)).map(|i| (i.name.clone(), i.id, i.version, i.components.clone())).collect()
                             }
                             _ => Vec::new(),
                         };
@@ -6701,9 +6807,15 @@ impl Server {
                 // refont leurs modifications
                 crate::item::overrides::clear();
                 crate::block::overrides::clear();
+                crate::entity::custom::clear();
                 crate::item::custom::clear();
+                let blocks: Vec<String> = crate::block::custom::all().into_iter().map(|(b, _)| b.name).collect();
+                crate::block::custom::clear();
+                self.custom_blocks = Arc::new(Vec::new());
                 if let Some(data) = self.data.as_mut() {
-                    Arc::make_mut(data).remove_items_from(crate::item::custom::FIRST_ID);
+                    let data = Arc::make_mut(data);
+                    data.remove_items_from(crate::item::custom::FIRST_ID);
+                    data.remove_blocks(&blocks);
                 }
                 self.refresh_templates();
                 self.load_plugins();
@@ -6846,7 +6958,12 @@ impl Server {
         ];
         let mut list = list;
         // Liste complète des entités, d'après les données du jeu
-        if self.has_captured(addr, bedrock::ID_AVAILABLE_ACTOR_IDENTIFIERS) {
+        // (avec, à la suite, les créatures des plugins dont l'apparence vient du pack)
+        let own = crate::entity::custom::own_models();
+        let extended = if own.is_empty() { None } else { self.captured(addr, bedrock::ID_AVAILABLE_ACTOR_IDENTIFIERS).and_then(|body| bedrock::actor_identifiers_append(&body, &own)) };
+        if let Some(ids) = extended {
+            list.push((bedrock::ID_AVAILABLE_ACTOR_IDENTIFIERS, Some(ids)));
+        } else if self.has_captured(addr, bedrock::ID_AVAILABLE_ACTOR_IDENTIFIERS) {
             list.push((bedrock::ID_AVAILABLE_ACTOR_IDENTIFIERS, None));
         } else if let (Some(ids), 2) = (self.data.as_ref().and_then(|d| d.entity_identifiers.clone()), self.items_level) {
             list.push((bedrock::ID_AVAILABLE_ACTOR_IDENTIFIERS, Some(ids)));

@@ -120,6 +120,7 @@ end)
 | [Performances](docs/PERFORMANCES.md) | mesures de charge, réglages pour un grand serveur |
 | [Créer un plugin sans savoir programmer](docs/DEBUTER.md) | les bases du Lua et des exemples |
 | [Plugins : la référence](docs/PLUGINS.md) | événements, commandes, minuteries, générateurs de terrain |
+| [Plugins dans VS Code](docs/VSCODE.md) | tutoriel : propositions, aide et fautes soulignées pendant qu'on écrit un plugin |
 | [Packs de ressources](docs/PACKS.md) | envoyer images et sons aux joueurs, packs chiffrés, image d'un objet créé |
 | [Architecture](docs/ARCHITECTURE.md) | les gabarits (`Item`, `Durable`, `Food`, `Block`…) : où se trouve chaque règle, comment en ajouter une |
 | [Développement](docs/DEVELOPPEMENT.md) | organisation du code, tests, publication d'une version |

@@ -12,6 +12,7 @@
 //! `Entity`, et l'on accède directement aux données des niveaux du dessus
 //! (`joueur.health`, `joueur.pos`).
 
+pub mod custom;
 mod entity;
 pub mod item_physics;
 mod human;

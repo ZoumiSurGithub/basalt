@@ -518,6 +518,13 @@ impl Server {
         if state == air {
             return;
         }
+        // Culture créée par un plugin : un stade de plus de temps en temps, jusqu'à maturité
+        if let Some((custom, stage)) = crate::block::custom::variant_of(state) {
+            if matches!(custom.variants, crate::block::custom::Variants::Stages(_)) && stage + 1 < custom.variants.count() && self.mob_rng.below(4) == 0 {
+                self.grow_to((x, y, z), custom.state(stage + 1));
+            }
+            return;
+        }
         let Some(name) = d.block_name(state).map(|n| n.trim_start_matches("minecraft:").to_string()) else { return };
         let int = |key: &str| match d.prop(state, key) {
             Some(Prop::Int(v)) => Some(v),

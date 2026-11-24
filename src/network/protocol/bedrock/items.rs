@@ -912,8 +912,44 @@ pub fn item_registry_append(body: &[u8], items: &[(&str, i16, i32, Option<&[u8]>
     Some(w.0)
 }
 
+/// Ajoute des créatures à la liste des entités relevée auprès du serveur officiel, pour que
+/// le jeu accepte celles dont un pack de ressources définit l'apparence. `extra` : (nom,
+/// numéro). None si la liste est illisible.
+///
+/// Disposition, lue dans le relevé : un document NBT `{ idlist: [ { bid, hasspawnegg, id,
+/// rid, summonable } ] }`, le nombre d'entrées juste après le nom de la liste.
+pub fn actor_identifiers_append(body: &[u8], extra: &[(String, i32)]) -> Option<Vec<u8>> {
+    const HEAD: &[u8] = &[0x0a, 0x00, 0x09, 0x06, b'i', b'd', b'l', b'i', b's', b't', 0x0a];
+    if !body.starts_with(HEAD) || body.last() != Some(&0) {
+        return None;
+    }
+    let mut pos = HEAD.len();
+    let count = read_vari32(body, &mut pos)?;
+    let mut w = W::default();
+    w.0.extend_from_slice(HEAD);
+    w.vari32(count + extra.len() as i32);
+    // (tout sauf l'octet final, qui ferme le document)
+    w.0.extend_from_slice(&body[pos..body.len() - 1]);
+    for (name, rid) in extra {
+        w.0.extend_from_slice(&[0x08, 0x03, b'b', b'i', b'd', 0x00]);
+        w.0.extend_from_slice(&[0x01, 0x0b]);
+        w.0.extend_from_slice(b"hasspawnegg");
+        w.0.push(0);
+        w.0.extend_from_slice(&[0x08, 0x02, b'i', b'd']);
+        w.string(name);
+        w.0.extend_from_slice(&[0x03, 0x03, b'r', b'i', b'd']);
+        w.vari32(*rid);
+        w.0.extend_from_slice(&[0x01, 0x0a]);
+        w.0.extend_from_slice(b"summonable");
+        w.0.push(1);
+        w.0.push(0);
+    }
+    w.0.push(0);
+    Some(w.0)
+}
+
 /// Objet tel que le menu créatif le décrit : identifiant, quantité, variante, bloc, données.
-fn creative_item(w: &mut W, id: i16) {
+fn creative_item(w: &mut W, id: i16, block: u32) {
     w.vari32(id as i32);
     if id == 0 {
         w.0.extend_from_slice(&[0, 0, 0, 0, 0]);
@@ -921,7 +957,7 @@ fn creative_item(w: &mut W, id: i16) {
     }
     w.0.extend_from_slice(&1u16.to_le_bytes());
     w.varu32(0); // variante
-    w.varu32(0); // bloc posé : aucun
+    w.varu32(block); // bloc posé (0 : aucun)
     w.varu32(10); // données : aucune (marqueur, « peut poser sur », « peut casser »)
     w.0.extend_from_slice(&[0u8; 10]);
 }
@@ -938,13 +974,14 @@ fn skip_creative_item(d: &[u8], pos: &mut usize) -> Option<()> {
 }
 
 /// Ajoute des groupes et des objets au menu créatif relevé auprès du serveur officiel.
-/// `groups` : (onglet de 1 à 4, nom affiché ou vide, objet qui sert d'image ou 0) ;
-/// `items` : (objet, rang de son groupe dans `groups`). None si le menu est illisible.
+/// `groups` : (onglet de 1 à 4, nom affiché ou vide, objet qui sert d'image ou 0, son bloc) ;
+/// `items` : (objet, bloc qu'il pose ou 0, rang de son groupe dans `groups`). None si le menu
+/// est illisible.
 ///
 /// Disposition du paquet, lue dans le relevé : nombre de groupes, puis pour chacun onglet,
 /// nom et objet-image ; nombre d'objets, puis pour chacun son numéro dans le menu (de 1 en
 /// 1), l'objet et le rang de son groupe.
-pub fn creative_content_append(body: &[u8], groups: &[(u8, String, i16)], items: &[(i16, usize)]) -> Option<Vec<u8>> {
+pub fn creative_content_append(body: &[u8], groups: &[(u8, String, i16, u32)], items: &[(i16, u32, usize)]) -> Option<Vec<u8>> {
     let mut pos = 0;
     let group_count = read_varu32(body, &mut pos)?;
     let groups_start = pos;
@@ -959,16 +996,16 @@ pub fn creative_content_append(body: &[u8], groups: &[(u8, String, i16)], items:
     let mut w = W::default();
     w.varu32(group_count + groups.len() as u32);
     w.0.extend_from_slice(&body[groups_start..groups_end]);
-    for (category, name, icon) in groups {
+    for (category, name, icon, block) in groups {
         w.varu32(*category as u32);
         w.string(name);
-        creative_item(&mut w, *icon);
+        creative_item(&mut w, *icon, *block);
     }
     w.varu32(item_count + items.len() as u32);
     w.0.extend_from_slice(&body[pos..]);
-    for (rank, (id, group)) in items.iter().enumerate() {
+    for (rank, (id, block, group)) in items.iter().enumerate() {
         w.varu32(item_count + 1 + rank as u32);
-        creative_item(&mut w, *id);
+        creative_item(&mut w, *id, *block);
         w.varu32(group_count + *group as u32);
     }
     Some(w.0)
@@ -1086,20 +1123,41 @@ mod creative_tests {
     }
 
     #[test]
+    fn plugin_creatures_join_the_list_of_entities() {
+        // Une liste d'une entrée, à la manière du relevé ; relue ensuite comme du NBT
+        let one = actor_identifiers_append(&[0x0a, 0x00, 0x09, 0x06, b'i', b'd', b'l', b'i', b's', b't', 0x0a, 0x00, 0x00], &[("minecraft:cow".to_string(), 11)]).unwrap();
+        let two = actor_identifiers_append(&one, &[("essai:gardien".to_string(), 10000)]).unwrap();
+        // Deux entrées annoncées (zigzag : 4), les deux noms présents, le document refermé
+        assert_eq!(two[11], 4);
+        let has = |needle: &[u8]| two.windows(needle.len()).any(|w| w == needle);
+        assert!(has(b"minecraft:cow") && has(b"essai:gardien") && has(b"summonable"));
+        assert!(two.ends_with(&[b'e', 0x01, 0x00, 0x00]), "la dernière entrée puis le document se ferment");
+        // Le numéro 10000, en entier à taille variable zigzag
+        assert!(has(&[b'r', b'i', b'd', 0xa0, 0x9c, 0x01]));
+        // Ajouter au relevé du serveur officiel garde tout ce qu'il contenait
+        if let Ok(real) = std::fs::read("data/2225/packets/actor_identifiers.bin") {
+            let more = actor_identifiers_append(&real, &[("essai:gardien".to_string(), 10000)]).unwrap();
+            assert_eq!(more.len(), real.len() + 60);
+            assert!(more.windows(13).any(|w| w == b"minecraft:cow"));
+        }
+        assert_eq!(actor_identifiers_append(&[1, 2, 3], &[]), None);
+    }
+
+    #[test]
     fn plugin_items_join_the_creative_menu() {
         // Un menu d'un groupe et d'un objet, à la manière du relevé
         let mut w = W::default();
         w.varu32(1);
         w.varu32(1);
         w.string("itemGroup.name.planks");
-        creative_item(&mut w, 5);
+        creative_item(&mut w, 5, 0);
         w.varu32(1);
         w.varu32(1);
-        creative_item(&mut w, 5);
+        creative_item(&mut w, 5, 0);
         w.varu32(0);
         let menu = w.0;
-        let groups = vec![(3u8, "Gemmes".to_string(), 20000i16), (4, String::new(), 0)];
-        let more = creative_content_append(&menu, &groups, &[(20000, 0), (20001, 0), (20002, 1)]).unwrap();
+        let groups = vec![(3u8, "Gemmes".to_string(), 20000i16, 0u32), (4, String::new(), 0, 0)];
+        let more = creative_content_append(&menu, &groups, &[(20000, 0, 0), (20001, 0, 0), (-9745, 777, 1)]).unwrap();
         // Relu : 3 groupes, 4 objets numérotés de 1 à 4, les nôtres rangés dans les nouveaux groupes
         let mut pos = 0;
         assert_eq!(read_varu32(&more, &mut pos), Some(3));
@@ -1120,7 +1178,7 @@ mod creative_tests {
             skip_creative_item(&more, &mut pos).unwrap();
             rows.push((number, id, read_varu32(&more, &mut pos).unwrap()));
         }
-        assert_eq!(rows, vec![(1, 5, 0), (2, 20000, 1), (3, 20001, 1), (4, 20002, 2)]);
+        assert_eq!(rows, vec![(1, 5, 0), (2, 20000, 1), (3, 20001, 1), (4, -9745, 2)]);
         assert_eq!(pos, more.len());
         assert_eq!(creative_content_append(&[0x05], &groups, &[]), None);
     }

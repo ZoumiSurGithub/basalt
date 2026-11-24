@@ -458,6 +458,12 @@ impl World {
         }
     }
 
+    /// Vrai si ce monde a été créé avec l'ancien terrain propre à Basalt, retiré depuis : il
+    /// est repris avec le terrain du jeu.
+    pub fn stored_was_legacy(dir: &std::path::Path) -> bool {
+        matches!(crate::nbt::load_file(&dir.join("level.nbt")), Ok(Some(doc)) if doc.get("Generator").and_then(|t| t.as_str()).map(Kind::was_legacy).unwrap_or(false))
+    }
+
     /// Nom du générateur d'un plugin enregistré pour ce monde (`plugin:<nom>`), s'il y en a un.
     pub fn stored_plugin(dir: &std::path::Path) -> Option<String> {
         let doc = crate::nbt::load_file(&dir.join("level.nbt")).ok()??;
@@ -843,7 +849,7 @@ mod tests {
         use generator::{Generator, Kind, Palette};
         let dir = std::env::temp_dir().join(format!("basalt-world-gen-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut w = World::with_generator(Generator::new(Kind::Normal, 777, Palette::new(&|_| None)));
+        let mut w = World::with_generator(Generator::new(Kind::Vanilla, 777, Palette::new(&|_| None)));
         let top = w.generator().surface(5, 5);
         let ground = w.get(5, top, 5);
         assert_ne!(ground, w.air);
@@ -854,8 +860,8 @@ mod tests {
         assert_eq!(w.edit_count(), 0);
         assert!(w.set(5, top + 1, 5, w.stone));
         w.save(&dir).unwrap();
-        assert_eq!(World::stored_generator(&dir).unwrap(), Some((Kind::Normal, 777)));
-        let mut again = World::with_generator(Generator::new(Kind::Normal, 777, Palette::new(&|_| None)));
+        assert_eq!(World::stored_generator(&dir).unwrap(), Some((Kind::Vanilla, 777)));
+        let mut again = World::with_generator(Generator::new(Kind::Vanilla, 777, Palette::new(&|_| None)));
         assert_eq!(again.load(&dir).unwrap(), 1);
         assert_eq!(again.get(5, top + 1, 5), w.stone);
         assert_eq!(again.get(5, top, 5), ground);

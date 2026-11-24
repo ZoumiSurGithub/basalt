@@ -307,23 +307,6 @@ pub fn all() -> Vec<(CustomDef, i16)> {
     list
 }
 
-/// Ce qu'il faut ajouter au menu créatif : les groupes (onglet, nom, objet qui sert d'image)
-/// et les objets (identifiant, rang de son groupe dans cette liste). Un objet sans groupe
-/// reçoit un groupe sans nom à lui, comme le fait le jeu pour ses objets isolés.
-pub fn creative_entries() -> (Vec<(u8, String, i16)>, Vec<(i16, usize)>) {
-    let mut groups: Vec<(u8, String, i16)> = Vec::new();
-    let mut items = Vec::new();
-    for (def, id) in all().into_iter().filter(|(def, _)| def.category != 0) {
-        let found = if def.group.is_empty() { None } else { groups.iter().position(|(c, n, _)| *c == def.category && *n == def.group) };
-        let index = found.unwrap_or_else(|| {
-            groups.push((def.category, def.group.clone(), if def.group.is_empty() { 0 } else { id }));
-            groups.len() - 1
-        });
-        items.push((id, index));
-    }
-    (groups, items)
-}
-
 /// Y a-t-il des objets créés par les plugins ?
 pub fn any() -> bool {
     ANY.load(Ordering::Relaxed)

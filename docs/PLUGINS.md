@@ -245,6 +245,7 @@ annulé n'est plus transmis aux écouteurs suivants, sauf à ceux qui demandent 
 | `PlayerDropItemEvent` | oui (l'objet revient dans l'inventaire) | `getPlayer()`, `getItem()` | — |
 | `EntityItemPickupEvent` | oui (l'objet reste au sol) | `getEntity()` (ou `getPlayer()`), `getItem()` | — |
 | `PlayerGameModeChangeEvent` | oui | `getPlayer()`, `getNewGamemode()` (`GameMode.SURVIVAL` 0, `CREATIVE` 1, `ADVENTURE` 2, `SPECTATOR` 3) | — |
+| `CreatureSpawnEvent`, `CreatureDamageEvent`, `CreatureDeathEvent` | voir « Créer des créatures » | `getEntity()` rend une créature | — |
 | `PlayerItemUseEvent` | oui (l'objet ne fait rien) | `getPlayer()`, `getItem()` | — |
 | `PlayerItemConsumeEvent` | oui (l'aliment n'est pas mangé) | `getPlayer()`, `getItem()` | — |
 | `PlayerExhaustEvent` | oui (le point de faim n'est pas perdu) | `getPlayer()`, `getAmount()` (fatigue qui va coûter un point) | — |
@@ -629,21 +630,380 @@ l'événement est alors appelé de nouveau. Pour un clic sur un bloc, c'est
 - Un objet créé se modifie ensuite comme un autre (`server.items.modify`), et répond aux
   mêmes événements (`PlayerItemConsumeEvent`…).
 - 2 000 objets créés au plus.
-- Blocs et entités nouveaux ne sont pas encore possibles.
+
+## Créer des blocs
+
+Un plugin peut ajouter des blocs qui n'existent pas dans Minecraft. Comme un objet créé, le
+bloc est **déclaré au jeu du joueur** à sa connexion : sa dureté et sa lumière sont
+appliquées par le jeu lui-même, donc réellement réglables.
+
+```lua
+server.blocks.create("monserveur:minerai_rubis", {
+  name = "Minerai de rubis",
+  texture = "minerai_rubis",
+  hardness = 3,
+  category = "nature",
+  drops = { ["monserveur:rubis"] = 1 },
+})
+
+server.blocks.create("monserveur:lampe", { name = "Lampe", texture = "lampe", light = 15 })
+```
+
+Par défaut, le bloc est un cube plein, avec la même image sur ses six faces. L'objet qui
+le pose porte le même nom : `joueur:give("monserveur:minerai_rubis", 16)`.
+
+**Apparence**
+
+| Réglage | Type | Effet | Par défaut |
+|---|---|---|---|
+| `name` | texte | nom affiché au joueur | le nom du bloc |
+| `texture` | texte | image : un nom de `textures/terrain_texture.json` (pack de ressources), ou d'un bloc du jeu (`stone`, `diamond_block`…) | `stone` |
+| `textureTop`, `textureBottom` | texte | image du dessus, du dessous, quand elles diffèrent des côtés (une bûche, un gazon) | celle de `texture` |
+| `textureFront` | texte | image de la face avant, pour un bloc tourné vers le joueur (`rotation = "facing"`) | celle de `texture` |
+| `rotation`, `stages` | | orientation à la pose, stades de croissance : voir « Blocs à états » | aucun |
+| `transparent` | vrai ou faux | les parties vides de l'image laissent voir à travers, et la lumière passe (vitre, feuillage, plante) | faux |
+| `geometry` | texte | forme : un modèle du jeu (`minecraft:geometry.cross` pour une plante) ou de votre pack (`geometry.ma_dalle`) | cube plein |
+| `light` | nombre (0 à 15) | lumière émise | 0 |
+
+**Comportement**
+
+| Réglage | Type | Effet | Par défaut |
+|---|---|---|---|
+| `hardness` | nombre | dureté, à l'échelle du jeu (terre 0,5 ; pierre 1,5 ; obsidienne 50) | 1,5 |
+| `tool` | texte | outil qui convient : `pickaxe`, `axe`, `shovel`, `hoe`, `sword`, `shears` | aucun |
+| `tier` | texte | matériau minimal de cet outil pour que le bloc rende son butin : `wood`, `gold`, `stone`, `copper`, `iron`, `diamond`, `netherite` | butin même à la main |
+| `xp`, `xpMax` | nombre | expérience rendue quand il est cassé (un nombre tiré entre les deux ; `xp` seul : toujours ce nombre) | aucune |
+| `solid` | vrai ou faux | arrête les joueurs ; `false` pour une plante, qu'on traverse | vrai |
+| `friction` | nombre (0,1 à 1) | glissance (glace : 0,98) | 0,6 |
+| `drops`, `falls`, `needsFloor`, `breakable` | | butin et comportement, comme dans `server.blocks.modify` | se rend lui-même |
+| `category`, `group`, `creative` | | place dans le menu créatif, comme pour un objet | onglet `construction` |
+
+Quelques blocs types :
+
+```lua
+-- Un minerai : pioche en fer au moins, rend un rubis et un peu d'expérience
+server.blocks.create("monserveur:minerai_rubis", {
+  name = "Minerai de rubis", texture = "minerai_rubis",
+  hardness = 3, tool = "pickaxe", tier = "iron", xp = 3, xpMax = 7,
+  drops = { ["monserveur:rubis"] = 1 },
+})
+
+-- Une bûche : le dessus diffère des côtés, se travaille à la hache
+server.blocks.create("monserveur:buche_rouge", {
+  name = "Bûche rouge", texture = "buche_rouge_cote", textureTop = "buche_rouge_dessus", textureBottom = "buche_rouge_dessus",
+  hardness = 2, tool = "axe",
+})
+
+-- Une fleur : en croix, on la traverse, elle se détache si le sol disparaît
+server.blocks.create("monserveur:fleur_bleue", {
+  name = "Fleur bleue", texture = "fleur_bleue",
+  geometry = "minecraft:geometry.cross", transparent = true, solid = false,
+  hardness = 0, needsFloor = true, category = "nature",
+})
+
+-- Un sable qui tombe
+server.blocks.create("monserveur:sable_noir", { name = "Sable noir", texture = "sable_noir", hardness = 0.5, tool = "shovel", falls = true })
+```
+
+### Blocs à états : orientation et croissance
+
+Un bloc créé peut avoir plusieurs états. Deux usages sont prévus, l'un ou l'autre par bloc.
+
+**S'orienter à la pose** — `rotation` :
+
+| Valeur | Effet | Exemple |
+|---|---|---|
+| `"axis"` | le bloc se couche selon la face où on le pose : debout sur le sol, couché contre un mur | bûche, pilier |
+| `"facing"` | sa face avant (`textureFront`) regarde le joueur qui le pose | four, coffre |
+
+```lua
+server.blocks.create("monserveur:tronc_rouge", {
+  name = "Tronc rouge", texture = "tronc_cote", textureTop = "tronc_dessus", textureBottom = "tronc_dessus",
+  hardness = 2, tool = "axe", rotation = "axis",
+})
+
+server.blocks.create("monserveur:fourneau", {
+  name = "Fourneau", texture = "fourneau_cote", textureFront = "fourneau_avant",
+  hardness = 3, tool = "pickaxe", rotation = "facing",
+})
+```
+
+**Pousser** — `stages`, la liste des images du bloc, de la pousse à la maturité (de 2 à
+16) :
+
+```lua
+server.blocks.create("monserveur:baie_rubis", {
+  name = "Baie de rubis", stages = { "baie_1", "baie_2", "baie_3" },
+  geometry = "minecraft:geometry.cross", transparent = true, solid = false, hardness = 0,
+  needsFloor = true, category = "nature",
+  drops = { ["monserveur:rubis"] = 2, ["monserveur:baie_rubis"] = 1 },
+})
+```
+
+- Le bloc se pose au premier stade et avance d'un stade de temps en temps, tout seul, tant
+  que le chunk est proche d'un joueur. Comptez quelques minutes par stade.
+- **Mûr** (dernier stade), il rend son butin (`drops`). **Avant**, il ne rend que lui-même,
+  de quoi le replanter.
+- Chaque stade passe par `BlockGrowEvent`, qu'un plugin peut annuler.
+- Il pousse sur n'importe quel bloc : pour exiger un sol particulier, écoutez
+  `BlockPlaceEvent`.
+
+### L'image d'un bloc
+
+Dans le pack de ressources, à côté de `item_texture.json` :
+
+`textures/terrain_texture.json`
+
+```json
+{
+  "resource_pack_name": "monserveur",
+  "texture_name": "atlas.terrain",
+  "padding": 8,
+  "num_mip_levels": 4,
+  "texture_data": {
+    "minerai_rubis": { "textures": "textures/blocks/minerai_rubis" }
+  }
+}
+```
+
+et l'image `textures/blocks/minerai_rubis.png` (16 × 16). Voir [PACKS.md](PACKS.md) pour
+le reste du pack ; `docs/exemples/pack-exemple.mcpack` en contient deux.
+
+### À savoir
+
+- Comme les objets, **les blocs se créent au chargement du plugin** : le jeu ne reçoit leur
+  déclaration qu'à la connexion.
+- **Vitesse de casse.** `hardness` suit l'échelle du jeu : à la main, comptez une fois et
+  demie ce nombre en secondes (3 → 4,5 s). Avec `tool`, le bloc est étiqueté pour que
+  l'outil indiqué aille vite, comme sur un bloc du jeu. À la différence du jeu, un bloc
+  qui exige un outil (`tier`) ne se casse pas plus lentement à la main : il ne rend
+  simplement rien.
+- Une forme autre que le cube (`geometry`) vient du jeu ou de votre pack de ressources
+  (dossier `models/blocks/`). Le serveur, lui, ne connaît que deux cas : plein (`solid`,
+  cube entier) ou traversable. Une dalle ou un escalier créés arrêtent donc comme un cube
+  entier pour les créatures.
+- Dans le monde enregistré, le bloc est rangé sous un numéro tiré de son nom. Si le plugin
+  est retiré, les blocs déjà posés s'affichent comme des blocs inconnus ; ils reviennent
+  quand le plugin revient.
+- Pas encore possible : orientation et stades sur un même bloc, image différente pour
+  chacun des quatre côtés, sons propres, entités.
+- 2 000 blocs créés au plus.
+
+## Créer des créatures
+
+Un plugin peut créer une créature à partir d'une créature du jeu. Elle en garde
+**l'apparence et le comportement** (une vache se promène, suit le blé, se reproduit), avec
+**ses propres valeurs** : vie, vitesse, taille, butin, expérience, nom affiché.
+
+```lua
+server.entities.create("monserveur:vache_doree", {
+  looks = "minecraft:cow",
+  name = "Vache dorée",
+  health = 40,
+  scale = 1.5,
+  drops = { ["minecraft:gold_ingot"] = { 1, 3 }, ["minecraft:leather"] = 1 },
+  xp = 5, xpMax = 9,
+})
+
+-- Un loup géant et rapide, sans nom affiché
+server.entities.create("monserveur:loup_alpha", { looks = "minecraft:wolf", health = 60, speed = 0.45, scale = 2 })
+```
+
+| Réglage | Type | Effet | Par défaut |
+|---|---|---|---|
+| `looks` | texte | **obligatoire** : la créature du jeu dont elle part | — |
+| `ownModel` | vrai ou faux | son apparence vient du pack de ressources (voir « Lui donner sa propre apparence ») | faux |
+| `name` | texte | nom affiché au-dessus d'elle | aucun |
+| `nameVisible` | vrai ou faux | le nom se voit de loin ; `false` : seulement en la visant | vrai |
+| `health` | nombre (1 à 1024) | points de vie | ceux de l'espèce |
+| `speed` | nombre (0,01 à 1) | vitesse, à l'échelle du jeu (vache 0,25 ; loup 0,3) | celle de l'espèce |
+| `scale` | nombre (0,1 à 10) | taille par rapport à l'espèce (2 : deux fois plus grande) ; agrandit aussi sa boîte de collision | 1 |
+| `width`, `height` | nombre (0,1 à 16) | boîte de collision propre, en blocs (largeur et hauteur, toujours les deux) : là où on peut la viser et la frapper, et ce qui bute contre les blocs | celle de l'espèce, à l'échelle de `scale` |
+| `drops` | table | butin à sa mort ; `{}` : rien | celui de l'espèce |
+| `xp`, `xpMax` | nombre | expérience quand un joueur la tue | de 1 à 3 |
+
+Avec `width` et `height`, la boîte ne dépend plus de `scale` : on peut afficher une créature
+énorme avec une petite boîte, ou l'inverse.
+
+```lua
+-- Un grand golem difficile à toucher : affiché deux fois plus grand, boîte d'un bloc sur deux
+server.entities.create("monserveur:colosse", { looks = "minecraft:iron_golem", scale = 2, width = 1, height = 2 })
+```
+
+Créatures de départ possibles (`looks`) : `cow, pig, sheep, chicken, rabbit, mooshroom, goat, llama, horse, donkey, mule, wolf, cat, villager, iron_golem`.
+
+Le butin s'écrit avec une quantité fixe ou une fourchette :
+
+```lua
+drops = { ["minecraft:gold_ingot"] = 2 }           -- toujours 2
+drops = { ["minecraft:gold_ingot"] = { 1, 3 } }    -- de 1 à 3
+```
+
+### Lui donner sa propre apparence
+
+Avec `ownModel = true`, la créature ne ressemble plus à celle dont elle part : son apparence
+vient de votre pack de ressources, qui la définit **sous le même nom**. `looks` ne décide
+alors plus que de son comportement.
+
+```lua
+server.entities.create("monserveur:gardien", {
+  looks = "minecraft:iron_golem",   -- elle se comporte comme un golem de fer
+  ownModel = true,                  -- son apparence vient du pack
+  name = "Gardien",
+  health = 80,
+  width = 0.9, height = 2,          -- sa boîte, à la mesure de son modèle
+})
+```
+
+Dans le pack, trois fichiers :
+
+`entity/gardien.entity.json` — relie le nom de la créature à son modèle et à son image :
+
+```json
+{
+  "format_version": "1.10.0",
+  "minecraft:client_entity": {
+    "description": {
+      "identifier": "monserveur:gardien",
+      "materials": { "default": "entity_alphatest" },
+      "textures": { "default": "textures/entity/gardien" },
+      "geometry": { "default": "geometry.gardien" },
+      "render_controllers": [ "controller.render.default" ]
+    }
+  }
+}
+```
+
+`models/entity/gardien.geo.json` — le modèle (identifiant `geometry.gardien`), tel que
+l'exporte Blockbench en « Bedrock Entity » ;
+
+`textures/entity/gardien.png` — son image.
+
+À savoir :
+
+- `identifier`, dans le fichier du pack, doit être **exactement** le nom donné à
+  `server.entities.create`. Sinon la créature est invisible (seuls son ombre et son nom
+  apparaissent).
+- Donnez `width` et `height` : sans eux, la boîte est celle de l'espèce de départ, qui ne
+  correspond sans doute pas à votre modèle.
+- Sans animation dans le pack, la créature glisse sans bouger les membres. Les animations
+  se déclarent dans le même fichier `.entity.json`, comme pour n'importe quel pack.
+- Un joueur qui a refusé le pack voit la créature invisible : rendez le pack obligatoire
+  (`force_resources`, voir [PACKS.md](PACKS.md)) si elle compte pour le jeu.
+- `docs/exemples/pack-exemple.mcpack` contient un exemple complet (le « Gardien de rubis »
+  de `docs/exemples/rubis_pack.lua`).
+
+### La faire apparaître
+
+```lua
+server.entities.spawn("monserveur:vache_doree", x, y, z)
+```
+
+`server.entities.spawn` fait aussi apparaître une créature du jeu
+(`server.entities.spawn("minecraft:pig", x, y, z)`). Dans la console et en jeu :
+`summon monserveur:vache_doree`.
+
+Exemple : une vache dorée à côté de chaque joueur qui arrive.
+
+```lua
+local Accueil = {}
+
+function Accueil:onPlayerJoin(event)
+  local x, y, z = event:getPlayer():getPosition()
+  server.entities.spawn("monserveur:vache_doree", x + 2, y, z)
+end
+
+server.registerEvents(Accueil)
+```
+
+### Réagir à ce qui arrive aux créatures
+
+Trois événements concernent toutes les créatures, celles du jeu comme celles des plugins :
+
+| Événement | Annulable | Méthodes | Modifiable |
+|---|---|---|---|
+| `CreatureSpawnEvent` | oui (elle n'apparaît pas) | `getEntity()` | — |
+| `CreatureDamageEvent` | oui (le coup ne porte pas) | `getEntity()`, `getDamage()`, `getCause()`, `getDamager()` | `setDamage(n)` |
+| `CreatureDeathEvent` | non | `getEntity()`, `getKiller()` | — |
+
+- `getDamager()` et `getKiller()` rendent le joueur en cause, ou `nil` si ce n'en est pas un
+  (un loup, une chute).
+- `getCause()` vaut `"PLAYER_ATTACK"` ou `"CREATURE_ATTACK"`.
+- `CreatureSpawnEvent` est appelé pour les créatures qu'on fait apparaître (`summon`,
+  `server.entities.spawn`), pas encore pour celles que le monde place tout seul ni pour
+  les naissances.
+
+`getEntity()` rend la créature :
+
+| Méthode | Rend |
+|---|---|
+| `getType()` | sa sorte : `"monserveur:vache_doree"` pour une créature créée, `"minecraft:cow"` sinon |
+| `getLooks()` | la créature du jeu dont elle a l'apparence |
+| `isCustom()` | vrai si elle vient d'un plugin |
+| `isBaby()` | vrai pour un petit |
+| `getPosition()` | `x, y, z` |
+| `getHealth()`, `getMaxHealth()` | sa vie, au moment de l'événement |
+| `getNameTag()` | le nom affiché au-dessus d'elle |
+| `getId()` | son numéro, le temps qu'elle existe |
+
+et permet d'agir sur elle : `setHealth(n)`, `setNameTag(texte)`, `kill()` (elle meurt et
+rend son butin), `remove()` (elle disparaît sans rien rendre).
+
+Exemple : un boss qui annonce sa mort, récompense celui qui l'a tué, et ne craint pas les
+coups à main nue.
+
+```lua
+server.entities.create("monserveur:colosse", { looks = "minecraft:iron_golem", name = "Colosse", health = 200, scale = 1.5, drops = {} })
+
+local Boss = {}
+
+---@param event Event
+function Boss:onCreatureDamage(event)
+  local creature, joueur = event:getEntity(), event:getDamager()
+  if creature:getType() ~= "monserveur:colosse" then return end
+  if joueur and joueur:getItemInHand() == "" then
+    event:cancel()
+    joueur:sendMessage("§7Vos poings ne lui font rien.")
+  else
+    creature:setNameTag("Colosse §c" .. math.floor(creature:getHealth() - event:getDamage()) .. " ♥")
+  end
+end
+
+---@param event Event
+function Boss:onCreatureDeath(event)
+  local creature, joueur = event:getEntity(), event:getKiller()
+  if creature:getType() == "monserveur:colosse" and joueur then
+    server.broadcast("§6" .. joueur:getName() .. " a vaincu le Colosse !")
+    joueur:give("minecraft:diamond", 5)
+  end
+end
+
+server.registerEvents(Boss)
+```
+
+La créature donnée par un événement est un instantané : ses valeurs sont celles du moment
+de l'événement, et `setHealth` ou `setNameTag` sont appliqués juste après les écouteurs.
+
+### À savoir
+
+- Aucun pack de ressources n'est nécessaire : le jeu du joueur reçoit une créature qu'il
+  connaît, agrandie et nommée.
+- La créature est enregistrée avec le monde sous son nom. Si le plugin est retiré, elle
+  redevient une créature ordinaire de son espèce.
+- Deux créatures créées à partir de la même espèce se reproduisent entre elles comme
+  celle-ci ; le petit est une créature ordinaire de l'espèce.
+- Elles n'apparaissent pas toutes seules dans le monde : c'est le plugin qui les fait
+  apparaître.
+- Pas encore possible : un comportement nouveau (créature hostile, attaques).
 
 ## Écrire ses plugins dans VS Code
 
-Pour que VS Code propose les fonctions de Basalt, affiche leur aide et signale les fautes :
+VS Code peut proposer les fonctions de Basalt, afficher leur aide et souligner les fautes.
+En bref : installez l'extension **Lua** (éditeur « sumneko »), puis ouvrez le dossier du
+serveur dans VS Code — il contient déjà le fichier `.luarc.json` qui fait le lien.
 
-1. Installez l'extension **Lua** (éditeur « sumneko », identifiant `sumneko.lua`).
-2. Copiez `docs/vscode/luarc.json` dans le dossier de votre plugin (`plugins/MonPlugin/`) et
-   renommez-le `.luarc.json`. Il indique à l'extension où trouver les définitions
-   (`docs/vscode/basalt-api.lua`). Si votre plugin n'est pas dans `plugins/` du serveur,
-   remplacez le chemin par celui du fichier sur votre machine.
-3. Ouvrez le dossier du plugin dans VS Code : tapez `server.` et la liste apparaît.
-
-`basalt-api.lua` ne s'exécute pas et ne se copie pas dans le plugin : il ne fait que décrire
-l'API. Il suit ce document ; en cas d'écart, ce document fait foi.
+Le tutoriel pas à pas, avec les autres installations et le dépannage :
+[VSCODE.md](VSCODE.md).
 
 ## Référence de l'API
 
@@ -668,6 +1028,9 @@ Tout passe par la table globale `server`.
 | `server.stop()` | arrêter le serveur proprement |
 | `server.items.modify(nom, valeurs)`, `server.items.reset(nom)` | changer un objet du jeu (voir « Modifier objets et blocs ») |
 | `server.items.create(nom, réglages)` | créer un objet nouveau (voir « Créer des objets ») |
+| `server.blocks.create(nom, réglages)` | créer un bloc nouveau (voir « Créer des blocs ») |
+| `server.entities.create(nom, réglages)` | créer une créature à partir d'une créature du jeu (voir « Créer des créatures ») |
+| `server.entities.spawn(nom, x, y, z)` | faire apparaître une créature, du jeu ou créée |
 | `server.blocks.modify(nom, valeurs)`, `server.blocks.reset(nom)` | changer un bloc du jeu |
 
 Précisions :
@@ -1037,7 +1400,8 @@ prend environ 0,6 milliseconde par chunk, contre 3 pour le terrain du jeu : pré
 
 L'API suit l'avancement du serveur. Ne sont pas encore accessibles aux plugins :
 
-- la création de blocs et d'entités nouveaux (les objets, oui : voir « Créer des objets ») ;
+- pour les créatures créées : des comportements nouveaux, comme l'attaque (voir « Créer
+  des créatures ») ;
 - un événement de déplacement (`PlayerMoveEvent`), trop fréquent pour le fil des plugins ;
 - le contenu des inventaires (seuls `joueur:give` et `joueur:getItemInHand` existent) ;
 - les entités autres que les joueurs et les PNJ (animaux, monstres) ;

@@ -20,6 +20,28 @@ pub fn block_hash(name: &str) -> u32 {
     h
 }
 
+/// Identifiant réseau d'un bloc à une propriété entière (`{name, states: {prop: valeur}}`) :
+/// le même hachage, pour les blocs à états créés par les plugins.
+pub fn block_hash_int(name: &str, prop: &str, value: i32) -> u32 {
+    let mut nbt = vec![10, 0, 0, 8, 4, 0];
+    nbt.extend_from_slice(b"name");
+    nbt.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    nbt.extend_from_slice(name.as_bytes());
+    nbt.extend_from_slice(&[10, 6, 0]);
+    nbt.extend_from_slice(b"states");
+    nbt.push(3);
+    nbt.extend_from_slice(&(prop.len() as u16).to_le_bytes());
+    nbt.extend_from_slice(prop.as_bytes());
+    nbt.extend_from_slice(&value.to_le_bytes());
+    nbt.extend_from_slice(&[0, 0]);
+    let mut h = 0x811c_9dc5u32;
+    for b in nbt {
+        h ^= b as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    h
+}
+
 /// Description des variantes du paquet LevelChunk essayées selon les versions.
 pub fn chunk_variant_name(variant: u8) -> &'static str {
     match variant {

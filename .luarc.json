@@ -1,0 +1,6 @@
+{
+  "runtime.version": "Lua 5.4",
+  "workspace.library": ["docs/vscode/basalt-api.lua"],
+  "workspace.checkThirdParty": false,
+  "diagnostics.globals": ["server", "GameMode", "EventPriority", "TextFormat", "PlayerInteractEvent", "EntityDamageEvent"]
+}

@@ -320,6 +320,10 @@ impl VanillaBlocks {
 
     /// Le bloc tel que le jeu le définit, sans les modifications des plugins.
     pub fn plain(name: &str, props: Option<BlockProps>) -> Box<dyn Block> {
+        // Bloc créé par un plugin : sa fiche dit tout, rien n'est deviné d'après son nom
+        if let Some(custom) = super::custom::get(name) {
+            return custom;
+        }
         let short = name.strip_prefix("minecraft:").unwrap_or(name);
         let tool = tool_for(short);
         let mut required = if tool == ToolType::Pickaxe { Some(tier_for(short)) } else { None };
