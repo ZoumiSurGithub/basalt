@@ -2202,9 +2202,24 @@ fn horses_tamed_by_riding_have_a_foal() {
     click(&mut steve, wild);
     let started = std::time::Instant::now();
     let mut tamed = false;
-    while !tamed && started.elapsed() < Duration::from_secs(60) {
+    // Dernière nouvelle du dressage : sans rien pendant huit secondes (un essai en prend cinq
+    // au plus), c'est que le clic n'a pas mis le joueur en selle (machine chargée, cheval
+    // parti se promener) : on le rejoint et on remonte
+    let mut news = std::time::Instant::now();
+    while !tamed && started.elapsed() < Duration::from_secs(90) {
+        if news.elapsed() > Duration::from_secs(8) {
+            if let Some((x, z)) = seen.get(&wild) {
+                here = (*x + 1.0, *z);
+                steve.walk_to(here.0, here.1);
+            }
+            click(&mut steve, wild);
+            news = std::time::Instant::now();
+        }
         for (h, event) in listen(&mut steve, 200, &mut seen, &mut horses, here) {
             tamed |= h == wild && event == 7;
+            if h == wild && (event == 6 || event == 7) {
+                news = std::time::Instant::now();
+            }
             if h == wild && event == 6 {
                 // Jeté à terre : on le rejoint et on remonte
                 if let Some((x, z)) = seen.get(&wild) {
