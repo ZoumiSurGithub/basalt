@@ -202,7 +202,7 @@ end
 local NEW_ENTITY_KEYS = {
   looks = "string", ownModel = "boolean", name = "string", nameVisible = "boolean", health = "number", speed = "number", scale = "number",
   width = "number", height = "number", hostile = "boolean", attackDamage = "number", sight = "number",
-  projectile = "string", projectileDamage = "number", shootInterval = "number", shootRange = "number", explosion = "number",
+  potion = "string", projectile = "string", projectileDamage = "number", shootInterval = "number", shootRange = "number", explosion = "number",
   xp = "number", xpMax = "number", drops = "table", _drops = "string",
 }
 local create_entity = creator("new-entity", NEW_ENTITY_KEYS, "server.entities.create(\"monserveur:vache_doree\", { looks = \"minecraft:cow\", health = 30 })")

@@ -1025,14 +1025,14 @@ pub fn creative_content_append(body: &[u8], groups: &[(u8, String, i16, u32)], i
 /// Description d'une pile quelconque. `block` : identifiant réseau du bloc que l'objet
 /// pose (0 si ce n'est pas un bloc).
 pub fn item_stack(w: &mut W, id: i16, count: u8, net_id: i32, block: u32) {
-    item_stack_full(w, id, count, net_id, block, 0, 0);
+    item_stack_full(w, id, count, net_id, block, 0, 0, 0);
 }
 
 /// Case d'un conteneur : (objet, quantité, numéro de pile, bloc posé, variante, usure).
-pub type Slot = (i16, u8, i32, u32, u16, u16);
+pub type Slot = (i16, u8, i32, u32, u16, u16, u64);
 
 /// Idem avec la variante de l'objet (la couleur d'un lit) et son usure (un outil entamé).
-pub fn item_stack_full(w: &mut W, id: i16, count: u8, net_id: i32, block: u32, meta: u16, damage: u16) {
+pub fn item_stack_full(w: &mut W, id: i16, count: u8, net_id: i32, block: u32, meta: u16, damage: u16, ench: u64) {
     if count == 0 {
         w.0.extend_from_slice(&[0u8; 8]);
         return;
@@ -1047,7 +1047,7 @@ pub fn item_stack_full(w: &mut W, id: i16, count: u8, net_id: i32, block: u32, m
         w.bool(false);
     }
     w.varu32(block);
-    let extra = item_extra(damage);
+    let extra = item_extra(damage, ench);
     w.varu32(extra.len() as u32);
     w.0.extend_from_slice(&extra);
 }
@@ -1056,16 +1056,38 @@ pub fn item_stack_full(w: &mut W, id: i16, count: u8, net_id: i32, block: u32, m
 /// NBT suivent, précédées de leur version), puis le nombre de blocs « peut être posé sur » et
 /// « peut casser ». L'usure d'un outil y est notée dans l'étiquette « Damage ». Sans usure,
 /// rien du tout (comme le jeu l'accepte dans les inventaires).
-pub fn item_extra(damage: u16) -> Vec<u8> {
-    if damage == 0 {
+///
+/// Les enchantements (`ench` : voir `item::Ench`) y sont la liste « ench » : pour chacun, son
+/// identifiant et son niveau. C'est elle qui fait briller l'objet et remplit son infobulle.
+pub fn item_extra(damage: u16, ench: u64) -> Vec<u8> {
+    let enchants = crate::item::Ench(ench).list();
+    if damage == 0 && enchants.is_empty() {
         return Vec::new();
     }
     let mut out = vec![0xff, 0xff, 0x01];
     out.extend_from_slice(&[0x0a, 0x00, 0x00]); // document sans nom
-    out.push(0x03); // entier
-    out.extend_from_slice(&6u16.to_le_bytes());
-    out.extend_from_slice(b"Damage");
-    out.extend_from_slice(&(damage as i32).to_le_bytes());
+    if damage != 0 {
+        out.push(0x03); // entier
+        out.extend_from_slice(&6u16.to_le_bytes());
+        out.extend_from_slice(b"Damage");
+        out.extend_from_slice(&(damage as i32).to_le_bytes());
+    }
+    if !enchants.is_empty() {
+        out.push(0x09); // liste
+        out.extend_from_slice(&4u16.to_le_bytes());
+        out.extend_from_slice(b"ench");
+        out.push(0x0a); // de documents
+        out.extend_from_slice(&(enchants.len() as i32).to_le_bytes());
+        for (id, level) in enchants {
+            for (name, value) in [(&b"id"[..], id as i16), (&b"lvl"[..], level as i16)] {
+                out.push(0x02); // entier court
+                out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+                out.extend_from_slice(name);
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+            out.push(0x00);
+        }
+    }
     out.push(0x00); // fin du document
     out.extend_from_slice(&[0u8; 8]); // aucun bloc « posé sur » ni « peut casser »
     out
@@ -1087,8 +1109,8 @@ pub fn container_items_named(window: u32, name: u8, slots: &[Slot], net_ids: boo
     let mut w = W::default();
     w.varu32(window);
     w.varu32(slots.len() as u32);
-    for (id, count, net_id, block, meta, damage) in slots {
-        item_stack_full(&mut w, *id, *count, if net_ids { *net_id } else { 0 }, *block, *meta, *damage);
+    for (id, count, net_id, block, meta, damage, ench) in slots {
+        item_stack_full(&mut w, *id, *count, if net_ids { *net_id } else { 0 }, *block, *meta, *damage, *ench);
     }
     w.u8(name);
     if f.editor_migration_version {

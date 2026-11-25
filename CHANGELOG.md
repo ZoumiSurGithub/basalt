@@ -10,6 +10,57 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ## [Non publié]
 
+## [0.0.6] — 2026-11-25
+
+### Ajouté
+
+- Créatures volantes : le blaze (il tire des petites boules de feu), le ghast (ses boules de feu explosent) et le phantom (il tourne au-dessus du joueur, fond sur lui et mord ; il brûle au soleil). Par `/summon` ou `server.entities.spawn`. Une créature de plugin bâtie sur l'un d'eux vole aussi.
+- API de gestion à distance : `api-port` dans `server.properties` ouvre une petite API HTTP (JSON). Un jeton de lecture donne l'état du serveur, les joueurs, les objets et les blocs ; un jeton d'administration permet en plus de désactiver ou réactiver un objet ou un bloc à chaud, de recharger les plugins et de lancer une commande de console. Éteinte par défaut, et limitée à la machine elle-même tant que `api-bind` ne dit pas autre chose. Voir `docs/API.md`.
+- Tableau de bord web : l'API sert une page (à l'adresse de l'API, dans un navigateur) avec une barre de navigation, un thème sombre et un thème clair. Elle montre l'état du serveur, les joueurs, les objets et les blocs, les packs, et donne les actions d'administration. Elle fonctionne sur téléphone.
+- Analyse de la carte (`POST /v1/scan`, et l'onglet Analyse du tableau de bord) : le compte de tous les objets rangés dans les conteneurs et chez les joueurs, présents ou absents, et ce qui ressemble à une duplication — piles impossibles, conteneurs au contenu identique, objets désactivés encore en circulation, détenteurs d'objets rares.
+- Images des objets et des blocs dans le tableau de bord (`GET /v1/texture`). Celles de vos objets et blocs viennent de vos packs de ressources, chiffrés ou non ; celles du jeu, d'un pack que vous déposez vous-même dans `vanilla_resource_pack/` (Basalt n'en livre aucune).
+- Gestion des joueurs à distance (`POST /v1/players/action` et la fiche d'un joueur dans le tableau de bord) : téléporter à des coordonnées ou auprès d'un autre joueur, changer le mode de jeu, donner un objet ou un effet, écrire, soigner, vider l'inventaire, tuer, expulser.
+- Serveurs chargés : la liste des joueurs de l'API vient par pages avec recherche côté serveur ; les listes d'objets et de blocs sont composées une fois puis resservies ; les projectiles ne testent plus que les joueurs et créatures voisins ; le calcul de lumière des apparitions de monstres est plafonné par seconde et réparti entre les joueurs.
+- Chiffrement des packs de ressources : `basalt encrypt-pack <pack>` (sans démarrer le serveur), `encryptpack <pack>` en console, ou `POST /v1/packs/encrypt` par l'API. Écrit le pack chiffré et sa clé à côté de l'original.
+- Accès à l'API depuis l'extérieur : huit jetons refusés en dix minutes écartent une adresse dix minutes (`429`), l'adresse du visiteur est lue derrière un tunnel ou un serveur HTTPS local, `apitoken reset` renouvelle les jetons sans redémarrer, et le tableau de bord prévient quand la page n'est pas chiffrée. `docs/API.md` détaille Tailscale, le tunnel Cloudflare, SSH et le serveur HTTPS.
+- Carte en direct dans le tableau de bord (`GET /v1/map`) : le monde vu du dessus autour des joueurs, leurs positions rafraîchies toutes les deux secondes, et un clic sur un bloc pour le remplacer, le retirer ou y téléporter un joueur (`GET` et `POST /v1/world/block`, `POST /v1/world/fill`). Seul le terrain déjà en mémoire est montré : la carte ne fait rien générer.
+- Carte en relief dans le tableau de bord (`GET /v1/world/chunks`, `GET /v1/entities`) : le terrain chargé dessiné en cubes, les joueurs et les créatures dans une boîte à leur taille avec leur nom, et un clic pour viser un bloc précis. Un chunk n'est renvoyé que s'il a changé.
+- Couleurs de la carte tirées des textures : la moyenne de la texture du dessus de chaque bloc, lue dans vos packs puis dans `vanilla_resource_pack/` (PNG et TGA). Sans le pack du jeu, la carte garde ses couleurs approchées.
+- Vraies textures dans la carte en relief (`GET /v1/world/atlas`, `GET /v1/world/skin`) : avec le pack du jeu, chaque face de bloc porte sa texture et les joueurs sont dessinés en Steve, tournés comme en jeu.
+- Feu : le briquet et la boule de feu allument un feu, qui brûle les blocs inflammables (selon les données du jeu), gagne ses voisins et s'éteint faute de combustible ; la lave enflamme ce qui brûle près d'elle, la petite boule de feu du blaze aussi. `fire-spreads=false` l'empêche de se propager.
+- Brûlures : se tenir dans le feu ou la lave blesse et enflamme les joueurs comme les créatures ; l'eau éteint ; le blaze, le ghast et le wither squelette y sont insensibles.
+- TNT : allumée au briquet, par le feu ou par une explosion, elle clignote, tombe et explose au bout de sa mèche (quatre secondes, moins dans une réaction en chaîne).
+- Les effets en cours sont gardés quand un joueur se déconnecte, et reprennent à son retour pour le temps qu'il leur restait. Sa vitesse de marche est recalculée à ce moment-là (vitesse, lenteur).
+- Mines abandonnées : au-dessus d'une grotte, la galerie passe sur un plancher de planches ; les rails et les étais ne flottent plus dans le vide.
+- Noyade : la tête sous l'eau, un joueur perd son air en quinze secondes (les bulles s'affichent), puis un cœur par seconde ; la respiration aquatique l'en dispense.
+- Nature : l'herbe gagne la terre voisine et meurt sous un bloc opaque ou sous l'eau ; une pousse d'arbre devient un arbre quand elle a la place (chêne, bouleau, épicéa et les autres essences sur le modèle du chêne).
+- Créatures : un zombie sur vingt apparaît bébé (plus rapide, il ne grandit pas) ; le blaze blesse aussi au contact.
+- Enchantements : un objet peut en porter jusqu'à cinq ; il brille, les affiche dans son infobulle, et les garde dans l'inventaire, au sol, dans les coffres et d'une session à l'autre. `/enchant <joueur> <enchantement> [niveau]` enchante l'objet tenu en main. Agissent déjà : protection, protection contre le feu, chute amortie, tranchant, aura de feu, solidité, efficacité, puissance, infinité, apnée.
+- Les coffres gardent la variante et l'usure des objets (une potion rangée restait une bouteille d'eau après un redémarrage).
+- Clic droit avec une pièce d'armure en main : elle est enfilée (celle qu'elle remplace revient en main). Le serveur la croyait restée dans la barre d'objets, et elle restait affichée dans sa case d'armure après avoir été retirée.
+- La case de la barre d'objets tenue en main est gardée d'une session à l'autre. La vie et la faim sont redonnées au jeu deux secondes après l'arrivée : il affichait des barres pleines.
+- Objets et blocs désactivés (`disabled.txt`) : on ne peut plus les poser ni s'en servir, sans toucher au monde.
+- Potions : `potion` se boit, `splash_potion` et `lingering_potion` se lancent et éclaboussent les joueurs à moins de quatre blocs. Les 43 variantes du jeu sont reconnues. `/give <joueur> <objet> [quantité] [variante]` accepte un numéro, ou le nom d'une potion (`give Alex splash_potion 1 poison`).
+- Sorcière : elle lance des potions de poison, de lenteur, de dégâts ou de faiblesse. Plugins : `potion` pour les créatures qui lancent des `splash_potion`.
+- Aliments à effets : pomme dorée, chair putréfiée, poulet cru, œil d'araignée, pomme de terre empoisonnée, poisson-globe.
+- Phantoms : la nuit, ils viennent d'eux-mêmes chercher les joueurs en survie restés trois jours sans dormir (ni mourir), à ciel ouvert. Dormir une nuit les écarte.
+- Feu : la petite boule de feu du blaze enflamme le joueur cinq secondes (un demi-cœur par seconde). L'eau l'éteint, et l'effet de résistance au feu en protège.
+- Boule de feu du ghast : un joueur qui la frappe la renvoie là où il regarde.
+- Le blaze tire par rafales de trois.
+
+### Modifié
+
+- Grosses charges de TNT : quatre explosions au plus par tick, et le butin d'une explosion tombe en quelques piles au lieu de centaines d'objets. Le rapport de mesures détaille le feu, la TNT, les effets et l'API.
+- La bedrock, les barrières et les blocs techniques ne cèdent à rien (explosion, feu, minage hors créatif), quoi qu'en disent les données ou un plugin ; seul un joueur en créatif les casse.
+- Le vide sous le monde : les objets au sol et la TNT amorcée y tombent et disparaissent, au lieu de rester posés sur un fond invisible. Un objet brûlé par la lave ou le feu grésille.
+- La rapidité et la lenteur agissent dès qu'on marche : le serveur donne au jeu la vitesse correspondante quand un effet commence ou finit, et le contrôle des déplacements en tient compte.
+- Explosions calculées comme dans le jeu : des rayons partent du centre et s'usent dans chaque bloc selon sa résistance, si bien qu'un mur abrite ce qui est derrière lui. Une TNT laisse tomber tous les blocs qu'elle souffle, saute légèrement à l'allumage et siffle.
+- Le phantom attaque comme dans le jeu : il tourne autour d'un point fixé 20 à 40 blocs au-dessus de l'endroit où était sa proie, sur un cercle de 5 à 15 blocs, ne pique que toutes les dix à vingt secondes et renonce s'il la manque.
+- Le squelette, le vagabond et le pillard lèvent leur arme quand ils ont une cible : le serveur annonce cette cible au jeu.
+- Créatures alignées sur les fiches du jeu : le ghast repère et tire jusqu'à 64 blocs, le blaze jusqu'à 48, le phantom et l'enderman repèrent à 64 ; la boule de feu du ghast file à 1,6 bloc par tick et celle du blaze à 1,3 ; le squelette tire toutes les 3 secondes, le pillard à 8 blocs ; l'enderman en colère court moitié plus vite ; la poule a sa vraie boîte (0,6 × 0,8).
+- Le tir d'un blaze et celui d'un ghast font leur propre bruit, plus celui de l'arc. La sorcière vise comme dans le jeu (potion moins en cloche), et le lancer de potion du joueur a la même force quel que soit l'angle.
+- La petite boule de feu (`small_fireball`) n'explose plus à l'impact, comme dans le jeu ; seule la grosse (`fireball`) explose.
+
 ## [0.0.5] — 2026-11-24
 
 ### Ajouté

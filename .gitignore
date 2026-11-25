@@ -31,3 +31,14 @@ notes.md
 
 # Packs de ressources du serveur (propres à chaque installation)
 /resource_packs/
+
+# Jeton de l'API de gestion (secret, propre à chaque installation)
+api-token.txt
+api-admin-token.txt
+api-port.txt
+
+# Objets et blocs désactivés (propres à chaque installation)
+disabled.txt
+
+# Pack de ressources du jeu, fourni par chacun pour les images du tableau de bord
+vanilla_resource_pack/

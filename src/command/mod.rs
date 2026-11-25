@@ -25,7 +25,7 @@ pub struct VanillaCommands;
 impl VanillaCommands {
     /// Commandes intégrées, telles qu'annoncées au jeu (description traduite par le client).
     pub fn all() -> &'static [CommandDef] {
-        static ALL: [CommandDef; 28] = [
+        static ALL: [CommandDef; 29] = [
             def("help", "commands.help.description", "/help", false),
             def("list", "commands.list.description", "/list", false),
             def("me", "commands.me.description", "/me <message:text>", false),
@@ -34,8 +34,9 @@ impl VanillaCommands {
             def("w", "commands.tell.description", "/w <target:player> <message:text>", false),
             def("say", "commands.say.description", "/say <message:text>", true),
             def("gamemode", "commands.gamemode.description", "/gamemode <gameMode:survival|creative|adventure|spectator|default|s|c|a|sp|d|0|1|2|6> [player:player]", true),
-            def("give", "commands.give.description", "/give <player:player> <itemName:item> [amount:int]", true),
+            def("give", "commands.give.description", "/give <player:player> <itemName:item> [amount:int] [data:text]", true),
             def("clear", "commands.clear.description", "/clear [player:player] [itemName:item]", true),
+            def("enchant", "commands.enchant.description", "/enchant <player:player> <enchantment:protection|fire_protection|feather_falling|blast_protection|projectile_protection|thorns|respiration|depth_strider|aqua_affinity|sharpness|smite|bane_of_arthropods|knockback|fire_aspect|looting|efficiency|silk_touch|unbreaking|fortune|power|punch|flame|infinity|luck_of_the_sea|lure|frost_walker|mending|binding|vanishing|impaling|riptide|loyalty|channeling|multishot|piercing|quick_charge|soul_speed|swift_sneak> [level:int]", true),
             def("effect", "commands.effect.description", "/effect <player:player> <effect:speed|slowness|haste|mining_fatigue|strength|instant_health|instant_damage|jump_boost|nausea|regeneration|resistance|fire_resistance|water_breathing|invisibility|blindness|night_vision|hunger|weakness|poison|wither|health_boost|absorption|saturation|levitation|fatal_poison|conduit_power|slow_falling|bad_omen|village_hero|darkness> [seconds:int] [amplifier:int] [hideParticles:true|false] | /effect <player:player> <mode:clear> [effect:speed|slowness|haste|mining_fatigue|strength|instant_health|instant_damage|jump_boost|nausea|regeneration|resistance|fire_resistance|water_breathing|invisibility|blindness|night_vision|hunger|weakness|poison|wither|health_boost|absorption|saturation|levitation|fatal_poison|conduit_power|slow_falling|bad_omen|village_hero|darkness]", true),
             def("setblock", "commands.setblock.description", "/setblock <position:pos> <tileName:block>", true),
             def("fill", "commands.fill.description", "/fill <from:pos> <to:pos> <tileName:block>", true),

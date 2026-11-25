@@ -3224,6 +3224,13 @@ fn mineshaft(b: &mut Builder, rng: &mut Rng, x: i32, z: i32) {
                 for h in 0..=2 {
                     b.air((cx + px * w, sy + h, cz + pz * w));
                 }
+                // Au-dessus d'une grotte, la galerie passe sur un plancher : ni rail ni étai
+                // ne reste en l'air
+                let (fx, fz) = (cx + px * w, cz + pz * w);
+                let top = b.top(fx, fz);
+                if b.v.hollow(fx, sy - 1, fz, top) {
+                    b.set((fx, sy - 1, fz), "oak_planks");
+                }
             }
             if i % 5 == 2 {
                 // Étai : deux poteaux et une poutre

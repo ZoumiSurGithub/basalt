@@ -70,6 +70,26 @@ fn main() {
         basalt::log::flush();
         return;
     }
+    // « basalt encrypt-pack monpack.mcpack » : chiffre un pack, sans démarrer le serveur
+    if args.get(1).map(|a| a == "encrypt-pack").unwrap_or(false) {
+        match args.get(2) {
+            Some(file) => match basalt::utils::pack_crypt::encrypt_file(Path::new(file)) {
+                Ok((out, count)) => {
+                    println!("Pack chiffré : {} ({} fichiers chiffrés)", out.display(), count);
+                    println!("Sa clé est dans {}.key : gardez les deux fichiers ensemble dans resource_packs/, et la clé pour vous.", out.display());
+                }
+                Err(e) => {
+                    eprintln!("Chiffrement impossible : {}", e);
+                    std::process::exit(1);
+                }
+            },
+            None => {
+                eprintln!("Usage : basalt encrypt-pack <pack.mcpack>");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
     basalt::console::init();
     // La flèche du haut retrouve aussi les commandes des sessions précédentes
     basalt::console::load_history(Path::new("logs/console-history.txt"));

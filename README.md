@@ -63,7 +63,7 @@ Les joueurs de ces versions peuvent être connectés en même temps ; les versio
 | **Villageois** | métiers et postes de travail, emploi du temps, lits, naissances, échanges avec niveaux et réassort, golems de fer |
 | **Commandes** | `/tp`, `/gamemode`, `/give`, `/summon`, `/setblock`, `/fill`, `/locate`, `/time`, `/effect`, modération, chat en couleur |
 | **Plugins Lua** | événements, commandes, accès au monde, personnages non joueurs, objets, blocs et créatures sur mesure, projectiles, générateurs de terrain ; EasyEdit et Archipel fournis |
-| **Administration** | console, opérateurs, liste blanche, permissions, `status` et `timings` |
+| **Administration** | console, opérateurs, liste blanche, permissions, `status` et `timings`, API de gestion à distance |
 
 Ce qui reste à faire est suivi dans la [feuille de route](docs/ROADMAP.md).
 
@@ -116,6 +116,7 @@ end)
 |---|---|
 | [Installer Basalt](docs/INSTALLER.md) | Windows, Linux, connexion, ouverture à Internet, réglages |
 | [Console, commandes et couleurs](docs/CONSOLE.md) | toutes les commandes, codes de couleur du chat |
+| [API de gestion à distance](docs/API.md) | tableau de bord web ; état du serveur, joueurs, objets et blocs en JSON, actions d'administration |
 | [Le monde](docs/MONDE.md) | terrain, eau et lave, structures, graine et type de monde |
 | [Réseau et sécurité](docs/RESEAU.md) | versions acceptées, ports, protections, authentification Xbox, dépannage |
 | [Performances](docs/PERFORMANCES.md) | mesures de charge, réglages pour un grand serveur |

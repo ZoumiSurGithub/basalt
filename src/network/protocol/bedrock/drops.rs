@@ -24,12 +24,12 @@ const ITEM_METADATA_HEX: &str = concat!(
 
 /// AddItemActor : un objet apparaît au sol. Disposition relevée auprès du serveur officiel.
 pub fn add_item_actor(entity_id: i64, item: i16, count: u8, block: u32, pos: (f32, f32, f32), motion: (f32, f32, f32)) -> Vec<u8> {
-    add_item_actor_kind(entity_id, item, count, block, 0, 0, pos, motion)
+    add_item_actor_kind(entity_id, item, count, block, 0, 0, 0, pos, motion)
 }
 
 /// Idem avec la variante de l'objet et son usure.
 #[allow(clippy::too_many_arguments)]
-pub fn add_item_actor_kind(entity_id: i64, item: i16, count: u8, block: u32, meta: u16, damage: u16, pos: (f32, f32, f32), motion: (f32, f32, f32)) -> Vec<u8> {
+pub fn add_item_actor_kind(entity_id: i64, item: i16, count: u8, block: u32, meta: u16, damage: u16, ench: u64, pos: (f32, f32, f32), motion: (f32, f32, f32)) -> Vec<u8> {
     let mut w = W::default();
     w.vari64(item_unique_id(entity_id));
     w.varu64(entity_id as u64);
@@ -40,7 +40,7 @@ pub fn add_item_actor_kind(entity_id: i64, item: i16, count: u8, block: u32, met
     w.varu32(meta as u32); // variante
     w.bool(false); // pas de numéro de pile
     w.varu32(block);
-    let extra = super::item_extra(damage);
+    let extra = super::item_extra(damage, ench);
     if extra.is_empty() {
         w.varu32(10);
         w.0.extend_from_slice(&[0u8; 10]);

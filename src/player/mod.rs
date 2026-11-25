@@ -34,7 +34,7 @@ pub struct Player {
     pub last_played: u64,
     pub items: Vec<SavedItem>,
     /// Variante et usure des objets qui en ont : (conteneur, case, variante, usure)
-    pub kinds: Vec<(String, u8, u16, u16)>,
+    pub kinds: Vec<(String, u8, u16, u16, u64)>,
     /// Permissions fixées pour ce joueur : (nom, accordée)
     pub permissions: Vec<(String, bool)>,
     /// Mode de jeu (0 survie, 1 créatif) ; None : celui du serveur
@@ -45,6 +45,10 @@ pub struct Player {
     pub rotation: (f32, f32),
     /// Point de réapparition : le lit où le joueur a dormi (ou cliqué)
     pub spawn: Option<(i32, i32, i32)>,
+    /// Effets en cours au départ : (effet, niveau, ticks restants) à la suite
+    pub effects: Vec<i32>,
+    /// Case de la barre d'objets qu'il avait en main (0 à 8)
+    pub selected: u8,
 }
 extends!(Player, human, Human);
 
@@ -81,6 +85,8 @@ impl Player {
             rotation: (0.0, 0.0),
             spawn: None,
             kinds: Vec::new(),
+            effects: Vec::new(),
+            selected: 0,
         }
     }
 
@@ -134,6 +140,10 @@ impl Player {
         p.food = num(&["foodLevel", "Food"]).unwrap_or(p.food);
         p.xp_level = int(&["XpLevel"]).unwrap_or(0).clamp(0, i32::MAX as i64) as i32;
         p.xp_progress = num(&["XpP", "XpProgress"]).unwrap_or(0.0);
+        p.selected = int(&["SelectedInventorySlot"]).unwrap_or(0).clamp(0, 8) as u8;
+        if let Some(Tag::IntArray(list)) = doc.get("BasaltEffects") {
+            p.effects = list.iter().copied().take(96).collect();
+        }
         // PocketMine note les dates en millisecondes
         let date = |ms: &str, secs: &str| int(&[ms]).map(|v| v / 1000).or_else(|| int(&[secs])).unwrap_or(0).max(0) as u64;
         p.first_played = date("firstPlayed", "FirstPlayed");
@@ -191,8 +201,10 @@ impl Player {
                 // Variante (« Damage », comme PocketMine) et usure (« Wear »)
                 let meta = item.get("Damage").and_then(|t| t.as_i64()).unwrap_or(0).clamp(0, 32767) as u16;
                 let wear = item.get("Wear").and_then(|t| t.as_i64()).unwrap_or(0).clamp(0, 65535) as u16;
-                if meta != 0 || wear != 0 {
-                    p.kinds.push((container.clone(), at, meta, wear));
+                // Enchantements (« BasaltEnch » : voir `item::Ench`)
+                let ench = item.get("BasaltEnch").and_then(|t| t.as_i64()).unwrap_or(0) as u64;
+                if meta != 0 || wear != 0 || ench != 0 {
+                    p.kinds.push((container.clone(), at, meta, wear, ench));
                 }
                 p.items.push((container, at, name, count));
             }
@@ -269,10 +281,13 @@ impl Player {
     /// section « Basalt », qu'il ignore.
     fn to_nbt(&self) -> Tag {
         let doubles = |v: [f64; 3]| Tag::List(6, v.iter().map(|x| Tag::Double(*x)).collect());
-        let item_kind = |slot: Option<i8>, name: &str, count: u8, kind: (u16, u16)| {
+        let item_kind = |slot: Option<i8>, name: &str, count: u8, kind: (u16, u16, u64)| {
             let mut e = vec![("Count", Tag::Byte(count as i8)), ("Damage", Tag::Short(kind.0 as i16)), ("Name", Tag::string(name))];
             if kind.1 != 0 {
                 e.push(("Wear", Tag::Int(kind.1 as i32)));
+            }
+            if kind.2 != 0 {
+                e.push(("BasaltEnch", Tag::Long(kind.2 as i64)));
             }
             if let Some(s) = slot {
                 e.push(("Slot", Tag::Byte(s)));
@@ -297,7 +312,8 @@ impl Player {
             ("XpP", Tag::Float(self.xp_progress)),
             ("XpTotal", Tag::Int(0)),
             ("XpSeed", Tag::Int(0)),
-            ("SelectedInventorySlot", Tag::Int(0)),
+            ("BasaltEffects", Tag::IntArray(self.effects.clone())),
+            ("SelectedInventorySlot", Tag::Int(self.selected as i32)),
             ("firstPlayed", Tag::Long(self.first_played as i64 * 1000)),
             ("lastPlayed", Tag::Long(self.last_played as i64 * 1000)),
             ("Level", Tag::string(&self.world)),
@@ -316,7 +332,7 @@ impl Player {
         let mut inventory = Vec::new();
         for (container, slot, name, count) in &self.items {
             // Variante et usure, pour les objets qui en ont
-            let kind = self.kinds.iter().find(|k| k.0 == *container && k.1 == *slot).map(|k| (k.2, k.3)).unwrap_or((0, 0));
+            let kind = self.kinds.iter().find(|k| k.0 == *container && k.1 == *slot).map(|k| (k.2, k.3, k.4)).unwrap_or((0, 0, 0));
             let item = |at: Option<i8>, name: &str, count: u8| item_kind(at, name, count, kind);
             match container.as_str() {
                 "main" if *slot < 36 => inventory.push(item(Some(*slot as i8 + 9), name, *count)),

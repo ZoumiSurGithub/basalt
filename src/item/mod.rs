@@ -14,10 +14,12 @@ mod consumable;
 pub mod custom;
 mod durable;
 pub mod overrides;
+pub mod potion;
 mod vanilla_items;
 #[allow(clippy::module_inception)]
 mod item;
 mod stack;
+pub mod enchant;
 mod tool;
 
 pub use self::armor::Armor;
@@ -25,7 +27,7 @@ pub use self::consumable::{Food, EAT_TICKS};
 pub use self::durable::{apply_wear, Usage};
 pub use self::vanilla_items::VanillaItems;
 pub use self::item::{BaseItem, BlockItem, FoodValues, GenericItem, Item};
-pub use self::stack::{ItemStack, MAX_STACK};
+pub use self::stack::{Ench, ItemStack, MAX_STACK};
 pub use self::tool::{Tool, ToolTier, ToolType};
 
 use std::collections::HashMap;

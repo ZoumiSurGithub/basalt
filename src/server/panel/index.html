@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Basalt, tableau de bord</title>
+<link rel="icon" href="/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/panel.css">
+</head>
+<body>
+<p id="en-clair" class="avis alerte bandeau" role="alert" hidden>Cette page n'est pas chiffrée : sur ce réseau, votre jeton peut être lu au passage. Passez par un tunnel ou une adresse en https avant de le saisir.</p>
+<main id="porte" class="porte" hidden>
+  <img src="/logo.svg" alt="" width="72" height="72">
+  <h1>Basalt</h1>
+  <p>Collez un jeton du serveur pour ouvrir le tableau de bord.</p>
+  <form id="porte-form">
+    <label for="jeton">Jeton</label>
+    <input id="jeton" type="password" autocomplete="off" spellcheck="false" required>
+    <button type="submit" class="plein">Ouvrir</button>
+  </form>
+  <p id="porte-erreur" class="erreur" role="alert" hidden></p>
+  <p class="aide">Le jeton de <code>api-token.txt</code> permet de regarder. Celui de <code>api-admin-token.txt</code> permet aussi d'agir. Il reste dans cet onglet et s'efface quand vous le fermez.</p>
+</main>
+
+<div id="tableau" class="appli" hidden>
+  <nav class="barre" aria-label="Sections">
+    <a class="marque" href="/"><img src="/logo.svg" alt="" width="36" height="36"><span>Basalt</span></a>
+    <button type="button" data-onglet="etat" aria-current="page">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span>Aperçu</span>
+    </button>
+    <button type="button" data-onglet="joueurs">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6M16 5.2a3.5 3.5 0 0 1 0 5.6M18.5 14.6c1.9.9 3 2.7 3 5.4"/></svg><span>Joueurs</span>
+    </button>
+    <button type="button" data-onglet="carte">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 6.5 6-2.5 6 2.5 6-2.5v13.5l-6 2.5-6-2.5-6 2.5zM9 4v13.5M15 6.5V20"/></svg><span>Carte</span>
+    </button>
+    <button type="button" data-onglet="contenu">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5 3.5 7v10l8.5 4.5 8.5-4.5V7zM3.5 7l8.5 4.5L20.5 7M12 11.5v10"/></svg><span>Objets</span>
+    </button>
+    <button type="button" data-onglet="analyse">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5.5 5.5M8 10.5h5M10.5 8v5"/></svg><span>Analyse</span>
+    </button>
+    <button type="button" data-onglet="packs">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="10.5" width="17" height="10.5" rx="2"/><path d="M7.5 10.5V7a4.5 4.5 0 0 1 9 0v3.5"/></svg><span>Packs</span>
+    </button>
+    <button type="button" data-onglet="console">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15h4.5"/></svg><span>Console</span>
+    </button>
+  </nav>
+
+  <div class="page">
+    <header class="tete">
+      <div>
+        <h1 id="titre">Aperçu</h1>
+        <p id="droit" class="sourd"></p>
+      </div>
+      <button id="theme" type="button" class="rond" aria-label="Changer de thème" title="Changer de thème">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>
+      </button>
+      <button id="fermer" type="button">Fermer la session</button>
+    </header>
+
+    <p id="avis" class="avis" role="status" hidden></p>
+
+    <section id="etat" class="section">
+      <div class="orgues" id="orgues" role="img" aria-label="Ticks par seconde"></div>
+      <p class="cadence"><span id="tps">–</span> ticks par seconde sur 20</p>
+      <dl id="faits" class="faits"></dl>
+    </section>
+
+    <section id="joueurs" class="section" hidden>
+      <div class="filtres">
+        <div class="champ">
+          <label for="cherche-joueur">Chercher un joueur</label>
+          <input id="cherche-joueur" type="search" placeholder="un nom, ou son début" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <p id="compte-joueurs" class="sourd"></p>
+      <ul id="liste-joueurs" class="lignes"></ul>
+      <div class="pages">
+        <button id="joueurs-avant" type="button">Précédents</button>
+        <button id="joueurs-apres" type="button">Suivants</button>
+      </div>
+    </section>
+
+    <section id="contenu" class="section" hidden>
+      <div class="filtres">
+        <div class="champ">
+          <label for="recherche">Chercher</label>
+          <input id="recherche" type="search" placeholder="diamond, tnt, rubis" autocomplete="off" spellcheck="false">
+        </div>
+        <fieldset>
+          <legend>Montrer</legend>
+          <label><input type="radio" name="genre" value="items" checked> les objets</label>
+          <label><input type="radio" name="genre" value="blocks"> les blocs</label>
+        </fieldset>
+        <fieldset>
+          <legend>Seulement</legend>
+          <label><input type="checkbox" id="seul-plugins"> venus d'un plugin</label>
+          <label><input type="checkbox" id="seul-coupes"> désactivés</label>
+        </fieldset>
+      </div>
+      <p id="compte" class="sourd"></p>
+      <p id="sans-images" class="aide" hidden>Seuls vos objets et blocs ont leur image : Basalt ne livre pas celles du jeu. Pour les voir, déposez le pack de ressources du jeu dans un dossier <code>vanilla_resource_pack</code> à côté de <code>server.properties</code>, puis rechargez les plugins.</p>
+      <ul id="liste-contenu" class="lignes"></ul>
+    </section>
+
+    <section id="carte" class="section" hidden>
+      <div class="filtres">
+        <div class="champ">
+          <label for="carte-joueur">Aller à un joueur</label>
+          <select id="carte-joueur"><option value="">Choisir…</option></select>
+        </div>
+        <div class="rangee" role="group" aria-label="Vue">
+          <button id="carte-plan" type="button" aria-pressed="true">Plan</button>
+          <button id="carte-relief" type="button" aria-pressed="false">Relief</button>
+        </div>
+        <div class="rangee">
+          <button id="carte-moins" type="button" class="rond" aria-label="Voir plus large" title="Voir plus large">−</button>
+          <button id="carte-plus" type="button" class="rond" aria-label="Voir de plus près" title="Voir de plus près">+</button>
+        </div>
+      </div>
+      <canvas id="carte-toile" class="toile" tabindex="0" aria-label="Carte du monde vue du dessus. Glissez pour vous déplacer, cliquez un bloc pour le choisir."></canvas>
+      <div id="carte-volume" class="volume" hidden>
+        <canvas id="carte-toile3d" class="toile" tabindex="0" aria-label="Carte du monde en relief. Glissez pour tourner, cliquez un bloc pour le choisir."></canvas>
+        <canvas id="carte-noms3d" aria-hidden="true"></canvas>
+      </div>
+      <p id="carte-lieu" class="sourd"></p>
+      <div id="carte-choix" class="bloc" hidden>
+        <h2 id="carte-bloc"></h2>
+        <p id="carte-lecture" class="sourd" hidden>Modifier le monde demande le jeton d'administration.</p>
+        <div id="carte-actions">
+          <form id="carte-remplacer" class="rangee">
+            <div class="champ">
+              <label for="carte-nom">Remplacer ce bloc par</label>
+              <input id="carte-nom" type="text" placeholder="stone" autocomplete="off" spellcheck="false" list="carte-noms" required>
+              <datalist id="carte-noms"></datalist>
+            </div>
+            <button type="submit" class="plein">Remplacer</button>
+            <button id="carte-retirer" type="button" class="danger">Retirer le bloc</button>
+          </form>
+          <form id="carte-amener" class="rangee">
+            <div class="champ">
+              <label for="carte-qui">Téléporter ici</label>
+              <select id="carte-qui" required></select>
+            </div>
+            <button type="submit">Téléporter</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <section id="analyse" class="section" hidden>
+      <p>L'analyse compte tous les objets rangés dans les conteneurs et chez les joueurs, présents ou absents, puis relève ce qui ressemble à une duplication. Ce sont des indices pour savoir où regarder, pas des preuves.</p>
+      <div class="rangee">
+        <button id="analyser" type="button" class="plein">Analyser la carte</button>
+        <p id="analyse-etat" class="sourd"></p>
+      </div>
+      <div id="analyse-rapport" hidden>
+        <dl id="analyse-faits" class="faits"></dl>
+        <h2>À regarder de près</h2>
+        <ul id="analyse-alertes" class="lignes"></ul>
+        <h2>Objets rares</h2>
+        <ul id="analyse-rares" class="lignes"></ul>
+        <h2>Tous les objets</h2>
+        <div class="filtres">
+          <div class="champ">
+            <label for="analyse-cherche">Chercher un objet</label>
+            <input id="analyse-cherche" type="search" placeholder="diamond, tnt, rubis" autocomplete="off" spellcheck="false">
+          </div>
+        </div>
+        <ul id="analyse-totaux" class="lignes"></ul>
+      </div>
+    </section>
+
+    <section id="packs" class="section" hidden>
+      <h2>Packs envoyés aux joueurs</h2>
+      <ul id="liste-packs" class="lignes"></ul>
+      <h2>Fichiers du dossier resource_packs</h2>
+      <ul id="liste-fichiers" class="lignes"></ul>
+      <p class="aide">Chiffrer écrit un fichier <code>-chiffre.mcpack</code> et sa clé à côté de l'original. Mettez-le ensuite dans <code>resource_packs.yml</code> et redémarrez.</p>
+    </section>
+
+    <section id="console" class="section" hidden>
+      <form id="commande-form" class="rangee">
+        <div class="champ">
+          <label for="commande">Commande</label>
+          <input id="commande" type="text" placeholder="say Bonjour" autocomplete="off" spellcheck="false" maxlength="256" required>
+        </div>
+        <button type="submit" class="plein">Lancer</button>
+      </form>
+      <p class="aide">Ce qu'une commande affiche va au journal du serveur, pas ici.</p>
+      <h2>Lancées depuis cet onglet</h2>
+      <ul id="historique" class="lignes"></ul>
+      <button id="recharger" type="button">Recharger les plugins</button>
+    </section>
+  </div>
+</div>
+
+<dialog id="fiche" aria-labelledby="fiche-nom">
+  <header>
+    <h2 id="fiche-nom"></h2>
+    <button id="fiche-fermer" type="button" class="rond" aria-label="Fermer">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+    </button>
+  </header>
+  <p id="fiche-etat" class="sourd"></p>
+  <div id="fiche-actions">
+    <form id="f-tp" class="bloc">
+      <h3>Téléporter</h3>
+      <div class="rangee">
+        <div class="champ court"><label for="tp-x">x</label><input id="tp-x" type="number" step="any" required></div>
+        <div class="champ court"><label for="tp-y">y</label><input id="tp-y" type="number" step="any" min="-64" max="320" required></div>
+        <div class="champ court"><label for="tp-z">z</label><input id="tp-z" type="number" step="any" required></div>
+        <button type="submit" class="plein">Téléporter</button>
+      </div>
+    </form>
+    <form id="f-tpvers" class="bloc">
+      <div class="rangee">
+        <div class="champ"><label for="tp-vers">Ou auprès d'un autre joueur</label><input id="tp-vers" type="text" autocomplete="off" spellcheck="false" required></div>
+        <button type="submit">Rejoindre</button>
+      </div>
+    </form>
+    <div class="bloc">
+      <h3>Mode de jeu</h3>
+      <div class="rangee" id="f-mode">
+        <button type="button" data-mode="survival">Survie</button>
+        <button type="button" data-mode="creative">Créatif</button>
+        <button type="button" data-mode="adventure">Aventure</button>
+        <button type="button" data-mode="spectator">Spectateur</button>
+      </div>
+    </div>
+    <form id="f-don" class="bloc">
+      <h3>Donner un objet</h3>
+      <div class="rangee">
+        <div class="champ"><label for="don-objet">Objet</label><input id="don-objet" type="text" placeholder="diamond" autocomplete="off" spellcheck="false" required></div>
+        <div class="champ court"><label for="don-nombre">Quantité</label><input id="don-nombre" type="number" min="1" max="6400" value="1" required></div>
+        <button type="submit">Donner</button>
+      </div>
+    </form>
+    <form id="f-effet" class="bloc">
+      <h3>Donner un effet</h3>
+      <div class="rangee">
+        <div class="champ"><label for="effet-nom">Effet</label><select id="effet-nom"></select></div>
+        <div class="champ court"><label for="effet-secondes">Secondes</label><input id="effet-secondes" type="number" min="1" max="1000000" value="60" required></div>
+        <div class="champ court"><label for="effet-niveau">Niveau</label><input id="effet-niveau" type="number" min="1" max="256" value="1" required></div>
+        <button type="submit">Donner</button>
+      </div>
+    </form>
+    <form id="f-message" class="bloc">
+      <h3>Lui écrire</h3>
+      <div class="rangee">
+        <div class="champ"><label for="message-texte">Message</label><input id="message-texte" type="text" maxlength="256" required></div>
+        <button type="submit">Envoyer</button>
+      </div>
+    </form>
+    <div class="bloc">
+      <h3>Soins et sanctions</h3>
+      <div class="rangee">
+        <button type="button" data-action="heal">Soigner et nourrir</button>
+        <button type="button" data-action="clear_effects">Retirer ses effets</button>
+        <button type="button" data-action="clear_inventory" data-confirme="Vider tout l'inventaire de ce joueur ?" class="danger">Vider l'inventaire</button>
+        <button type="button" data-action="kill" data-confirme="Tuer ce joueur ?" class="danger">Tuer</button>
+      </div>
+    </div>
+    <form id="f-expulser" class="bloc">
+      <div class="rangee">
+        <div class="champ"><label for="expulser-raison">Expulser, avec cette raison</label><input id="expulser-raison" type="text" maxlength="200" placeholder="facultative"></div>
+        <button type="submit" class="danger">Expulser</button>
+      </div>
+    </form>
+  </div>
+  <p id="fiche-lecture" class="aide" hidden>Avec le jeton de lecture, vous voyez ce joueur sans pouvoir agir sur lui.</p>
+</dialog>
+<script src="/panel.js"></script>
+<script src="/relief.js"></script>
+</body>
+</html>

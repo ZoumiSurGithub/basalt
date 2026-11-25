@@ -24,6 +24,8 @@ pub(super) struct Shot {
     pub owner: Option<i64>,
     /// Joueur qui l'a tiré : il ne le touche pas, et ses victimes lui sont comptées
     pub archer: Option<SocketAddr>,
+    /// Potion lancée : (variante, part de durée gardée). Elle éclabousse en tombant.
+    pub potion: Option<(u16, f32)>,
     /// Son tireur dans le message de mort (« tué par un squelette »)
     pub cause: &'static str,
     age: u32,
@@ -44,12 +46,6 @@ pub(super) fn blast_damage(power: f32, distance: f32) -> f32 {
     (f * f + f) / 2.0 * 7.0 * reach + 1.0
 }
 
-/// Un bloc de cette résistance cède-t-il à cette distance ? `luck` (de 0 à 1) fait le bord
-/// irrégulier du cratère, comme dans le jeu.
-pub(super) fn blast_breaks(power: f32, distance: f32, resistance: f32, luck: f32) -> bool {
-    power * (0.7 + luck * 0.6) - 0.75 * distance - (resistance + 0.3) * 0.3 > 0.0
-}
-
 impl Server {
     /// Lance un projectile. Renvoie son identifiant, ou None si le ciel en est déjà plein.
     #[allow(clippy::too_many_arguments)]
@@ -63,28 +59,41 @@ impl Server {
         let (yaw, _) = heading(vel);
         let meta = bedrock::mob_metadata(0.25, 0.25, 0, 0, 0);
         self.send_near(from, bedrock::ID_ADD_ACTOR, &bedrock::add_actor(id, &kind, from, vel, yaw, (1.0, 1.0), None, None, &meta));
-        self.shots.insert(id, Shot { kind, pos: from, vel, gravity, damage, power, owner, archer: None, cause, age: 0 });
+        self.shots.insert(id, Shot { kind, pos: from, vel, gravity, damage, power, owner, archer: None, potion: None, cause, age: 0 });
         Some(id)
     }
 
     /// Une créature tire sur un point : la flèche part de ses yeux, un peu relevée pour
     /// compenser sa chute, avec un rien d'imprécision.
-    pub(super) fn mob_shoots(&mut self, m: &mobs::Mob, kind: &str, at: (f32, f32, f32), damage: f32, cause: &'static str) {
+    pub(super) fn mob_shoots(&mut self, m: &mobs::Mob, kind: &str, at: (f32, f32, f32), damage: f32, cause: &'static str) -> Option<i64> {
         let (_, h) = m.size();
         let from = (m.pos.0, m.pos.1 + h * 0.85, m.pos.2);
         let (dx, dy, dz) = (at.0 - from.0, at.1 - from.1, at.2 - from.2);
         let flat = (dx * dx + dz * dz).sqrt().max(0.01);
         // Une boule de feu file droit ; le reste retombe
         let straight = kind.contains("fireball");
-        let speed = if straight { 0.9 } else { 1.6 };
+        // (une potion se lance moins fort qu'une flèche, en cloche)
+        let lobbed = kind.contains("potion");
+        // (les forces des fiches du jeu : petite boule de feu 1,3, grosse 1,6, potion 0,75, flèche 1,6)
+        let speed = if straight { if kind.contains("small") { 1.3 } else { 1.6 } } else if lobbed { 0.75 } else { 1.6 };
+        // (visée relevée d'un cinquième de la distance, comme dans le jeu, potion ou flèche)
         let lift = if straight { 0.0 } else { flat * 0.2 };
         let d = (dx * dx + (dy + lift) * (dy + lift) + dz * dz).sqrt().max(0.01);
         let wobble = |s: &mut Self| (s.mob_rng.unit() as f32 - 0.5) * 0.06;
         let vel = (dx / d * speed + wobble(self), (dy + lift) / d * speed + wobble(self), dz / d * speed + wobble(self));
         let start = (from.0 + vel.0 * 0.5, from.1, from.2 + vel.2 * 0.5);
-        let power = if straight { 1.0 } else { 0.0 };
-        self.shoot(kind, start, vel, damage, if straight { 0.0 } else { 0.05 }, power, Some(m.id), cause);
-        self.send_near(from, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound("bow", from, "", false, -1));
+        // (la grosse boule de feu du ghast explose ; la petite du blaze brûle sans exploser)
+        let power = if straight && !kind.contains("small") { 1.0 } else { 0.0 };
+        let id = self.shoot(kind, start, vel, damage, if straight { 0.0 } else { 0.05 }, power, Some(m.id), cause);
+        // Le bruit du tir : celui de l'espèce pour une boule de feu (le souffle du blaze, le
+        // cri du ghast), celui de l'arc ou du lancer sinon
+        let sound = if straight { bedrock::level_sound("shoot", from, m.sound_id(), false, -1) } else { bedrock::level_sound(if lobbed { "throw" } else { "bow" }, from, "", false, -1) };
+        self.send_near(from, bedrock::ID_LEVEL_SOUND_EVENT, &sound);
+        // (le ghast tire de loin : le jeu annonce sa boule de feu par un bruit à part, qui porte)
+        if m.sound_id() == "minecraft:ghast" {
+            self.send_near(from, bedrock::ID_LEVEL_EVENT, &bedrock::level_event(bedrock::LEVEL_EVENT_SOUND_GHAST_FIREBALL, from, 0));
+        }
+        id
     }
 
     /// Clic avec un arc en main : le joueur commence à le bander (s'il a une flèche, ou en
@@ -117,6 +126,10 @@ impl Server {
         if c.dead.is_some() || c.mode.is_spectator() {
             return true;
         }
+        // Arc enchanté : puissance (un quart de dégâts en plus par niveau, plus un quart) et
+        // infinité (la flèche n'est pas dépensée, mais il en faut une)
+        let bow = c.inv.held().ench;
+        let (power, endless) = (bow.level(crate::item::enchant::POWER) as f32, bow.level(crate::item::enchant::INFINITY) > 0);
         // Force du tir, comme dans le jeu : (t² + 2t) / 3, t en secondes, 1 au plus
         let t = tick.saturating_sub(since) as f32 / 20.0;
         let force = ((t * t + 2.0 * t) / 3.0).min(1.0);
@@ -127,6 +140,7 @@ impl Server {
         if survival {
             let slot = c.inv.offhand.slots.iter_mut().chain(c.inv.main.slots.iter_mut()).find(|s| !s.is_empty() && Some(s.id) == arrow);
             match slot {
+                Some(_) if endless => {}
                 Some(s) => {
                     s.count -= 1;
                     if s.count == 0 {
@@ -141,7 +155,7 @@ impl Server {
         let speed = force * 3.0;
         let from = (eye.0 + dir.0 * 0.5, eye.1 - 0.1, eye.2 + dir.2 * 0.5);
         // Dégâts : deux fois la vitesse, soit 6 à pleine puissance (9 pour un tir critique du jeu)
-        if let Some(id) = self.shoot("minecraft:arrow", from, (dir.0 * speed, dir.1 * speed, dir.2 * speed), (speed * 2.0).ceil(), 0.05, 0.0, None, "une flèche") {
+        if let Some(id) = self.shoot("minecraft:arrow", from, (dir.0 * speed, dir.1 * speed, dir.2 * speed), (speed * 2.0 * if power > 0.0 { 1.25 + 0.25 * power } else { 1.0 }).ceil(), 0.05, 0.0, None, "une flèche") {
             if let Some(s) = self.shots.get_mut(&id) {
                 s.archer = Some(*addr);
             }
@@ -154,12 +168,112 @@ impl Server {
         true
     }
 
+    /// Clic avec une potion jetable en main : elle part là où le joueur regarde. Vrai si
+    /// l'objet tenu était une potion à lancer.
+    pub(super) fn throw_potion(&mut self, addr: &SocketAddr) -> bool {
+        let tick = self.tick;
+        let Some(c) = self.clients.get(addr).filter(|c| c.joined && c.dead.is_none() && !c.mode.is_spectator()) else { return false };
+        let held = c.inv.held();
+        let name = self.held_name(c);
+        let Some(share) = crate::item::potion::thrown_share(&name) else { return false };
+        // (le jeu répète le clic tant que le bouton est tenu : une potion par quart de seconde au plus)
+        if tick.saturating_sub(c.threw_at) < 5 {
+            return true;
+        }
+        let (eye, yaw, pitch, survival, variant) = (c.pos, c.yaw.to_radians(), c.pitch.to_radians(), c.mode.takes_damage(), held.meta);
+        // Lancée un peu au-dessus du regard, comme dans le jeu
+        let dir = (-yaw.sin() * pitch.cos(), -(pitch - 0.35).sin(), yaw.cos() * pitch.cos());
+        // (la force du lancer ne dépend pas de l'angle : 0,5 bloc par tick, comme dans le jeu)
+        let length = (dir.0 * dir.0 + dir.1 * dir.1 + dir.2 * dir.2).sqrt().max(0.01);
+        let dir = (dir.0 / length, dir.1 / length, dir.2 / length);
+        let from = (eye.0 + dir.0 * 0.5, eye.1 - 0.1, eye.2 + dir.2 * 0.5);
+        let Some(id) = self.shoot("minecraft:splash_potion", from, (dir.0 * 0.5, dir.1 * 0.5, dir.2 * 0.5), 0.0, 0.05, 0.0, None, "une potion") else { return true };
+        if let Some(s) = self.shots.get_mut(&id) {
+            s.archer = Some(*addr);
+            s.potion = Some((variant, share));
+        }
+        self.send_near(eye, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound("throw", eye, "", false, -1));
+        if let Some(c) = self.clients.get_mut(addr) {
+            c.threw_at = tick;
+            if survival {
+                c.inv.consume_held();
+                c.inv_touched = true;
+            }
+        }
+        if survival {
+            self.send_inventory(addr);
+            self.show_held(addr);
+        }
+        true
+    }
+
+    /// Une potion lancée se brise : ses effets touchent les joueurs à moins de quatre blocs,
+    /// d'autant plus longtemps qu'ils sont près (en entier pour celui qu'elle a frappé).
+    fn splash(&mut self, at: (f32, f32, f32), variant: u16, share: f32, direct: Option<SocketAddr>, owner: Option<i64>) {
+        self.send_near(at, bedrock::ID_LEVEL_EVENT, &bedrock::level_event(bedrock::LEVEL_EVENT_PARTICLE_SPLASH, at, crate::item::potion::potion_color(variant)));
+        self.send_near(at, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound("glass", at, "", false, -1));
+        let doses = crate::item::potion::potion_effects(variant);
+        if doses.is_empty() {
+            return;
+        }
+        let near: Vec<(SocketAddr, f32)> = self
+            .clients
+            .iter()
+            .filter(|(_, c)| c.joined && c.stage == Stage::InGame && c.dead.is_none() && !c.mode.is_spectator())
+            .filter_map(|(a, c)| {
+                let d = ((c.pos.0 - at.0).powi(2) + (c.pos.1 - EYE + 0.9 - at.1).powi(2) + (c.pos.2 - at.2).powi(2)).sqrt();
+                let strength = if Some(*a) == direct { 1.0 } else { 1.0 - d / 4.0 };
+                (strength > 0.0).then_some((*a, strength))
+            })
+            .collect();
+        for (addr, strength) in near {
+            for (effect, level, ticks) in doses {
+                if *ticks <= 1 {
+                    // Instantané : il agit à partir d'une demi-portée
+                    if strength >= 0.5 {
+                        self.give_effect(&addr, *effect, *level, 1, true);
+                    }
+                } else {
+                    let ticks = (*ticks as f32 * share * strength) as u64;
+                    if ticks >= 20 {
+                        self.give_effect(&addr, *effect, *level, ticks, true);
+                    }
+                }
+            }
+        }
+        // Les créatures ne connaissent que les dégâts instantanés
+        if let Some((_, level, _)) = doses.iter().find(|d| d.0 == 7) {
+            let hit: Vec<i64> = self.mobs.values().filter(|m| m.dead.is_none() && Some(m.id) != owner && (m.pos.0 - at.0).powi(2) + (m.pos.1 - at.1).powi(2) + (m.pos.2 - at.2).powi(2) < 9.0).map(|m| m.id).collect();
+            for id in hit {
+                self.hit_mob(id, at, (6i32 << (*level).min(5)) as f32, Attacker::Mob(owner.unwrap_or(id)));
+            }
+        }
+    }
+
+    /// Un joueur frappe une boule de feu : elle repart là où il regarde, et c'est désormais
+    /// la sienne (elle peut tuer le ghast qui l'a crachée). Vrai si c'en était une.
+    pub(super) fn deflect(&mut self, addr: &SocketAddr, id: i64) -> bool {
+        let Some(c) = self.clients.get(addr).filter(|c| c.joined && c.dead.is_none() && !c.mode.is_spectator()) else { return false };
+        let (yaw, pitch) = (c.yaw.to_radians(), c.pitch.to_radians());
+        let Some(s) = self.shots.get_mut(&id).filter(|s| s.kind.contains("fireball")) else { return false };
+        let speed = (s.vel.0 * s.vel.0 + s.vel.1 * s.vel.1 + s.vel.2 * s.vel.2).sqrt().max(0.9);
+        s.vel = (-yaw.sin() * pitch.cos() * speed, -pitch.sin() * speed, yaw.cos() * pitch.cos() * speed);
+        s.owner = None;
+        s.archer = Some(*addr);
+        s.age = 0;
+        true
+    }
+
     /// Fait voler les projectiles d'un tick.
     pub(super) fn shots_tick(&mut self) {
         if self.shots.is_empty() {
             return;
         }
         let ids: Vec<i64> = self.shots.keys().copied().collect();
+        // Qui se trouve où (cases de deux blocs) : un projectile ne regarde que ses voisins,
+        // pas les mille joueurs et les milliers de créatures du serveur
+        let crowd = self.crowd();
+        let players: HashMap<i64, SocketAddr> = self.clients.iter().filter(|(_, c)| c.joined && c.dead.is_none() && c.mode.takes_damage()).map(|(a, c)| (c.id, *a)).collect();
         for id in ids {
             let Some(s) = self.shots.get_mut(&id) else { continue };
             s.age += 1;
@@ -175,7 +289,7 @@ impl Server {
             let mut pos = from;
             for _ in 0..steps {
                 pos = (pos.0 + vel.0 / steps as f32, pos.1 + vel.1 / steps as f32, pos.2 + vel.2 / steps as f32);
-                if let Some(target) = self.shot_touches(pos, owner, archer) {
+                if let Some(target) = self.shot_touches(pos, owner, archer, &crowd, &players) {
                     hit = Some(target);
                     break;
                 }
@@ -194,24 +308,26 @@ impl Server {
     }
 
     /// Ce que le projectile touche à cet endroit : un joueur, une créature, ou un bloc plein.
-    fn shot_touches(&self, p: (f32, f32, f32), owner: Option<i64>, archer: Option<SocketAddr>) -> Option<Touched> {
+    #[allow(clippy::type_complexity)]
+    fn shot_touches(&self, p: (f32, f32, f32), owner: Option<i64>, archer: Option<SocketAddr>, crowd: &HashMap<(i32, i32), Vec<(i64, (f32, f32, f32), f32, f32)>>, players: &HashMap<i64, SocketAddr>) -> Option<Touched> {
         let reach = 0.3;
-        for (addr, c) in self.clients.iter() {
-            if Some(*addr) == archer || !c.joined || c.stage != Stage::InGame || c.dead.is_some() || !c.mode.takes_damage() {
-                continue;
-            }
-            let feet = c.pos.1 - EYE;
-            if (c.pos.0 - p.0).abs() < 0.3 + reach && (c.pos.2 - p.2).abs() < 0.3 + reach && p.1 > feet - reach && p.1 < feet + 1.8 + reach {
-                return Some(Touched::Player(*addr));
-            }
-        }
-        for m in self.mobs.values() {
-            if Some(m.id) == owner || m.dead.is_some() {
-                continue;
-            }
-            let (w, h) = m.size();
-            if (m.pos.0 - p.0).abs() < w / 2.0 + reach && (m.pos.2 - p.2).abs() < w / 2.0 + reach && p.1 > m.pos.1 - reach && p.1 < m.pos.1 + h + reach {
-                return Some(Touched::Mob(m.id));
+        let (cx, cz) = ((p.0 / 2.0).floor() as i32, (p.2 / 2.0).floor() as i32);
+        // (les cases voisines aussi : la plus grosse créature, le ghast, déborde de deux blocs)
+        for dx in -2..=2 {
+            for dz in -2..=2 {
+                let Some(bodies) = crowd.get(&(cx + dx, cz + dz)) else { continue };
+                for (id, feet, w, h) in bodies {
+                    if (feet.0 - p.0).abs() >= w / 2.0 + reach || (feet.2 - p.2).abs() >= w / 2.0 + reach || p.1 <= feet.1 - reach || p.1 >= feet.1 + h + reach {
+                        continue;
+                    }
+                    match players.get(id) {
+                        Some(addr) if Some(*addr) != archer => return Some(Touched::Player(*addr)),
+                        Some(_) => {}
+                        // (ni joueur vulnérable ni créature : un joueur en créatif, que le projectile traverse)
+                        None if self.mobs.contains_key(id) && Some(*id) != owner => return Some(Touched::Mob(*id)),
+                        None => {}
+                    }
+                }
             }
         }
         let (x, y, z) = (p.0.floor() as i32, p.1.floor() as i32, p.2.floor() as i32);
@@ -225,10 +341,10 @@ impl Server {
     /// Le projectile a touché : dégâts, explosion, puis il disparaît.
     fn shot_lands(&mut self, id: i64, at: (f32, f32, f32), target: Touched) {
         let Some(s) = self.shots.get(&id) else { return };
-        let (kind, damage, power, owner, cause, vel, archer) = (s.kind.clone(), s.damage, s.power, s.owner, s.cause, s.vel, s.archer);
+        let (kind, damage, power, owner, cause, vel, archer, potion) = (s.kind.clone(), s.damage, s.power, s.owner, s.cause, s.vel, s.archer, s.potion);
         if self.plugins.listens("ProjectileHitEvent") {
             let mut fields = vec![
-                ("projectile", Json::Str(kind)),
+                ("projectile", Json::Str(kind.clone())),
                 ("x", Json::Num(at.0 as f64)),
                 ("y", Json::Num(at.1 as f64)),
                 ("z", Json::Num(at.2 as f64)),
@@ -246,17 +362,31 @@ impl Server {
             }
         }
         self.end_shot(id);
+        if let Some((variant, share)) = potion {
+            let direct = match target {
+                Touched::Player(a) => Some(a),
+                _ => None,
+            };
+            return self.splash(at, variant, share, direct, owner);
+        }
         if power > 0.0 {
             self.explode(at, power, owner, cause);
             return;
         }
-        self.send_near(at, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound("bow.hit", at, "", false, -1));
+        // (le bruit de la flèche qui se plante : pour les flèches seulement)
+        if kind.contains("arrow") {
+            self.send_near(at, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound("bow.hit", at, "", false, -1));
+        }
         match target {
             Touched::Player(a) if damage > 0.0 => {
                 let pid = self.clients.get(&a).map(|c| c.id).unwrap_or(-1);
                 // (tirée par un joueur : c'est lui que nomme le message de mort)
                 let by = archer.and_then(|s| self.clients.get(&s)).and_then(|c| c.name.clone());
                 self.hurt(&a, damage, by.map(Cause::Player).unwrap_or(Cause::Mob(cause)));
+                // La petite boule de feu du blaze enflamme sa cible cinq secondes
+                if kind.contains("small_fireball") {
+                    self.ignite(&a, 100);
+                }
                 // La flèche pousse un peu dans son sens
                 let flat = (vel.0 * vel.0 + vel.2 * vel.2).sqrt().max(0.01);
                 if !self.refused_extras.contains(&bedrock::ID_SET_ACTOR_MOTION) {
@@ -266,6 +396,14 @@ impl Server {
             Touched::Mob(m) if damage > 0.0 => {
                 let from = (at.0 - vel.0, at.1, at.2 - vel.2);
                 self.hit_mob(m, from, damage, archer.map(Attacker::Player).unwrap_or(Attacker::Mob(owner.unwrap_or(m))));
+                if kind.contains("small_fireball") {
+                    self.set_mob_fire(m, self.tick + 100);
+                }
+            }
+            // Contre un bloc, la petite boule de feu y met le feu
+            Touched::Block if kind.contains("small_fireball") && self.cfg.mob_griefing => {
+                let cell = ((at.0 - vel.0 * 0.3).floor() as i32, (at.1 - vel.1 * 0.3).floor() as i32, (at.2 - vel.2 * 0.3).floor() as i32);
+                self.light_fire(cell);
             }
             _ => {}
         }
@@ -285,6 +423,11 @@ impl Server {
     /// Explosion : elle creuse (sauf `mob-griefing=false`), blesse et repousse ce qui est
     /// autour. `power` : 3 pour un creeper, 4 pour de la TNT.
     pub(super) fn explode(&mut self, at: (f32, f32, f32), power: f32, owner: Option<i64>, cause: &'static str) {
+        self.explode_with(at, power, owner, cause, false);
+    }
+
+    /// `every_drop` : chaque bloc soufflé laisse son butin (la TNT), au lieu d'une partie.
+    pub(super) fn explode_with(&mut self, at: (f32, f32, f32), power: f32, owner: Option<i64>, cause: &'static str, every_drop: bool) {
         let mut power = power.clamp(0.1, 16.0);
         if self.plugins.listens("ExplosionEvent") {
             let out = self.fire("ExplosionEvent", vec![("x", Json::Num(at.0 as f64)), ("y", Json::Num(at.1 as f64)), ("z", Json::Num(at.2 as f64)), ("power", Json::Num(power as f64))]);
@@ -300,42 +443,88 @@ impl Server {
         // Les blocs
         if self.cfg.mob_griefing {
             let Some(d) = self.data.clone() else { return };
-            let (air, water) = (self.world.air, self.world.generator().blocks.water);
-            let r = (power * 1.3).ceil() as i32 + 1;
-            let (cx, cy, cz) = (at.0.floor() as i32, at.1.floor() as i32, at.2.floor() as i32);
-            let mut broken = Vec::new();
-            for dx in -r..=r {
-                for dy in -r..=r {
-                    for dz in -r..=r {
-                        let (x, y, z) = (cx + dx, cy + dy, cz + dz);
-                        if !crate::world::World::in_bounds(y) || !self.world.is_ready(x >> 4, z >> 4) {
+            let air = self.world.air;
+            // Comme dans le jeu : 1352 rayons partent du centre vers la surface d'un cube. Chacun
+            // a une force tirée au sort, qui s'use à chaque pas et dans chaque bloc traversé
+            // selon sa résistance ; tant qu'il lui en reste, le bloc cède. Un mur solide abrite
+            // donc ce qui est derrière lui.
+            let mut broken: HashMap<(i32, i32, i32), u32> = HashMap::new();
+            let mut known: HashMap<u32, (f32, bool)> = HashMap::new();
+            for i in 0..16 {
+                for j in 0..16 {
+                    for k in 0..16 {
+                        if !(i == 0 || i == 15 || j == 0 || j == 15 || k == 0 || k == 15) {
                             continue;
                         }
-                        let state = self.world.get(x, y, z);
-                        if state == air || state == water {
-                            continue;
-                        }
-                        let Some(name) = d.block_name(state) else { continue };
-                        // L'eau, la lave et ce qui garde des objets résistent ; l'incassable aussi
-                        if name.contains("water") || name.contains("lava") || keeps_things(name) || d.hardness(state).map(|h| h < 0.0).unwrap_or(true) {
-                            continue;
-                        }
-                        let resistance = d.block_props(name).map(|p| p.blast_resistance).unwrap_or(6.0);
-                        let dist = ((x as f32 + 0.5 - at.0).powi(2) + (y as f32 + 0.5 - at.1).powi(2) + (z as f32 + 0.5 - at.2).powi(2)).sqrt();
-                        if blast_breaks(power, dist, resistance, self.mob_rng.unit() as f32) {
-                            broken.push(((x, y, z), state));
+                        let (dx, dy, dz) = (i as f32 / 15.0 * 2.0 - 1.0, j as f32 / 15.0 * 2.0 - 1.0, k as f32 / 15.0 * 2.0 - 1.0);
+                        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+                        let (dx, dy, dz) = (dx / len * 0.3, dy / len * 0.3, dz / len * 0.3);
+                        let mut force = power * (0.7 + self.mob_rng.unit() as f32 * 0.6);
+                        let (mut x, mut y, mut z) = at;
+                        // (un rayon fait trois pas par bloc : le bloc n'est relu que quand il change)
+                        let mut last: Option<((i32, i32, i32), u32)> = None;
+                        while force > 0.0 {
+                            let cell = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
+                            let state = match last {
+                                Some((c, s)) if c == cell => s,
+                                _ => {
+                                    if !crate::world::World::in_bounds(cell.1) || !self.world.is_ready(cell.0 >> 4, cell.2 >> 4) {
+                                        break;
+                                    }
+                                    let s = self.world.get(cell.0, cell.1, cell.2);
+                                    last = Some((cell, s));
+                                    s
+                                }
+                            };
+                            if state != air {
+                                // (résistance du bloc, et s'il peut céder : ni liquide, ni incassable, ni conteneur)
+                                let (resistance, gives) = *known.entry(state).or_insert_with(|| {
+                                    let name = d.block_name(state).unwrap_or("");
+                                    // (la bedrock, les barrières et leurs pareils ne cèdent jamais, quoi
+                                    // qu'en disent les données ou un plugin, et arrêtent le rayon)
+                                    if indestructible(name) {
+                                        return (3_600_000.0, false);
+                                    }
+                                    let solid = !(name.contains("water") || name.contains("lava") || keeps_things(name) || d.hardness(state).map(|h| h < 0.0).unwrap_or(true));
+                                    (d.block_props(name).map(|p| p.blast_resistance).unwrap_or(6.0), solid)
+                                });
+                                force -= (resistance + 0.3) * 0.3;
+                                if force > 0.0 && gives {
+                                    broken.insert(cell, state);
+                                }
+                            }
+                            (x, y, z) = (x + dx, y + dy, z + dz);
+                            force -= 0.225;
                         }
                     }
                 }
             }
+            // Le butin est regroupé par sorte d'objet : quelques piles au lieu de centaines
+            // d'objets à faire tomber un par un
+            let mut loot: HashMap<i16, (u32, (i32, i32, i32))> = HashMap::new();
             for (p, state) in broken {
                 // Comme dans le jeu, une partie seulement des blocs soufflés laisse son butin
-                if self.mob_rng.unit() as f32 * power < 1.0 {
+                // (une TNT laisse tout tomber, comme le veut la règle par défaut du jeu)
+                if every_drop || self.mob_rng.unit() as f32 * power < 1.0 {
                     for (item, count) in self.natural_drops(state) {
-                        self.drop_item((p.0 as f32 + 0.5, p.1 as f32 + 0.3, p.2 as f32 + 0.5), (0.0, 0.2, 0.0), item, count, 10);
+                        let pile = loot.entry(item).or_insert((0, p));
+                        pile.0 += count as u32;
                     }
                 }
+                // (une TNT soufflée s'amorce à son tour, mèche courte)
+                if d.block_name(state) == Some("minecraft:tnt") {
+                    let fuse = 10 + self.mob_rng.below(31);
+                    self.prime_tnt(p, fuse);
+                    continue;
+                }
                 self.change_block(p, air);
+            }
+            for (item, (mut count, p)) in loot {
+                while count > 0 {
+                    let pile = count.min(64);
+                    self.drop_item((p.0 as f32 + 0.5, p.1 as f32 + 0.3, p.2 as f32 + 0.5), (0.0, 0.2, 0.0), item, pile as u8, 10);
+                    count -= pile;
+                }
             }
         }
         // Les joueurs et les créatures
@@ -378,6 +567,12 @@ enum Touched {
 }
 
 /// Blocs qui gardent des objets : une explosion les laisse en place plutôt que de tout perdre.
+/// Blocs que rien ne détruit, sinon un joueur en créatif : bedrock, barrière, blocs techniques.
+pub(super) fn indestructible(name: &str) -> bool {
+    let n = name.trim_start_matches("minecraft:");
+    matches!(n, "bedrock" | "barrier" | "invisible_bedrock" | "end_portal" | "end_portal_frame" | "end_gateway" | "portal" | "structure_block" | "structure_void" | "jigsaw" | "border_block" | "allow" | "deny") || n.contains("command_block") || n.starts_with("light_block")
+}
+
 fn keeps_things(name: &str) -> bool {
     ["chest", "barrel", "furnace", "smoker", "shulker", "hopper", "dispenser", "dropper", "brewing", "bed", "sign", "spawner"].iter().any(|k| name.contains(k))
 }
@@ -400,10 +595,6 @@ mod tests {
         assert!((blast_damage(3.0, 0.0) - 43.0).abs() < 0.01);
         assert!(blast_damage(3.0, 3.0) > 15.0 && blast_damage(3.0, 3.0) < 20.0);
         assert_eq!(blast_damage(3.0, 6.0), 0.0);
-        // La terre cède à 3 blocs, la pierre seulement tout près, l'obsidienne jamais
-        assert!(blast_breaks(3.0, 3.0, 0.5, 0.5));
-        assert!(blast_breaks(3.0, 1.0, 6.0, 0.5) && !blast_breaks(3.0, 3.0, 6.0, 1.0));
-        assert!(!blast_breaks(3.0, 0.0, 1200.0, 1.0));
     }
 
     #[test]

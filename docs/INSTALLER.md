@@ -205,7 +205,10 @@ démarrage). Arrêtez le serveur avant de le modifier. Les plus utiles :
 | `keep-inventory` | `true` : on garde son inventaire à la mort |
 | `spawn-animals` | `false` : pas d'animaux |
 | `spawn-monsters` | `false` : pas de monstres qui apparaissent la nuit (monde paisible) |
+| `api-port` | port de l'API de gestion à distance ; `0` : éteinte (voir [API.md](API.md)) |
+| `api-bind` | adresse écoutée par l'API ; `127.0.0.1` : cette machine seulement |
 | `mob-griefing` | `false` : les explosions (creeper…) blessent sans casser de blocs |
+| `fire-spreads` | `false` : le feu ne brûle plus les blocs et ne gagne plus de terrain (il blesse toujours) |
 | `tick-distance` | Distance de simulation en chunks (4 à 12) : au-delà, les animaux restent figés |
 | `public-ip` | adresse publique, derrière une box |
 

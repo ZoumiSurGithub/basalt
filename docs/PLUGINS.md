@@ -854,6 +854,7 @@ server.entities.create("monserveur:loup_alpha", { looks = "minecraft:wolf", heal
 | `projectileDamage` | nombre | dégâts d'un projectile, en points de vie | 3 |
 | `shootInterval` | nombre | secondes entre deux tirs | 2 |
 | `shootRange` | nombre (2 à 48) | distance de tir, en blocs | 15 |
+| `potion` | texte | ce que contiennent ses potions, avec `projectile = "minecraft:splash_potion"` : `poison`, `slowness`, `weakness`, `harming`, `healing`, `regeneration`… (voir [CONSOLE.md](CONSOLE.md), « Potions ») | de l'eau |
 | `explosion` | nombre (0,5 à 8) | elle explose au contact, comme un creeper : la puissance (3 pour un creeper, 4 pour de la TNT) | celle de l'espèce, sinon aucune |
 | `drops` | table | butin à sa mort ; `{}` : rien | celui de l'espèce |
 | `xp`, `xpMax` | nombre | expérience quand un joueur la tue | de 1 à 3 |
@@ -866,7 +867,7 @@ Avec `width` et `height`, la boîte ne dépend plus de `scale` : on peut affiche
 server.entities.create("monserveur:colosse", { looks = "minecraft:iron_golem", scale = 2, width = 1, height = 2 })
 ```
 
-Créatures de départ possibles (`looks`) : `cow, pig, sheep, chicken, rabbit, mooshroom, goat, llama, horse, donkey, mule, wolf, cat, villager, iron_golem`, et les monstres : `zombie, husk, drowned, zombie_villager, skeleton, stray, creeper, spider, cave_spider, silverfish, wither_skeleton, vindicator, pillager, enderman, slime`.
+Créatures de départ possibles (`looks`) : `cow, pig, sheep, chicken, rabbit, mooshroom, goat, llama, horse, donkey, mule, wolf, cat, villager, iron_golem`, et les monstres : `zombie, husk, drowned, zombie_villager, skeleton, stray, creeper, spider, cave_spider, silverfish, wither_skeleton, vindicator, pillager, enderman, slime, witch`, et trois volants : `blaze, ghast, phantom`.
 
 Le butin s'écrit avec une quantité fixe ou une fourchette :
 
@@ -906,7 +907,7 @@ server.entities.create("monserveur:zombie_doux", { looks = "minecraft:zombie", h
 - `CreatureDamageEvent` et `CreatureDeathEvent` valent pour elle comme pour les autres ;
   les coups qu'elle porte à un joueur passent par `EntityDamageEvent`.
 
-Basalt connaît quinze monstres du jeu, hostiles d'eux-mêmes :
+Basalt connaît dix-neuf monstres du jeu, hostiles d'eux-mêmes :
 
 | Monstre | Vie | Attaque |
 |---|---|---|
@@ -920,6 +921,10 @@ Basalt connaît quinze monstres du jeu, hostiles d'eux-mêmes :
 | `vindicator` | 24 | frappe (13) |
 | `pillager` | 24 | **tire des flèches** (4) à 12 blocs |
 | `enderman` | 40 | **neutre** : ne frappe (7) que le joueur qui l'a frappé, et se téléporte une fois sur deux quand on le touche |
+| `witch` | 26 | **lance des potions** à 10 blocs : poison, lenteur, dégâts ou faiblesse |
+| `blaze` | 20 | **vole** à hauteur d'homme et **tire des petites boules de feu** (5) par rafales de trois, à 16 blocs ; elles enflamment le joueur |
+| `ghast` | 10 | **vole** haut et loin, **crache des boules de feu qui explosent** à 28 blocs ; un joueur qui en frappe une la renvoie |
+| `phantom` | 20 | **vole** en cercle au-dessus du joueur, fond sur lui et mord (6) ; brûle au soleil ; vient de lui-même la nuit chercher les joueurs restés trois jours sans dormir |
 | `slime` | 1, 4 ou 16 | trois tailles ; frappe (0, 2 ou 4) ; un gros se divise en plus petits à sa mort |
 
 Zombies, squelettes, creepers et araignées apparaissent d'eux-mêmes dans le noir autour des
@@ -945,15 +950,23 @@ server.entities.create("monserveur:archer_glace", {
 -- Un mage : un villageois qui lance des boules de feu (elles explosent en touchant)
 server.entities.create("monserveur:mage", {
   looks = "minecraft:villager", name = "Mage", hostile = true,
-  projectile = "minecraft:small_fireball", projectileDamage = 4, shootInterval = 3,
+  projectile = "minecraft:fireball", projectileDamage = 4, shootInterval = 3,
+})
+
+-- Un soigneur : il lance des potions de soin (sur les joueurs : hostile de nom seulement)
+server.entities.create("monserveur:soigneur", {
+  looks = "minecraft:villager", name = "Soigneur", hostile = true,
+  projectile = "minecraft:splash_potion", potion = "strong_healing", shootInterval = 4,
 })
 
 -- Une vache piégée
 server.entities.create("monserveur:vache_piegee", { looks = "minecraft:cow", explosion = 2 })
 ```
 
-- Un projectile dont le nom contient `fireball` file droit et **explose** à l'impact ; les
-  autres retombent comme une flèche et blessent ce qu'ils touchent.
+- Un projectile dont le nom contient `fireball` file droit. La grosse (`fireball`, celle du
+  ghast) **explose** à l'impact ; la petite (`small_fireball`, celle du blaze) blesse et
+  enflamme le joueur cinq secondes, sans exploser. Les autres retombent comme une flèche et blessent ce qu'ils touchent.
+- Une créature créée à partir d'un `blaze`, d'un `ghast` ou d'un `phantom` **vole** comme lui.
 - `projectile` attend une entité que le jeu sait afficher (`arrow`, `snowball`, `egg`,
   `small_fireball`, `fireball`, `thrown_trident`, `llama_spit`…). Un nom inconnu du jeu
   ne s'affiche pas, mais blesse quand même.

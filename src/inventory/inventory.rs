@@ -109,7 +109,7 @@ pub trait Inventory {
             if count == 0 {
                 return 0;
             }
-            let fresh = ItemStack { id, count: count.min(max as u32) as u8, net_id: 0, meta: kind.meta, damage: kind.damage };
+            let fresh = ItemStack { id, count: count.min(max as u32) as u8, net_id: 0, meta: kind.meta, damage: kind.damage, ench: kind.ench };
             if self.slots()[i].is_empty() && self.accepts(i, &fresh) {
                 self.slots_mut()[i] = ItemStack { net_id: next_net_id(), ..fresh };
                 count -= fresh.count as u32;

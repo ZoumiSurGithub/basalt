@@ -80,6 +80,23 @@ fn attributes(runtime_id: u64, health: f32, max_health: f32, food: f32, level: i
     w.0
 }
 
+/// La vitesse de marche seule (0,1 pour un joueur sans effet, à l'arrêt du sprint).
+pub fn update_movement(runtime_id: u64, value: f32) -> Vec<u8> {
+    let mut w = W::default();
+    w.varu64(runtime_id);
+    w.varu32(1);
+    w.f32(0.0);
+    w.f32(3.402_823_5e38);
+    w.f32(value);
+    w.f32(0.0);
+    w.f32(3.402_823_5e38);
+    w.f32(0.1);
+    w.string("minecraft:movement");
+    w.varu32(0);
+    w.varu64(0);
+    w.0
+}
+
 /// Capacités selon le mode de jeu (voler, construire, attaquer…).
 pub fn update_abilities(unique_id: i64, mode: crate::player::GameMode) -> Vec<u8> {
     use crate::player::GameMode;

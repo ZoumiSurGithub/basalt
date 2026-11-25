@@ -371,6 +371,11 @@ impl GameData {
         }
     }
 
+    /// Tous les blocs : (nom, nombre d'états, état par défaut).
+    pub fn block_list(&self) -> Vec<(&str, usize, u32)> {
+        self.block_states.iter().filter_map(|(n, s)| s.first().map(|d| (n.as_str(), s.len(), *d))).collect()
+    }
+
     /// Nom du bloc d'un état (« minecraft:stone »).
     pub fn block_name(&self, state: u32) -> Option<&str> {
         self.block_names.get(&state).map(|s| s.as_str())

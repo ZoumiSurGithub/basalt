@@ -4,12 +4,14 @@
 pub mod log;
 pub mod config;
 pub mod inflate;
+pub mod image;
 pub mod deflate;
 pub mod json;
 pub mod yaml;
 pub mod console;
 pub mod timings;
 pub mod background;
+pub mod pack_crypt;
 pub mod packs;
 
 /// Passe le fil courant en priorité basse (Linux : « nice 10 »). Pour les fils de fond
