@@ -1,0 +1,236 @@
+/* Basalt, tableau de bord.
+   Les couleurs sont celles du logo : la roche (ardoises sombres), ses facettes (gris bleutés)
+   et la lave (orange) pour ce qui est actif. Le thème sombre est celui du logo ; le clair
+   reprend son fond de papier. Une seule famille de caractères, étroite et technique. */
+:root {
+  color-scheme: dark;
+  --fond: #14161a;
+  --surface: #1c1f24;
+  --relief: #25282d;
+  --filet: #363a41;
+  --texte: #eceef0;
+  --sourd: #9aa2ad;
+  --lave: #f26a2e;
+  --lave-vive: #ffa15e;
+  --sur-lave: #14161a;
+  --danger: #ff6b5e;
+  --colonne: #7d8591;
+  --colonne-ombre: #444a52;
+  --famille: Bahnschrift, "DIN Alternate", "Avenir Next Condensed", "Franklin Gothic Medium", "Segoe UI", system-ui, sans-serif;
+}
+
+:root[data-theme="clair"] {
+  color-scheme: light;
+  --fond: #f4f1ea;
+  --surface: #fbfaf6;
+  --relief: #ebe7dc;
+  --filet: #d3cdbf;
+  --texte: #14161a;
+  --sourd: #5a616b;
+  --lave: #c64f17;
+  --lave-vive: #f26a2e;
+  --sur-lave: #ffffff;
+  --danger: #b3261e;
+  --colonne: #4a5059;
+  --colonne-ombre: #25282d;
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--fond); color: var(--texte); font: 400 1.0625rem/1.5 var(--famille); font-variant-numeric: tabular-nums; }
+
+body { margin: 0; }
+
+h1 { font-size: 1.875rem; font-weight: 700; letter-spacing: -0.01em; line-height: 1.15; margin: 0; }
+
+h2 { font-size: 1.1875rem; font-weight: 600; margin: 2rem 0 0.5rem; }
+
+h3 { font-size: 1rem; font-weight: 600; margin: 0 0 0.4rem; }
+
+p { margin: 0.4rem 0; max-width: 40rem; }
+
+code { background: var(--relief); border-radius: 0.25rem; font: inherit; padding: 0 0.3em; }
+
+.sourd, .aide { color: var(--sourd); }
+
+.aide { font-size: 0.9375rem; }
+
+.erreur { color: var(--danger); font-weight: 600; }
+
+svg { fill: none; height: 1.375rem; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; width: 1.375rem; }
+
+button, input, select { color: inherit; font: inherit; }
+
+button { background: var(--relief); border: 1px solid var(--filet); border-radius: 0.5rem; cursor: pointer; font-weight: 600; min-height: 2.75rem; padding: 0.35rem 1rem; }
+
+button:hover { border-color: var(--sourd); }
+
+button.plein { background: var(--lave); border-color: var(--lave); color: var(--sur-lave); }
+
+button.plein:hover { background: var(--lave-vive); border-color: var(--lave-vive); }
+
+button.danger { border-color: var(--danger); color: var(--danger); }
+
+button.rond { align-items: center; display: inline-flex; justify-content: center; padding: 0; width: 2.75rem; }
+
+button:disabled { cursor: default; opacity: 0.45; }
+
+input[type="text"], input[type="search"], input[type="password"], input[type="number"], select { background: var(--surface); border: 1px solid var(--filet); border-radius: 0.5rem; min-height: 2.75rem; padding: 0.35rem 0.7rem; width: 100%; }
+
+input:hover, select:hover { border-color: var(--sourd); }
+
+input[type="radio"], input[type="checkbox"] { accent-color: var(--lave); height: 1.1rem; margin-right: 0.3rem; vertical-align: -0.15rem; width: 1.1rem; }
+
+:focus-visible { outline: 2px solid var(--lave-vive); outline-offset: 2px; }
+
+/* La porte : le jeton */
+.porte { margin: 10vh auto 0; max-width: 32rem; padding: 0 1.25rem; }
+
+.porte h1 { font-size: 3rem; margin-top: 0.75rem; }
+
+.porte form { display: grid; gap: 0.4rem; margin: 1.5rem 0 1rem; }
+
+.porte button { justify-self: start; margin-top: 0.5rem; }
+
+/* L'ossature : la barre de navigation à gauche, la page à droite */
+.appli { display: grid; grid-template-columns: 15rem minmax(0, 1fr); min-height: 100vh; }
+
+.barre { background: var(--surface); border-right: 1px solid var(--filet); display: flex; flex-direction: column; gap: 0.25rem; padding: 1.25rem 0.75rem; position: sticky; top: 0; height: 100vh; }
+
+.marque { align-items: center; color: inherit; display: flex; font-size: 1.375rem; font-weight: 700; gap: 0.6rem; margin: 0 0.4rem 1.25rem; text-decoration: none; }
+
+.marque img { border-radius: 0.5rem; }
+
+.barre button { align-items: center; background: transparent; border-color: transparent; color: var(--sourd); display: flex; gap: 0.75rem; justify-content: flex-start; padding: 0.35rem 0.75rem; text-align: left; }
+
+.barre button:hover { background: var(--relief); color: var(--texte); }
+
+.barre button[aria-current="page"] { background: var(--relief); color: var(--texte); }
+
+.barre button[aria-current="page"] svg { color: var(--lave); }
+
+.page { margin: 0 auto; max-width: 64rem; padding: 1.5rem 2rem 4rem; width: 100%; }
+
+.tete { align-items: center; display: flex; gap: 0.75rem; }
+
+.tete > div { flex: 1; min-width: 0; }
+
+.tete p { margin: 0; }
+
+.avis { background: var(--relief); border-left: 0.3rem solid var(--lave); border-radius: 0.25rem; max-width: none; padding: 0.6rem 0.9rem; }
+
+.bandeau { border-radius: 0; margin: 0; padding: 0.75rem 1.25rem; }
+
+.avis.alerte { border-left-color: var(--danger); color: var(--danger); }
+
+.section { margin-top: 1.75rem; }
+
+/* Les orgues : vingt colonnes de basalte, une par tick de la seconde. Celles que le
+   serveur tient sont pleines ; la dernière tenue porte la lave ; les manquantes sont creuses. */
+.orgues { align-items: flex-end; display: flex; gap: 3px; height: 11rem; }
+
+.orgues span { background: linear-gradient(90deg, var(--colonne) 0 50%, var(--colonne-ombre) 50% 100%); clip-path: polygon(0 0.6rem, 50% 0, 100% 0.6rem, 100% 100%, 0 100%); flex: 1; min-width: 0; }
+
+.orgues span.creuse { background: transparent; box-shadow: inset 0 0 0 1px var(--filet); clip-path: none; }
+
+.orgues span.tete-de-file { background: linear-gradient(90deg, var(--lave-vive) 0 50%, var(--lave) 50% 100%); }
+
+.cadence { font-size: 1.1875rem; margin-top: 0.75rem; }
+
+.cadence span { font-size: 2.75rem; font-weight: 700; line-height: 1; }
+
+.faits { display: grid; gap: 0 2rem; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); margin: 1.5rem 0 0; }
+
+.faits div { border-top: 1px solid var(--filet); display: flex; gap: 1rem; justify-content: space-between; padding: 0.5rem 0; }
+
+.faits dt { color: var(--sourd); }
+
+.faits dd { font-weight: 600; margin: 0; text-align: right; }
+
+/* Les listes */
+.lignes { list-style: none; margin: 0; padding: 0; }
+
+.lignes li { align-items: center; border-top: 1px solid var(--filet); display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; padding: 0.55rem 0; }
+
+.lignes li:last-child { border-bottom: 1px solid var(--filet); }
+
+.vignette { background: var(--relief); border-radius: 0.375rem; flex: none; height: 2.5rem; overflow: hidden; width: 2.5rem; }
+
+/* (une texture animée est une bande verticale : on n'en montre que la première image) */
+.vignette img { display: block; height: 100%; image-rendering: pixelated; object-fit: cover; object-position: top; padding: 0.25rem; width: 100%; }
+
+.lignes .nom { flex: 1 1 13rem; font-weight: 600; overflow-wrap: anywhere; }
+
+.lignes .detail { color: var(--sourd); flex: 2 1 16rem; font-size: 0.9375rem; }
+
+.lignes .coupe .nom { color: var(--danger); text-decoration: line-through; }
+
+.lignes .vide { color: var(--sourd); }
+
+.lignes .marque-op { color: var(--lave); font-weight: 600; }
+
+.jauge { background: var(--relief); border-radius: 0.25rem; flex: 0 0 5rem; height: 0.5rem; overflow: hidden; }
+
+.jauge span { background: var(--lave); display: block; height: 100%; }
+
+.filtres, .rangee { align-items: end; display: flex; flex-wrap: wrap; gap: 0.75rem 1rem; }
+
+.filtres { gap: 0.75rem 2rem; margin-bottom: 0.5rem; }
+
+.champ { display: grid; flex: 1 1 14rem; gap: 0.25rem; max-width: 24rem; }
+
+.champ.court { flex: 0 1 7rem; }
+
+.filtres fieldset { border: 0; display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; margin: 0; padding: 0; }
+
+.filtres legend { color: var(--sourd); padding: 0; }
+
+.filtres label { white-space: nowrap; }
+
+.pages { display: flex; gap: 0.75rem; margin-top: 1rem; }
+
+#recharger { margin-top: 1.5rem; }
+
+/* La fiche d'un joueur */
+dialog { background: var(--surface); border: 1px solid var(--filet); border-radius: 0.75rem; color: var(--texte); max-height: 92vh; max-width: 46rem; padding: 1.25rem 1.5rem 1.5rem; width: calc(100% - 2rem); }
+
+dialog::backdrop { background: rgb(8 9 11 / 0.65); }
+
+dialog header { align-items: center; display: flex; gap: 1rem; justify-content: space-between; }
+
+dialog h2 { font-size: 1.5rem; margin: 0; }
+
+.bloc { border-top: 1px solid var(--filet); margin-top: 1rem; padding-top: 0.9rem; }
+
+/* La carte */
+.toile { background: var(--surface); border: 1px solid var(--filet); border-radius: 0.5rem; cursor: grab; display: block; height: min(64vh, 38rem); touch-action: none; width: 100%; }
+
+.toile:active { cursor: grabbing; }
+
+[hidden] { display: none !important; }
+
+.volume { position: relative; }
+
+.volume canvas + canvas { height: 100%; inset: 0; pointer-events: none; position: absolute; width: 100%; }
+
+button[aria-pressed="true"] { background: var(--surface); border-color: var(--lave); }
+
+#carte-choix h2 { margin-top: 0; }
+
+#carte-actions { display: grid; gap: 1rem; }
+
+/* Téléphone : la navigation passe en bas de l'écran */
+@media (max-width: 52rem) {
+  .appli { display: block; }
+  .barre { border-right: 0; border-top: 1px solid var(--filet); bottom: 0; flex-direction: row; gap: 0; height: auto; left: 0; padding: 0.25rem; position: fixed; right: 0; top: auto; z-index: 2; }
+  .marque { display: none; }
+  .barre button { flex: 1; flex-direction: column; font-size: 0.6875rem; gap: 0.1rem; justify-content: center; min-width: 0; padding: 0.3rem 0.1rem; text-align: center; }
+  .barre button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
+  .page { padding: 1rem 1rem 6rem; }
+  h1 { font-size: 1.5rem; }
+  .orgues { height: 7.5rem; }
+  .toile { height: 56vh; }
+  #fermer { font-size: 0.875rem; padding: 0.35rem 0.6rem; }
+  .lignes li > button { width: 100%; }
+  dialog { padding: 1rem; }
+}

@@ -103,7 +103,18 @@ impl TileMap {
                     .into_iter()
                     .filter_map(|(slot, item)| {
                         let name = ctx.name_of(item.id)?;
-                        Some(Tag::compound(vec![("Slot", Tag::Byte(slot as i8)), ("Name", Tag::string(&name)), ("Count", Tag::Byte(item.count as i8))]))
+                        // (variante, usure et enchantements, pour les objets qui en ont)
+                        let mut entry = vec![("Slot", Tag::Byte(slot as i8)), ("Name", Tag::string(&name)), ("Count", Tag::Byte(item.count as i8))];
+                        if item.meta != 0 {
+                            entry.push(("Damage", Tag::Short(item.meta as i16)));
+                        }
+                        if item.damage != 0 {
+                            entry.push(("Wear", Tag::Int(item.damage as i32)));
+                        }
+                        if !item.ench.is_empty() {
+                            entry.push(("BasaltEnch", Tag::Long(item.ench.0 as i64)));
+                        }
+                        Some(Tag::compound(entry))
                     })
                     .collect();
                 entries.push(("Items", Tag::list_of(items)));
@@ -137,7 +148,9 @@ impl TileMap {
                     let count = item.get("Count").and_then(|t| t.as_i64()).unwrap_or(0);
                     if let (Some(id), 0..=255, 1..=64) = (item.str_of("Name").and_then(|n| ctx.id_of(n)), slot, count) {
                         let max = inv.max_stack();
-                        inv.set_item(slot as usize, ItemStack::new(id, (count as u8).min(max), ctx.next_net_id()));
+                        let extra = |key: &str| item.get(key).and_then(|t| t.as_i64()).unwrap_or(0);
+                        let stack = ItemStack { meta: extra("Damage").clamp(0, 32767) as u16, damage: extra("Wear").clamp(0, 65535) as u16, ench: crate::item::Ench(extra("BasaltEnch") as u64), ..ItemStack::new(id, (count as u8).min(max), ctx.next_net_id()) };
+                        inv.set_item(slot as usize, stack);
                     }
                 }
             }

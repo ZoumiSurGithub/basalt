@@ -56,6 +56,8 @@ pub struct CustomEntity {
     pub ranged: Option<(String, f32, u32, f32)>,
     /// Explose au contact d'un joueur, comme un creeper : la puissance (3 pour un creeper)
     pub explosion: Option<f32>,
+    /// Potion que contiennent ses projectiles (variante), quand elle lance des potions
+    pub potion: Option<u16>,
     /// Son nom dans le message de mort d'un joueur (« tué par … »)
     pub cause: &'static str,
 }
@@ -71,7 +73,7 @@ impl CustomEntity {
         if space == "minecraft" {
             return Err("l'espace de noms « minecraft » est réservé au jeu : choisissez le vôtre".into());
         }
-        let mut def = CustomEntity { name: name.to_string(), looks: String::new(), own_model: false, display: String::new(), name_visible: true, health: None, speed: None, scale: 1.0, hitbox: None, drops: None, xp: None, hostile: None, attack_damage: None, sight: None, ranged: None, explosion: None, cause: "" };
+        let mut def = CustomEntity { name: name.to_string(), looks: String::new(), own_model: false, display: String::new(), name_visible: true, health: None, speed: None, scale: 1.0, hitbox: None, drops: None, xp: None, hostile: None, attack_damage: None, sight: None, ranged: None, explosion: None, potion: None, cause: "" };
         let (mut width, mut height) = (None, None);
         let (mut projectile, mut shot_damage, mut shot_every, mut shot_range) = (None, None, None, None);
         for line in text.lines().filter(|l| !l.is_empty()) {
@@ -114,6 +116,9 @@ impl CustomEntity {
                 "projectileDamage" => shot_damage = Some((number()? as f32).clamp(0.0, 1000.0)),
                 "shootInterval" => shot_every = Some(((number()? * 20.0) as u32).clamp(5, 12_000)),
                 "shootRange" => shot_range = Some((number()? as f32).clamp(2.0, 48.0)),
+                "potion" => {
+                    def.potion = Some(crate::item::potion::potion_id(value).ok_or_else(|| format!("potion inconnue « {} » (poison, slowness, weakness, harming, healing, regeneration…)", value))?);
+                }
                 "explosion" => def.explosion = Some((number()? as f32).clamp(0.5, 8.0)),
                 "speed" => def.speed = Some((number()? as f32).clamp(0.01, 1.0)),
                 "scale" => def.scale = (number()? as f32).clamp(0.1, 10.0),
@@ -156,6 +161,9 @@ impl CustomEntity {
             }
             None => None,
         };
+        if def.potion.is_some() && !def.ranged.as_ref().map(|r| r.0.contains("potion")).unwrap_or(false) {
+            return Err("potion demande projectile = \"minecraft:splash_potion\"".into());
+        }
         if def.hostile == Some(false) && (def.ranged.is_some() || def.explosion.is_some()) {
             return Err("projectile et explosion n'ont pas de sens avec hostile = false".into());
         }
@@ -270,6 +278,11 @@ mod tests {
         let bomb = CustomEntity::parse("essai:bombe", "looks\tcow\nhostile\ttrue\nexplosion\t2").unwrap();
         assert_eq!((bomb.explosion, bomb.ranged.is_none()), (Some(2.0), true));
         assert!(CustomEntity::parse("essai:x", "looks\tcow\nshootRange\t5").is_err());
+        // Lanceur de potions
+        let healer = CustomEntity::parse("essai:soigneur", "looks\tvillager\nprojectile\tsplash_potion\npotion\tstrong_healing").unwrap();
+        assert_eq!(healer.potion, Some(22));
+        assert!(CustomEntity::parse("essai:x", "looks\tcow\nprojectile\tarrow\npotion\tpoison").is_err());
+        assert!(CustomEntity::parse("essai:x", "looks\tcow\nprojectile\tsplash_potion\npotion\tsoupe").is_err());
         assert!(CustomEntity::parse("essai:x", "looks\tcow\nhostile\tfalse\nexplosion\t2").is_err());
         // Boîte de collision propre : largeur et hauteur, en blocs, toujours ensemble
         assert_eq!(plain.hitbox, None);

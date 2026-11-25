@@ -298,6 +298,7 @@ fn start_opts(dir: &PathBuf, max_per_ip: usize, xbox_auth: bool) -> (SocketAddr,
         // Pas d'animaux (leurs paquets gêneraient les tests), sauf fichier témoin
         cfg.spawn_animals = dir.join("animaux").exists();
         cfg.spawn_monsters = dir.join("monstres").exists();
+        cfg.api_test = dir.join("api").exists();
         // Déplacements libres (grands pas d'un coup), sur fichier témoin
         cfg.movement_check = !dir.join("deplacements-libres").exists();
         cfg.view_distance = 3;
@@ -2737,6 +2738,47 @@ server.registerEvents(Arrivee)
 /// Un squelette tire des flèches sur un joueur en survie, un plugin en tire aussi et apprend
 /// où la sienne tombe ; un creeper explose au contact.
 #[test]
+fn fire_reaches_tnt_which_falls_and_explodes() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-feu-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("world")).unwrap();
+    // Une TNT en l'air, une flamme contre elle : le feu l'amorce, elle tombe et explose
+    let plugin = r#"
+local Feu = {}
+function Feu:onPlayerJoin(event)
+  local p = event:getPlayer()
+  local x, y, z = p:getPosition()
+  x, y, z = math.floor(x), math.floor(y), math.floor(z)
+  p:setGamemode(1)
+  local world = server.getWorld()
+  world:setBlocks({ x + 13, y + 3, z, server.blockState("minecraft:netherrack"), x + 12, y + 4, z, server.blockState("minecraft:tnt") })
+  world:setBlocks({ x + 13, y + 4, z, server.blockState("minecraft:fire") })
+end
+server.registerEvents(Feu)
+"#;
+    std::fs::write(dir.join("feu.lua"), plugin).unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut c = Client::join(addr, "Steve");
+    let (mut primed, mut fell, mut boom) = (false, false, false);
+    let until = std::time::Instant::now() + Duration::from_secs(50);
+    while std::time::Instant::now() < until && !boom {
+        let (id, body) = c.recv_game(true);
+        let has = |needle: &[u8]| body.windows(needle.len()).any(|w| w == needle);
+        primed |= id == 13 && has(b"minecraft:tnt");
+        // (MoveActorAbsolute : la TNT amorcée tombe)
+        fell |= primed && id == 18;
+        boom |= primed && has(b"explode");
+    }
+    assert!(primed, "le feu n'a pas amorcé la TNT");
+    assert!(fell, "la TNT amorcée n'est pas tombée");
+    assert!(boom, "la TNT n'a pas explosé");
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn skeletons_shoot_plugins_too_and_creepers_explode() {
     let dir = std::env::temp_dir().join(format!("basalt-e2e-tirs-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -2947,6 +2989,370 @@ server.registerEvents(Effets)
     }
     // Régénération II pour dix secondes, vitesse I pour une minute, puis vitesse retirée
     assert_eq!(seen, vec![(1, 10, 1, 200), (1, 1, 0, 1200), (3, 1, 0, 0)]);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Les créatures volantes quittent le sol : le ghast monte et crache une boule de feu, le
+/// phantom s'élève au-dessus du joueur.
+#[test]
+fn flying_monsters_take_off_and_ghasts_shoot() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-vol-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("world")).unwrap();
+    std::fs::write(dir.join("world").join("time.txt"), "18000").unwrap();
+    let plugin = r#"
+local Vol = {}
+function Vol:onPlayerJoin(event)
+  local p = event:getPlayer()
+  local x, y, z = p:getPosition()
+  p:setGamemode(0)
+  server.entities.spawn("minecraft:ghast", x + 12, y, z)
+  server.entities.spawn("minecraft:phantom", x - 6, y, z)
+  server.broadcast("sol " .. math.floor(y))
+end
+server.registerEvents(Vol)
+"#;
+    std::fs::write(dir.join("vol.lua"), plugin).unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut c = Client::join(addr, "Steve");
+    let (mut ground, mut fireball) = (None::<f32>, false);
+    // Hauteur la plus haute atteinte par chaque entité
+    let mut tops: std::collections::HashMap<u32, f32> = std::collections::HashMap::new();
+    let until = std::time::Instant::now() + Duration::from_secs(40);
+    let high = |tops: &std::collections::HashMap<u32, f32>, g: f32| tops.values().filter(|y| **y >= g + 6.0).count();
+    while std::time::Instant::now() < until && !(fireball && ground.map(|g| high(&tops, g) >= 2).unwrap_or(false)) {
+        let (id, body) = c.recv_game(true);
+        let has = |needle: &[u8]| body.windows(needle.len()).any(|w| w == needle);
+        if id == 9 {
+            if let Some(i) = body.windows(4).position(|w| w == b"sol ") {
+                let digits: String = body[i + 4..].iter().take_while(|b| b.is_ascii_digit() || **b == b'-').map(|b| *b as char).collect();
+                ground = digits.parse::<f32>().ok();
+            }
+        }
+        fireball |= id == 13 && has(b"minecraft:fireball");
+        if id == 18 {
+            let mut pos = 0;
+            if let Some(actor) = read_varu32(&body, &mut pos) {
+                if body.len() >= pos + 13 {
+                    let y = f32::from_le_bytes([body[pos + 5], body[pos + 6], body[pos + 7], body[pos + 8]]);
+                    let top = tops.entry(actor).or_insert(f32::MIN);
+                    *top = top.max(y);
+                }
+            }
+        }
+    }
+    let ground = ground.expect("le plugin n'a pas donné la hauteur du sol");
+    assert!(high(&tops, ground) >= 2, "le ghast et le phantom devaient s'élever de 6 blocs au moins : {:?} pour un sol à {}", tops, ground);
+    assert!(fireball, "le ghast n'a pas craché de boule de feu");
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Le blaze tire ses petites boules de feu par rafales de trois.
+#[test]
+fn blazes_shoot_bursts_of_three() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-blaze-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("world")).unwrap();
+    let plugin = r#"
+local Feu = {}
+function Feu:onPlayerJoin(event)
+  local p = event:getPlayer()
+  local x, y, z = p:getPosition()
+  p:setGamemode(0)
+  p:addEffect("resistance", 60, 5)
+  server.entities.spawn("minecraft:blaze", x + 6, y, z)
+end
+server.registerEvents(Feu)
+"#;
+    std::fs::write(dir.join("feu.lua"), plugin).unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut c = Client::join(addr, "Steve");
+    // Instants des tirs
+    let mut shots: Vec<std::time::Instant> = Vec::new();
+    let until = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < until && shots.len() < 4 {
+        let (id, body) = c.recv_game(true);
+        if id == 13 && body.windows(24).any(|w| w == b"minecraft:small_fireball") {
+            shots.push(std::time::Instant::now());
+        }
+    }
+    assert!(shots.len() >= 4, "le blaze devait tirer au moins quatre fois ({} tirs)", shots.len());
+    // Trois tirs serrés (moins d'une seconde et demie en tout), puis une pause avant le quatrième
+    assert!(shots[2] - shots[0] < Duration::from_millis(1500), "la rafale est trop lente : {:?}", shots[2] - shots[0]);
+    assert!(shots[3] - shots[2] > Duration::from_millis(2500), "pas de pause après la rafale : {:?}", shots[3] - shots[2]);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// La sorcière lance des potions sur un joueur en survie : la fiole part, se brise, et le
+/// joueur en reçoit l'effet.
+#[test]
+fn witches_throw_potions_that_splash_players() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-sorciere-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("world")).unwrap();
+    let plugin = r#"
+local Fiole = {}
+function Fiole:onPlayerJoin(event)
+  local p = event:getPlayer()
+  local x, y, z = p:getPosition()
+  p:setGamemode(0)
+  server.entities.spawn("minecraft:witch", x + 6, y, z)
+end
+server.registerEvents(Fiole)
+"#;
+    std::fs::write(dir.join("fiole.lua"), plugin).unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut c = Client::join(addr, "Steve");
+    let (mut thrown, mut splashed, mut effect) = (false, false, None::<i32>);
+    let until = std::time::Instant::now() + Duration::from_secs(60);
+    while std::time::Instant::now() < until && !(thrown && splashed && effect.is_some()) {
+        let (id, body) = c.recv_game(true);
+        thrown |= id == 13 && body.windows(23).any(|w| w == b"minecraft:splash_potion");
+        // LevelEvent 2002 : les éclaboussures (varint signé : 4004)
+        if id == 25 {
+            let mut pos = 0;
+            splashed |= read_varu32(&body, &mut pos) == Some(4004);
+        }
+        if id == 28 {
+            let mut pos = 0;
+            read_varu32(&body, &mut pos).unwrap();
+            pos += 1;
+            let zig = |v: u32| ((v >> 1) as i32) ^ -((v & 1) as i32);
+            effect = Some(zig(read_varu32(&body, &mut pos).unwrap()));
+        }
+    }
+    assert!(thrown, "la sorcière n'a pas lancé de potion");
+    assert!(splashed, "la potion ne s'est pas brisée");
+    // Poison (19), lenteur (2) ou faiblesse (18) : les potions à durée de la sorcière
+    assert!(matches!(effect, Some(19) | Some(2) | Some(18)), "effet reçu : {:?}", effect);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// L'API de gestion : fermée sans jeton, en lecture seule, et elle décrit le serveur.
+#[test]
+fn the_management_api_answers_with_a_token_only() {
+    use std::io::{Read, Write};
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-api-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("world")).unwrap();
+    std::fs::write(dir.join("api"), "").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    // Le port et le jeton, écrits par le serveur à l'ouverture de l'API
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    let port: u16 = loop {
+        if let Some(p) = std::fs::read_to_string(dir.join("api-port.txt")).ok().and_then(|t| t.trim().parse().ok()) {
+            break p;
+        }
+        assert!(std::time::Instant::now() < until, "l'API ne s'est pas ouverte");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let token = std::fs::read_to_string(dir.join("api-token.txt")).unwrap().trim().to_string();
+    assert_eq!(token.len(), 64);
+    let send = |method: &str, path: &str, token: Option<&str>, body: &str| -> (u16, String) {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let auth = token.map(|t| format!("Authorization: Bearer {}\r\n", t)).unwrap_or_default();
+        stream.write_all(format!("{} {} HTTP/1.1\r\nHost: localhost\r\n{}Content-Length: {}\r\n\r\n{}", method, path, auth, body.len(), body).as_bytes()).unwrap();
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).unwrap();
+        let code = answer.split(' ').nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+        (code, answer.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default())
+    };
+    let ask = |method: &str, path: &str, token: Option<&str>| send(method, path, token, "");
+    // Le tableau de bord se charge sans jeton (il le demande lui-même), avec ses garde-fous
+    let (code, page) = ask("GET", "/", None);
+    assert!(code == 200 && page.contains("<title>Basalt, tableau de bord</title>") && page.contains("/panel.js"), "{}", code);
+    assert!(ask("GET", "/panel.js", None).1.contains("sessionStorage") && ask("GET", "/panel.css", None).1.contains(".orgues"));
+    assert!(ask("GET", "/logo.svg", None).1.starts_with("<svg"));
+    assert_eq!(ask("GET", "/v1/me", Some(&token)), (200, "{\"admin\":false}".to_string()));
+    // Sans jeton, ou avec un mauvais : rien
+    assert_eq!(ask("GET", "/v1/status", None).0, 401);
+    assert_eq!(ask("GET", "/v1/status", Some("0000000000000000000000000000000000000000000000000000000000000000")).0, 401);
+    // Le jeton de lecture ne permet aucune action ; les autres méthodes n'existent pas
+    assert_eq!(send("POST", "/v1/disable", Some(&token), r#"{"name":"tnt"}"#).0, 403);
+    assert_eq!(ask("DELETE", "/v1/status", Some(&token)).0, 405);
+    assert_eq!(ask("GET", "/v1/inconnu", Some(&token)).0, 404);
+    // L'état du serveur
+    let (code, body) = ask("GET", "/v1/status", Some(&token));
+    assert_eq!(code, 200, "{}", body);
+    assert!(body.contains("\"name\":\"Basalt\"") && body.contains("\"players_online\":0") && body.contains("ticks_per_second"), "{}", body);
+    // Un joueur arrive : il apparaît dans la liste
+    let _c = Client::join(addr, "Steve");
+    let (code, body) = ask("GET", "/v1/players", Some(&token));
+    assert_eq!(code, 200, "{}", body);
+    assert!(body.contains("\"name\":\"Steve\"") && body.contains("\"gamemode\"") && body.contains("\"online\":1") && body.contains("\"total\":1"), "{}", body);
+    // La recherche se fait côté serveur, et la liste vient par pages
+    let (_, body) = ask("GET", "/v1/players?q=ste&limit=10", Some(&token));
+    assert!(body.contains("\"name\":\"Steve\"") && body.contains("\"total\":1"), "{}", body);
+    let (_, body) = ask("GET", "/v1/players?q=personne", Some(&token));
+    assert!(body.contains("\"online\":1") && body.contains("\"total\":0") && body.contains("\"players\":[]"), "{}", body);
+    let (_, body) = ask("GET", "/v1/players?offset=5", Some(&token));
+    assert!(body.contains("\"total\":1") && body.contains("\"players\":[]"), "{}", body);
+    // Les objets et les blocs du jeu
+    let (code, body) = ask("GET", "/v1/items", Some(&token));
+    assert!(code == 200 && body.contains("\"name\":\"minecraft:diamond_sword\"") && body.contains("\"durability\":1561"), "objets : {} octets", body.len());
+    let (code, body) = ask("GET", "/v1/blocks", Some(&token));
+    assert!(code == 200 && body.contains("\"name\":\"minecraft:stone\"") && body.contains("\"light\":15"), "blocs : {} octets", body.len());
+
+    // Les images : aucune n'est livrée avec Basalt, et sans pack du jeu il le dit
+    assert_eq!(ask("GET", "/v1/textures", Some(&token)).1, "{\"vanilla\":false,\"folder\":\"vanilla_resource_pack\"}");
+    assert_eq!(ask("GET", "/v1/texture?kind=item&name=diamond", Some(&token)).0, 404);
+    assert_eq!(ask("GET", "/v1/texture?kind=item&name=diamond", None).0, 401);
+    assert_eq!(ask("GET", "/v1/texture?kind=autre&name=..%2F..%2Fsecret", Some(&token)).0, 404);
+    // Les actions, avec le jeton d'administration (qui lit aussi)
+    let admin = std::fs::read_to_string(dir.join("api-admin-token.txt")).unwrap().trim().to_string();
+    assert!(admin.len() == 64 && admin != token);
+    assert_eq!(ask("GET", "/v1/me", Some(&admin)).1, "{\"admin\":true}");
+    assert_eq!(ask("GET", "/v1/status", Some(&admin)).0, 200);
+    let (code, body) = send("POST", "/v1/disable", Some(&admin), r#"{"name":"minecraft:tnt"}"#);
+    assert!(code == 200 && body.contains("\"disabled\":true") && body.contains("\"changed\":true"), "{} {}", code, body);
+    assert_eq!(ask("GET", "/v1/disabled", Some(&token)), (200, "[\"tnt\"]".to_string()));
+    assert!(std::fs::read_to_string(dir.join("disabled.txt")).unwrap().lines().any(|l| l == "tnt"), "la liste est enregistrée");
+    // Un nom inconnu, un corps illisible
+    assert_eq!(send("POST", "/v1/disable", Some(&admin), r#"{"name":"nimportequoi"}"#).0, 404);
+    assert_eq!(send("POST", "/v1/disable", Some(&admin), "pas du json").0, 400);
+    assert_eq!(send("POST", "/v1/enable", Some(&admin), r#"{"name":"tnt"}"#).0, 200);
+    assert_eq!(ask("GET", "/v1/disabled", Some(&token)).1, "[]");
+    // Agir sur un joueur : le téléporter, changer son mode ; pas avec le jeton de lecture
+    assert_eq!(send("POST", "/v1/players/action", Some(&token), r#"{"name":"Steve","action":"kill"}"#).0, 403);
+    let (code, body) = send("POST", "/v1/players/action", Some(&admin), r#"{"name":"Steve","action":"teleport","x":100.5,"y":80,"z":-40.5}"#);
+    assert_eq!(code, 200, "{}", body);
+    let (_, body) = ask("GET", "/v1/players", Some(&token));
+    assert!(body.contains("\"x\":100.5") && body.contains("\"z\":-40.5"), "téléportation : {}", body);
+    assert_eq!(send("POST", "/v1/players/action", Some(&admin), r#"{"name":"Steve","action":"gamemode","mode":"creative"}"#).0, 200);
+    assert!(ask("GET", "/v1/players", Some(&token)).1.contains("\"gamemode\":\"creative\""));
+    assert_eq!(send("POST", "/v1/players/action", Some(&admin), r#"{"name":"Steve","action":"effect","effect":"speed","seconds":30,"level":2}"#).0, 200);
+    assert!(ask("GET", "/v1/players", Some(&token)).1.contains("\"effects\":[\"speed\"]"));
+    // Un joueur absent, une action inconnue, des coordonnées hors du monde
+    assert_eq!(send("POST", "/v1/players/action", Some(&admin), r#"{"name":"Fantome","action":"kill"}"#).0, 404);
+    assert_eq!(send("POST", "/v1/players/action", Some(&admin), r#"{"name":"Steve","action":"danser"}"#).0, 400);
+    assert_eq!(send("POST", "/v1/players/action", Some(&admin), r#"{"name":"Steve","action":"teleport","x":0,"y":9000,"z":0}"#).0, 400);
+    // L'analyse de la carte : lancée par l'administration, lue par tous
+    assert_eq!(ask("GET", "/v1/scan", Some(&token)).1, "{\"state\":\"idle\"}");
+    assert_eq!(send("POST", "/v1/scan", Some(&token), "").0, 403);
+    assert_eq!(send("POST", "/v1/players/action", Some(&admin), r#"{"name":"Steve","action":"give","item":"diamond_block","count":70}"#).0, 200);
+    assert_eq!(send("POST", "/v1/scan", Some(&admin), "").0, 200);
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    let report = loop {
+        let (_, body) = ask("GET", "/v1/scan", Some(&token));
+        if body.contains("\"state\":\"done\"") {
+            break body;
+        }
+        assert!(std::time::Instant::now() < until, "l'analyse ne s'est pas terminée : {}", body);
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(report.contains("\"players_online\":1") && report.contains("\"item\":\"diamond_block\",\"total\":70") && report.contains("joueur Steve"), "{}", report);
+    // Une commande de console : le joueur reçoit le message
+    let mut c = _c;
+    assert_eq!(send("POST", "/v1/command", Some(&admin), r#"{"command":"say Bonjour de l'API"}"#).0, 200);
+    let mut heard = false;
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < until && !heard {
+        let (id, body) = c.recv_game(true);
+        heard = id == 9 && body.windows(17).any(|w| w == b"Bonjour de l'API".as_slice() || w.starts_with(b"Bonjour de l'API"));
+    }
+    assert!(heard, "la commande envoyée par l'API n'a pas atteint le joueur");
+    assert_eq!(send("POST", "/v1/command", Some(&admin), r#"{"command":"say a\nb"}"#).0, 400);
+
+    // La carte : une tuile en octets, le bloc d'une colonne, et un bloc changé à distance
+    let (_, list) = ask("GET", "/v1/players", Some(&token));
+    let coord = |key: &str| -> i32 {
+        let at = list.find(key).unwrap() + key.len();
+        list[at..].split(|ch: char| ch == ',' || ch == '}').next().unwrap().trim().parse::<f64>().unwrap().floor() as i32
+    };
+    let (px, pz) = (coord("\"x\":"), coord("\"z\":"));
+    let (code, found) = ask("GET", &format!("/v1/world/block?x={}&z={}", px, pz), Some(&token));
+    assert_eq!(code, 200, "{}", found);
+    let top: i32 = found.split("\"y\":").nth(1).unwrap().split(',').next().unwrap().trim().parse::<f64>().unwrap() as i32;
+    let spot = format!(r#"{{"x":{},"y":{},"z":{},"block":"gold_block"}}"#, px, top, pz);
+    assert_eq!(send("POST", "/v1/world/block", Some(&token), &spot).0, 403, "changer le monde demande le jeton d'administration");
+    let (code, done) = send("POST", "/v1/world/block", Some(&admin), &spot);
+    assert!(code == 200 && done.contains("\"changed\":1"), "{} {}", code, done);
+    assert!(ask("GET", &format!("/v1/world/block?x={}&y={}&z={}", px, top, pz), Some(&token)).1.contains("gold_block"));
+    let raw = |path: &str| -> Vec<u8> {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.write_all(format!("GET {} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {}\r\n\r\n", path, token).as_bytes()).unwrap();
+        let mut answer = Vec::new();
+        stream.read_to_end(&mut answer).unwrap();
+        let head = answer.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        answer.split_off(head)
+    };
+    let tile = raw(&format!("/v1/map?cx={}&cz={}", px >> 4, pz >> 4));
+    assert_eq!(tile.len(), 64 * 64 * 4, "une tuile fait 64 colonnes de côté, quatre octets chacune");
+    let (lx, lz) = ((px - ((px >> 4) & !3) * 16) as usize, (pz - ((pz >> 4) & !3) * 16) as usize);
+    let dot = &tile[(lz * 64 + lx) * 4..(lz * 64 + lx) * 4 + 4];
+    assert!(dot[3] == 1 && [206u8, 246, 255].contains(&dot[0]) && dot[1] > 150 && dot[2] < 80, "la colonne du bloc d'or doit être dorée : {:?}", dot);
+    // Remplir : seul le voisin change, le premier est déjà en or
+    let (code, done) = send("POST", "/v1/world/fill", Some(&admin), &format!(r#"{{"x":{},"y":{},"z":{},"x2":{},"y2":{},"z2":{},"block":"gold_block"}}"#, px, top, pz, px + 1, top, pz));
+    assert!(code == 200 && done.contains("\"changed\":1"), "{} {}", code, done);
+    assert_eq!(send("POST", "/v1/world/fill", Some(&admin), r#"{"x":0,"y":0,"z":0,"x2":100,"y2":100,"z2":100,"block":"stone"}"#).0, 400);
+    // La vue en relief : le chunk du joueur arrive en entier, avec le bloc d'or à sa place ;
+    // redemandé dans la même version il n'est pas renvoyé, et un chunk lointain est inconnu
+    let (pcx, pcz) = (px >> 4, pz >> 4);
+    let first = raw(&format!("/v1/world/chunks?list={}.{}.-1", pcx, pcz));
+    let u32_at = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+    assert_eq!((u32_at(&first, 0) as i32, u32_at(&first, 4) as i32, first[12]), (pcx, pcz, 2), "le chunk du joueur doit venir avec ses blocs");
+    let (version, len) = (u32_at(&first, 8), u32_at(&first, 13) as usize);
+    let body = &first[17..17 + len];
+    let (base, height, colours) = (i16::from_le_bytes([body[0], body[1]]) as i32, u16::from_le_bytes([body[2], body[3]]) as usize, body[4] as usize);
+    assert!(top >= base && ((top - base) as usize) < height, "le sommet {} doit être dans le chunk envoyé ({} + {})", top, base, height);
+    let mut at = 5 + colours * 10;
+    let mut gold = None;
+    for column in 0..256usize {
+        let mut y = 0;
+        while y < height {
+            let (run, entry) = (body[at] as usize, body[at + 1] as usize);
+            at += 2;
+            if column == ((pz & 15) * 16 + (px & 15)) as usize && (y..y + run).contains(&((top - base) as usize)) {
+                gold = Some(body[5 + entry * 10..5 + entry * 10 + 4].to_vec());
+            }
+            y += run;
+        }
+        assert_eq!(y, height, "chaque colonne fait la hauteur annoncée");
+    }
+    assert_eq!(at, body.len());
+    assert_eq!(gold, Some(vec![246, 208, 61, 0]), "le bloc d'or doit être là où il a été posé");
+    let again = raw(&format!("/v1/world/chunks?list={}.{}.{},56000.56000.-1", pcx, pcz, version));
+    assert_eq!((again[12], u32_at(&again, 13), again[17 + 12]), (1, 0, 0), "inchangé : pas renvoyé ; lointain : inconnu");
+    let (code, near) = ask("GET", &format!("/v1/entities?x={}&z={}", px, pz), Some(&token));
+    assert!(code == 200 && near.contains("\"player\":true") && near.contains("\"h\":1.8"), "{} {}", code, near);
+    assert!(near.contains("\"yaw\":"), "{}", near);
+    assert!(ask("GET", "/relief.js", None).1.contains("WebGL"));
+    // Sans pack du jeu : ni planche de textures ni peau, la carte garde ses couleurs
+    assert_eq!(ask("GET", "/v1/world/atlas", Some(&token)).0, 404);
+    assert_eq!(ask("GET", "/v1/world/skin", Some(&token)).0, 404);
+    // Loin de tout joueur, rien n'est chargé : on ne lit ni ne change, et rien n'est généré
+    assert_eq!(ask("GET", "/v1/world/block?x=900000&z=900000", Some(&token)).0, 409);
+    assert_eq!(send("POST", "/v1/world/block", Some(&admin), r#"{"x":900000,"y":64,"z":900000,"block":"stone"}"#).0, 409);
+
+    // Des mauvais jetons en série, vus à travers un tunnel (l'en-tête du relais dit d'où ils
+    // viennent) : cette adresse-là est écartée, même avec le bon jeton ensuite ; les autres non
+    let relayed = |from: &str, token: &str| -> u16 {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream.write_all(format!("GET /v1/me HTTP/1.1\r\nHost: localhost\r\nX-Forwarded-For: {}\r\nAuthorization: Bearer {}\r\n\r\n", from, token).as_bytes()).unwrap();
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).unwrap();
+        answer.split(' ').nth(1).and_then(|c| c.parse().ok()).unwrap_or(0)
+    };
+    for _ in 0..8 {
+        assert_eq!(relayed("203.0.113.9", "mauvais-jeton"), 401);
+    }
+    assert_eq!(relayed("203.0.113.9", &admin), 429, "l'adresse fautive est écartée");
+    assert_eq!(relayed("203.0.113.10", &admin), 200, "une autre adresse passe");
+    assert_eq!(ask("GET", "/v1/me", Some(&token)).0, 200);
     stop.store(true, Ordering::Relaxed);
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);

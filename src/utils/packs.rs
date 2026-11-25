@@ -77,11 +77,11 @@ pub fn uuid_bytes(text: &str) -> Option<[u8; 16]> {
     Some(out)
 }
 
-fn u16_at(d: &[u8], at: usize) -> Option<usize> {
+pub(crate) fn u16_at(d: &[u8], at: usize) -> Option<usize> {
     Some(u16::from_le_bytes([*d.get(at)?, *d.get(at + 1)?]) as usize)
 }
 
-fn u32_at(d: &[u8], at: usize) -> Option<usize> {
+pub(crate) fn u32_at(d: &[u8], at: usize) -> Option<usize> {
     Some(u32::from_le_bytes([*d.get(at)?, *d.get(at + 1)?, *d.get(at + 2)?, *d.get(at + 3)?]) as usize)
 }
 
@@ -126,7 +126,7 @@ pub fn zip_read(zip: &[u8], wanted: &str, limit: usize) -> Result<Vec<u8>, Strin
 }
 
 /// Retire les commentaires `//` et `/* */` d'un JSON (les manifestes en contiennent parfois).
-fn strip_comments(text: &str) -> String {
+pub(crate) fn strip_comments(text: &str) -> String {
     let (mut out, mut chars, mut in_string) = (String::with_capacity(text.len()), text.chars().peekable(), false);
     while let Some(c) = chars.next() {
         if in_string {

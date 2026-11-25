@@ -165,6 +165,8 @@ poursuivent et frappent les joueurs qu'ils voient.
 - Les squelettes tirent des flèches ; le creeper explose au contact et creuse le sol
   (`mob-griefing=false` : il blesse sans rien casser).
 - Les araignées escaladent les murs pour atteindre le joueur qu'elles poursuivent.
+- Les **phantoms** viennent la nuit chercher les joueurs en survie restés trois jours du
+  jeu sans dormir ni mourir, quand ils sont à ciel ouvert. Une nuit dormie les écarte.
 - Les créatures ne se traversent plus : elles se poussent, et un joueur les pousse aussi.
 - Aucun n'apparaît autour d'un joueur en créatif ou en spectateur.
 - `spawn-monsters=false` dans `server.properties` donne un monde paisible. Les monstres

@@ -229,6 +229,7 @@ function Event:setAmount(n) end
 ---@field projectileDamage? number dégâts d'un projectile, en points de vie (3 par défaut)
 ---@field shootInterval? number secondes entre deux tirs (2 par défaut)
 ---@field shootRange? number distance de tir, en blocs (15 par défaut)
+---@field potion? string contenu de ses potions, avec projectile = "minecraft:splash_potion" ("poison", "strong_healing"…)
 ---@field explosion? number elle explose au contact : la puissance (3 pour un creeper)
 ---@field drops? table butin : { ["minecraft:diamond"] = 2 } ou { "minecraft:stick", { "minecraft:flint", 3 } }
 ---@field falls? boolean tombe quand rien ne le porte

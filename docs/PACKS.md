@@ -72,8 +72,43 @@ Le serveur ne déchiffre rien : il envoie le pack tel quel et donne la clé au j
 joueur, qui s'en sert pour le lire. Sans le fichier `.key`, ou avec une mauvaise clé, le
 jeu ne peut pas lire le pack et ses images n'apparaissent pas.
 
-Basalt ne chiffre pas lui-même les packs : utilisez pour cela l'outil de votre choix, qui
-vous donnera la clé.
+### Chiffrer un pack
+
+Basalt sait chiffrer un pack. Trois façons, pour le même résultat :
+
+| Où | Commande |
+|---|---|
+| Sans démarrer le serveur | `basalt encrypt-pack resource_packs/monpack.mcpack` (`basalt.exe` sous Windows) |
+| Dans la console du serveur | `encryptpack monpack.mcpack` |
+| Par l'[API de gestion](API.md) | `POST /v1/packs/encrypt` avec `{"file": "monpack.mcpack"}` |
+
+Deux fichiers sont écrits à côté de l'original, qui n'est pas touché :
+
+```
+resource_packs/
+  monpack.mcpack                 l'original, en clair
+  monpack-chiffre.mcpack         le pack chiffré
+  monpack-chiffre.mcpack.key     sa clé
+```
+
+Ensuite :
+
+1. Dans `resource_packs.yml`, remplacez `monpack.mcpack` par `monpack-chiffre.mcpack`.
+2. **Sortez l'original du dossier** (gardez-le ailleurs : c'est lui que vous modifierez).
+   Deux packs du même identifiant ne peuvent pas être envoyés ensemble.
+3. Redémarrez le serveur.
+
+À savoir :
+
+- **Montez la version** du pack dans son `manifest.json` avant de le chiffrer s'il a déjà
+  été distribué en clair. Le jeu garde les packs qu'il a téléchargés : sans nouvelle
+  version, les joueurs qui ont déjà la version en clair continueront de s'en servir.
+- Le manifeste et l'icône restent lisibles (le jeu les lit avant d'avoir la clé) ; tout le
+  reste est chiffré, chaque fichier avec sa propre clé.
+- **Gardez la clé pour vous**, et gardez l'original : un pack chiffré ne se modifie pas.
+- Le chiffrement gêne la copie, il ne l'empêche pas : le jeu de chaque joueur reçoit la
+  clé pour afficher le pack, et quelqu'un de décidé peut la retrouver.
+- Un pack déjà chiffré est refusé (« ce pack est déjà chiffré »).
 
 ## Donner une image à un objet créé par un plugin
 

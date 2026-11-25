@@ -190,6 +190,10 @@ impl Server {
     pub(super) fn can_stand(&self, state: u32, (x, y, z): (i32, i32, i32)) -> bool {
         let Some(d) = self.data.as_ref() else { return true };
         let Some(name) = d.block_name(state) else { return true };
+        // Le feu tient sur un sol plein, ou contre un bloc qui brûle (le flanc d'un tronc)
+        if self.is_fire(state) {
+            return self.fire_holds((x, y, z));
+        }
         let Some(off) = support_of(d, state, name) else { return true };
         let at = (x + off.0, y + off.1, z + off.2);
         if !crate::world::World::in_bounds(at.1) {
@@ -485,6 +489,80 @@ impl Server {
         }
     }
 
+    /// L'herbe gagne la terre voisine, et meurt sous un bloc opaque ou sous l'eau.
+    fn grass_tick(&mut self, (x, y, z): (i32, i32, i32)) {
+        let Some(d) = self.data.clone() else { return };
+        let water = self.world.generator().blocks.water;
+        let covered = |s: &Self, p: (i32, i32, i32)| {
+            let above = s.world.get(p.0, p.1 + 1, p.2);
+            above == water || s.light_cell(above).damp >= 15
+        };
+        if covered(self, (x, y, z)) {
+            if let Some(dirt) = d.default_state("minecraft:dirt") {
+                self.grow_to((x, y, z), dirt);
+            }
+            return;
+        }
+        let (Some(dirt), Some(grass)) = (d.default_state("minecraft:dirt"), d.default_state("minecraft:grass_block")) else { return };
+        for _ in 0..4 {
+            let p = (x + self.mob_rng.below(3) as i32 - 1, y + self.mob_rng.below(5) as i32 - 3, z + self.mob_rng.below(3) as i32 - 1);
+            if crate::world::World::in_bounds(p.1) && self.world.is_ready(p.0 >> 4, p.2 >> 4) && self.world.get(p.0, p.1, p.2) == dirt && !covered(self, p) {
+                self.grow_to(p, grass);
+            }
+        }
+    }
+
+    /// Une pousse devient un arbre, s'il a la place de pousser : un tronc de quelques blocs
+    /// et sa couronne de feuilles (un cône pour l'épicéa).
+    fn sapling_tick(&mut self, wood: String, (x, y, z): (i32, i32, i32)) {
+        if self.mob_rng.below(14) != 0 {
+            return;
+        }
+        let Some(d) = self.data.clone() else { return };
+        let (Some(log), Some(leaves)) = (d.default_state(&format!("minecraft:{}_log", wood)), d.default_state(&format!("minecraft:{}_leaves", wood))) else { return };
+        let air = self.world.air;
+        let spruce = wood == "spruce";
+        let height = match wood.as_str() {
+            "birch" => 5 + self.mob_rng.below(3) as i32,
+            "spruce" => 6 + self.mob_rng.below(3) as i32,
+            _ => 4 + self.mob_rng.below(3) as i32,
+        };
+        let soft = |s: &Self, p: (i32, i32, i32)| {
+            let state = s.world.get(p.0, p.1, p.2);
+            state == air || d.block_name(state).map(|n| n.contains("leaves") || n.contains("sapling")).unwrap_or(false)
+        };
+        if y + height + 2 > crate::world::MAX_Y || !(1..=height + 1).all(|dy| soft(self, (x, y + dy, z))) {
+            return;
+        }
+        // (un plugin peut s'y opposer : c'est le tronc qui remplace la pousse)
+        if !self.grow_to((x, y, z), log) {
+            return;
+        }
+        let mut list: Vec<(i32, i32, i32, u32)> = (1..height).map(|dy| (x, y + dy, z, log)).collect();
+        // Rayon de la couronne à chaque étage, du bas vers le haut
+        let crown: Vec<(i32, i32)> = if spruce {
+            (2..=height + 1).map(|dy| (dy, if dy >= height { (height + 1 - dy).min(1) } else if (height - dy) % 2 == 0 { 1 } else { 2 })).collect()
+        } else {
+            vec![(height - 2, 2), (height - 1, 2), (height, 1), (height + 1, 1)]
+        };
+        for (dy, radius) in crown {
+            for dx in -radius..=radius {
+                for dz in -radius..=radius {
+                    let corner = dx.abs() == radius && dz.abs() == radius && radius > 0;
+                    // (les coins sont rognés : toujours en haut, une fois sur deux ailleurs)
+                    if (dx == 0 && dz == 0 && dy < height) || (corner && (dy > height || spruce || self.mob_rng.below(2) == 0)) {
+                        continue;
+                    }
+                    let p = (x + dx, y + dy, z + dz);
+                    if self.world.is_ready(p.0 >> 4, p.2 >> 4) && self.world.get(p.0, p.1, p.2) == air {
+                        list.push((p.0, p.1, p.2, leaves));
+                    }
+                }
+            }
+        }
+        self.set_blocks_from_plugin(list);
+    }
+
     /// Change un bloc qui a poussé (les plugins peuvent s'y opposer) et l'annonce à tous.
     fn grow_to(&mut self, (x, y, z): (i32, i32, i32), state: u32) -> bool {
         if self.plugins.listens("BlockGrowEvent") {
@@ -520,6 +598,23 @@ impl Server {
         let state = self.world.get(x, y, z);
         if state == air {
             return;
+        }
+        // La lave enflamme ce qui brûle près d'elle ; un feu que le serveur ne suivait pas
+        // (posé avant un redémarrage) est repris en charge
+        if let Some(name) = d.block_name(state) {
+            if name.contains("lava") {
+                return self.lava_sparks((x, y, z));
+            }
+            if name == "minecraft:fire" {
+                self.fires.insert((x, y, z));
+                return;
+            }
+            if name == "minecraft:grass_block" {
+                return self.grass_tick((x, y, z));
+            }
+            if name.ends_with("_sapling") && !name.contains("bamboo") {
+                return self.sapling_tick(name.trim_start_matches("minecraft:").trim_end_matches("_sapling").to_string(), (x, y, z));
+            }
         }
         // Culture créée par un plugin : un stade de plus de temps en temps, jusqu'à maturité
         if let Some((custom, stage)) = crate::block::custom::variant_of(state) {

@@ -248,6 +248,21 @@ impl Server {
                 return;
             }
         }
+        // Ce que le repas fait en plus de nourrir : la potion bue, et les aliments à effets du jeu
+        let variant = self.clients.get(addr).map(|c| c.inv.held().meta).unwrap_or(0);
+        let short = name.trim_start_matches("minecraft:").to_string();
+        let luck = self.mob_rng.below(100);
+        let doses: Vec<(i32, i32, u32)> = match short.as_str() {
+            "potion" => crate::item::potion::potion_effects(variant).to_vec(),
+            "golden_apple" => vec![(10, 1, 100), (22, 0, 2400)],
+            "enchanted_golden_apple" => vec![(10, 1, 400), (22, 3, 2400), (11, 0, 6000), (12, 0, 6000)],
+            "rotten_flesh" if luck < 80 => vec![(17, 0, 600)],
+            "chicken" if luck < 30 => vec![(17, 0, 600)],
+            "spider_eye" => vec![(19, 0, 100)],
+            "poisonous_potato" if luck < 60 => vec![(19, 0, 100)],
+            "pufferfish" => vec![(17, 2, 300), (19, 1, 1200), (9, 0, 300)],
+            _ => Vec::new(),
+        };
         let Some(c) = self.clients.get_mut(addr) else { return };
         let survival = c.mode.takes_damage();
         if survival {
@@ -272,6 +287,9 @@ impl Server {
         self.send_inventory(addr);
         self.show_held(addr);
         self.burp(addr);
+        for (effect, level, ticks) in doses {
+            self.give_effect(addr, effect, level, ticks as u64, true);
+        }
     }
 
     /// Le jeu annonce, plusieurs fois pendant le repas, que le joueur mâche : renvoyé à lui
@@ -565,6 +583,42 @@ impl Server {
 
     /// L'objet tenu s'use d'un usage (miner ou frapper), d'après ce que son gabarit en dit
     /// (voir `item/durable.rs`). Usé jusqu'au bout, il casse.
+    /// Clic droit avec une pièce d'armure en main : elle est enfilée, et celle qu'elle
+    /// remplace revient dans la main. Le jeu le fait de son côté ; sans cela le serveur la
+    /// croyait toujours dans la barre d'objets. Vrai si l'objet tenu était une armure.
+    pub(super) fn equip_held(&mut self, addr: &SocketAddr) -> bool {
+        let Some(d) = self.data.clone() else { return false };
+        let at = match self.clients.get_mut(addr) {
+            Some(c) if c.joined && c.dead.is_none() => {
+                let slot = (c.inv.selected as usize).min(8);
+                let held = c.inv.main.slots[slot];
+                let Some(def) = d.item_by_id(held.id).filter(|_| held.count == 1) else { return false };
+                let name = def.name.trim_start_matches("minecraft:");
+                let piece = if name.ends_with("_helmet") {
+                    0
+                } else if name.ends_with("_chestplate") || name == "elytra" {
+                    1
+                } else if name.ends_with("_leggings") {
+                    2
+                } else if name.ends_with("_boots") {
+                    3
+                } else {
+                    return false;
+                };
+                let worn = c.inv.armor.slots[piece];
+                c.inv.armor.slots[piece] = held;
+                c.inv.main.slots[slot] = worn;
+                c.inv_touched = true;
+                c.pos
+            }
+            _ => return false,
+        };
+        self.send_inventory_with(addr, true);
+        self.show_held(addr);
+        self.send_near(at, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound("armor.equip_generic", at, "", false, -1));
+        true
+    }
+
     pub(super) fn wear_held(&mut self, addr: &SocketAddr, usage: crate::item::Usage) {
         let Some(d) = self.data.clone() else { return };
         let broke = match self.clients.get_mut(addr) {
@@ -574,6 +628,10 @@ impl Server {
                 let Some(def) = d.item_by_id(held.id).filter(|_| !held.is_empty()) else { return };
                 let item = VanillaItems::get(&def.name);
                 let before = held;
+                // Solidité : une usure sur (niveau + 1) seulement
+                if self.mob_rng.below(held.ench.level(crate::item::enchant::UNBREAKING) as u32 + 1) != 0 {
+                    return;
+                }
                 let broke = crate::item::apply_wear(&mut held, item.as_ref(), usage);
                 if held == before {
                     return; // cet objet ne s'use pas
@@ -701,6 +759,10 @@ impl Server {
         self.time_base += morning - now;
         self.broadcast(bedrock::ID_SET_TIME, &bedrock::set_time(morning as i32), None);
         for a in sleepers {
+            // (une nuit dormie : les phantoms le laissent tranquille trois jours de plus)
+            if let Some(c) = self.clients.get_mut(&a) {
+                c.rested_at = morning;
+            }
             self.wake(&a);
         }
     }

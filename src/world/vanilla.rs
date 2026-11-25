@@ -789,6 +789,12 @@ impl Vanilla {
         d + self.base.sample(fx / 3.0, fy / 6.0, fz / 3.0) * 0.18
     }
 
+    /// Cette case est-elle (à peu près) dans une grotte ? `top` : hauteur du sol de la colonne.
+    /// Sert aux structures souterraines, qui posent un plancher au-dessus du vide.
+    pub(crate) fn hollow(&self, x: i32, y: i32, z: i32, top: i32) -> bool {
+        self.caves(x, y, z, (top - y) as f64) < 0.03
+    }
+
     /// Valeur des grottes (négative : vide). `depth` : profondeur sous le relief prévu.
     fn caves(&self, x: i32, y: i32, z: i32, depth: f64) -> f64 {
         if y < MIN_Y + 6 || depth < 2.0 {
@@ -2286,6 +2292,32 @@ mod tests {
 
     fn palette() -> Palette {
         Palette::new(&|_| None)
+    }
+
+    /// `hollow` devine les grottes sans générer le chunk : il doit en trouver l'essentiel,
+    /// sans prendre trop de roche pour du vide.
+    #[test]
+    fn hollow_agrees_with_the_generated_caves() {
+        let v = Vanilla::new(42);
+        let p = palette();
+        let (mut air, mut found, mut rock, mut wrong) = (0, 0, 0, 0);
+        for (cx, cz) in [(0, 0), (7, -3), (-12, 9), (20, 20)] {
+            let column = v.generate(&p, cx, cz);
+            for lx in 0..16 {
+                for lz in 0..16 {
+                    let (x, z) = (cx * 16 + lx, cz * 16 + lz);
+                    let top = v.column_top(x, z);
+                    for y in (MIN_Y + 8)..(top - 12).min(40) {
+                        let empty = column.get(lx as usize, y, lz as usize) == p.air;
+                        let guess = v.hollow(x, y, z, top);
+                        if empty { air += 1; found += guess as i32 } else { rock += 1; wrong += guess as i32 }
+                    }
+                }
+            }
+        }
+        println!("vide {} dont trouvé {} ; roche {} dont prise pour du vide {}", air, found, rock, wrong);
+        assert!(air > 500 && found * 100 >= air * 85, "grottes trouvées : {} sur {}", found, air);
+        assert!(wrong * 100 <= rock * 12, "roche prise pour du vide : {} sur {}", wrong, rock);
     }
 
     #[test]

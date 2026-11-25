@@ -41,13 +41,14 @@ pub(super) const EFFECTS: [(i32, &str); 30] = [
     (30, "darkness"),
 ];
 
-#[cfg(test)]
 pub(super) const SPEED: i32 = 1;
+pub(super) const SLOWNESS: i32 = 2;
 pub(super) const STRENGTH: i32 = 5;
 pub(super) const INSTANT_HEALTH: i32 = 6;
 pub(super) const INSTANT_DAMAGE: i32 = 7;
 pub(super) const REGENERATION: i32 = 10;
 pub(super) const RESISTANCE: i32 = 11;
+pub(super) const FIRE_RESISTANCE: i32 = 12;
 pub(super) const HUNGER: i32 = 17;
 pub(super) const WEAKNESS: i32 = 18;
 pub(super) const POISON: i32 = 19;
@@ -121,6 +122,28 @@ impl Server {
         if !self.refused_extras.contains(&bedrock::ID_MOB_EFFECT) {
             self.send(addr, bedrock::ID_MOB_EFFECT, &bedrock::mob_effect(id, bedrock::EFFECT_ADD, effect, level, ticks as i32, particles));
         }
+        if effect == SPEED || effect == SLOWNESS {
+            self.sync_speed(addr);
+        }
+    }
+
+    /// Ce que les effets font à la vitesse de marche : +20 % par niveau de rapidité, -15 % par
+    /// niveau de lenteur (1 sans effet).
+    pub(super) fn speed_factor(c: &Client) -> f32 {
+        let level = |effect: i32| c.effects.iter().find(|e| e.0 == effect).map(|e| (e.1 + 1) as f32).unwrap_or(0.0);
+        (1.0 + 0.2 * level(SPEED)) * (1.0 - 0.15 * level(SLOWNESS)).max(0.0)
+    }
+
+    /// Donne au jeu du joueur sa vitesse de marche, effets compris, quand un effet commence ou
+    /// finit. Le jeu ne la recalcule de lui-même qu'en changeant d'allure : sans cela, la
+    /// rapidité n'agit qu'au premier sprint.
+    pub(super) fn sync_speed(&mut self, addr: &SocketAddr) {
+        // (jamais pendant un sprint : recevoir sa vitesse l'interromprait, et le jeu la recalcule
+        // de lui-même, effets compris, dès qu'il change d'allure)
+        let Some(c) = self.clients.get(addr).filter(|c| c.joined && !c.sprinting) else { return };
+        let value = 0.1 * Self::speed_factor(c);
+        let packet = bedrock::update_movement(c.id as u64, value);
+        self.send(addr, bedrock::ID_UPDATE_ATTRIBUTES, &packet);
     }
 
     /// Retire un effet (ou tous : `None`). Renvoie le nombre d'effets retirés.
@@ -138,6 +161,9 @@ impl Server {
                 self.send(addr, bedrock::ID_MOB_EFFECT, &bedrock::mob_effect(id, bedrock::EFFECT_REMOVE, *effect, 0, 0, false));
             }
         }
+        if gone.contains(&SPEED) || gone.contains(&SLOWNESS) {
+            self.sync_speed(addr);
+        }
         gone.len()
     }
 
@@ -151,15 +177,93 @@ impl Server {
         }
     }
 
+    /// Met le feu à un joueur pour tant de ticks (rien en créatif, ni avec la résistance au feu).
+    pub(super) fn ignite(&mut self, addr: &SocketAddr, ticks: u64) {
+        if self.effect_level(addr, FIRE_RESISTANCE) > 0 {
+            return;
+        }
+        let until = self.tick + ticks;
+        match self.clients.get_mut(addr) {
+            Some(c) if c.joined && c.dead.is_none() && c.mode.takes_damage() => c.burn_until = c.burn_until.max(until),
+            _ => return,
+        }
+        self.show_fire(addr, true);
+    }
+
+    /// Éteint un joueur en feu.
+    pub(super) fn extinguish(&mut self, addr: &SocketAddr) {
+        let was = self.clients.get_mut(addr).map(|c| std::mem::take(&mut c.burn_until) > 0).unwrap_or(false);
+        if was {
+            self.show_fire(addr, false);
+        }
+    }
+
+    /// Montre (ou cache) les flammes sur un joueur, chez lui et chez ceux qui le voient.
+    fn show_fire(&mut self, addr: &SocketAddr, on: bool) {
+        let Some(c) = self.clients.get(addr) else { return };
+        let (id, sneaking, sprinting) = (c.id, c.sneaking, c.sprinting);
+        let extra = (on as i64) | if c.riding.is_some() { bedrock::FLAG_RIDING } else { 0 };
+        self.send(addr, bedrock::ID_SET_ACTOR_DATA, &bedrock::set_actor_data(id, &[(0, bedrock::Meta::Long(bedrock::OWN_PLAYER_FLAGS | extra))]));
+        let packet = bedrock::set_actor_data(id, &[(0, bedrock::Meta::Long(Self::remote_flags(sneaking, sprinting) | extra))]);
+        let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(a, c)| *a != addr && c.visible.contains(&id)).map(|(a, _)| *a).collect();
+        for v in viewers {
+            self.send(&v, bedrock::ID_SET_ACTOR_DATA, &packet);
+        }
+    }
+
+    /// Une fois par seconde : un joueur en feu perd un demi-cœur, jusqu'à ce que le feu
+    /// s'éteigne de lui-même ou dans l'eau.
+    pub(super) fn fire_tick(&mut self) {
+        let tick = self.tick;
+        let water = self.world.generator().blocks.water;
+        let burning: Vec<(SocketAddr, bool)> = self
+            .clients
+            .iter()
+            .filter(|(_, c)| c.burn_until > 0)
+            .map(|(a, c)| {
+                let wet = self.world.get(c.pos.0.floor() as i32, (c.pos.1 - EYE).floor() as i32, c.pos.2.floor() as i32) == water;
+                (*a, c.burn_until <= tick || wet || c.dead.is_some() || !c.mode.takes_damage())
+            })
+            .collect();
+        for (addr, over) in burning {
+            if over || self.effect_level(&addr, FIRE_RESISTANCE) > 0 {
+                self.extinguish(&addr);
+            } else {
+                self.hurt(&addr, 1.0, Cause::Fire);
+                // (les flammes sont remontrées : un autre changement d'allure a pu les effacer)
+                self.show_fire(&addr, true);
+            }
+        }
+    }
+
     /// Un tick d'effets : ceux qui sont finis s'effacent, les périodiques battent.
     pub(super) fn effects_tick(&mut self) {
         let tick = self.tick;
+        // Deux secondes après l'arrivée : la vie et la faim, que le jeu n'affiche pas toujours
+        // quand il les reçoit pendant son chargement
+        let late: Vec<SocketAddr> = self.clients.iter_mut().filter(|(_, c)| c.resync_at != 0 && tick >= c.resync_at).map(|(a, c)| { c.resync_at = 0; *a }).collect();
+        for addr in late {
+            self.send_attributes(&addr, false);
+        }
+        // Les effets d'avant la déconnexion, rendus deux secondes après le retour
+        let back: Vec<(SocketAddr, Vec<i32>)> = self.clients.iter_mut().filter(|(_, c)| !c.returning.is_empty() && c.joined && tick.saturating_sub(c.probe_tick) >= 40).map(|(a, c)| (*a, std::mem::take(&mut c.returning))).collect();
+        for (addr, kept) in back {
+            for e in kept.chunks_exact(3).filter(|e| e[2] > 0) {
+                self.give_effect(&addr, e[0], e[1], e[2] as u64, true);
+            }
+            self.sync_speed(&addr);
+        }
         let mut beats: Vec<(SocketAddr, i32, i32)> = Vec::new();
+        // Ceux dont la rapidité ou la lenteur vient de finir : leur vitesse redevient normale
+        let mut slowed: Vec<SocketAddr> = Vec::new();
         for (addr, c) in self.clients.iter_mut() {
             if c.effects.is_empty() {
                 continue;
             }
             // (le jeu fait disparaître l'icône de lui-même, à la fin de la durée annoncée)
+            if c.effects.iter().any(|e| e.2 <= tick && (e.0 == SPEED || e.0 == SLOWNESS)) {
+                slowed.push(*addr);
+            }
             c.effects.retain(|e| e.2 > tick);
             if !c.joined || c.dead.is_some() {
                 continue;
@@ -170,6 +274,9 @@ impl Server {
                     beats.push((*addr, *effect, *level));
                 }
             }
+        }
+        for addr in slowed {
+            self.sync_speed(&addr);
         }
         for (addr, effect, level) in beats {
             let health = self.clients.get(&addr).and_then(|c| c.data.as_ref()).map(|d| d.health).unwrap_or(0.0);

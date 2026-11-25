@@ -197,7 +197,7 @@ impl PlayerWindows {
     /// Idem avec la variante de l'objet (la couleur d'un lit pris au menu créatif).
     pub fn create_kind(&mut self, id: i16, meta: u16, count: u8) {
         let net_id = self.fresh_net_id();
-        self.created.set_item(0, ItemStack { id, count: count.min(MAX_STACK).min(crate::item::max_stack_of(id)), net_id, meta, damage: 0 });
+        self.created.set_item(0, ItemStack { id, count: count.min(MAX_STACK).min(crate::item::max_stack_of(id)), net_id, meta, damage: 0, ench: Default::default() });
     }
 
     /// Jette ce qui reste dans l'emplacement de création.
@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn variants_and_worn_tools_keep_to_themselves() {
         let mut inv = PlayerWindows::new();
-        let red = ItemStack { id: 700, count: 0, net_id: 0, meta: 14, damage: 0 };
+        let red = ItemStack { id: 700, count: 0, net_id: 0, meta: 14, damage: 0, ench: Default::default() };
         let blue = ItemStack { meta: 11, ..red };
         assert_eq!(inv.add_kind(red, 1), 0);
         assert_eq!(inv.add_kind(blue, 1), 0);

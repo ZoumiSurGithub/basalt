@@ -23,6 +23,17 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 - [x] Opérateurs, liste blanche, `kick`
 - [x] Permissions
 - [x] Installation et mise à jour par script (Linux, Windows)
+- [x] API de gestion à distance : lecture (état, joueurs, objets, blocs) et actions (désactiver un objet ou un bloc, recharger les plugins, commande de console), deux jetons
+- [x] Chiffrement des packs de ressources (commande, console, API)
+- [x] Tableau de bord web : navigation, thèmes sombre et clair, gestion des joueurs, images des objets et blocs
+- [x] Analyse de la carte : compte des objets, piles impossibles, conteneurs jumeaux
+- [x] API de gestion : accès de l'extérieur par un tunnel chiffré (Tailscale, Cloudflare, SSH), adresses écartées après des mauvais jetons en série, renouvellement des jetons
+- [x] Carte en direct dans le tableau de bord, avec changement d'un bloc et téléportation d'un clic
+- [x] Carte en relief : terrain en cubes, boîtes et noms des joueurs et des créatures
+- [ ] Carte : outils d'édition (sélection, remplir, sphère, copier-coller, structures enregistrées)
+- [ ] Site de Basalt à héberger (présentation, téléchargements, documentation, gestion des serveurs)
+- [ ] Gardien : gérer le serveur quand le jeu est arrêté
+- [ ] API de gestion : droits plus fins, plusieurs serveurs
 - [ ] Bannissements (joueur, adresse)
 - [ ] Sauvegardes planifiées
 - [ ] Règles du jeu (`/gamerule`) et difficulté
@@ -52,10 +63,12 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 - [x] Gravité du sable et du gravier
 - [x] Blocs qui tiennent sur un support (fleurs, torches, rails…), feuilles qui dépérissent
 - [x] Herbes marines et algues : elles gardent leur eau, qui s'écoule comme une autre
-- [ ] Feu qui se propage, explosions, TNT
+- [x] Explosions (creeper, boule de feu du ghast)
+- [x] Feu qui se propage, lave qui brûle, TNT
 - [ ] Redstone, pistons, entonnoirs
 - [x] Temps de minage selon l'outil, fissures, bruits et miettes
-- [ ] Herbe qui s'étend, glace et neige qui fondent, pousses qui deviennent des arbres
+- [x] Herbe qui s'étend, pousses qui deviennent des arbres
+- [ ] Glace et neige qui fondent
 - [ ] Générateurs d'épreuves, coffres-forts, sable et gravier suspects
 
 ## 5. Joueur
@@ -68,7 +81,7 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 - [x] Faim et nourriture
 - [x] Expérience et niveaux, orbes
 - [x] Dormir pour passer la nuit, point de réapparition au lit
-- [ ] Effets de potion
+- [x] Effets de potion
 
 ## 6. Objets et inventaires
 
@@ -79,10 +92,10 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 - [x] Durabilité des outils, variantes d'objets (couleurs)
 - [x] Armures qui protègent (4 % par point d'armure) et s'usent
 - [x] Armure visible sur les autres joueurs ; armure naturelle des zombies
-- [ ] Enchantements (dont la protection)
-- [ ] Enchantements et enclume
-- [ ] Alchimie
-- [ ] Arc, arbalète, trident, bouclier
+- [x] Enchantements sur les objets, `/enchant`, premiers effets (protection, tranchant, solidité, puissance…)
+- [ ] Table d'enchantement, enclume, livres enchantés, effets restants (fortune, toucher de soie, butin, recul…)
+- [x] Arc
+- [ ] Arbalète, trident, bouclier
 - [ ] Pêche
 - [ ] Ateliers : tailleur de pierre, métier à tisser, table de forgeron
 
@@ -105,11 +118,15 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 - [x] Enderman (neutre, téléportation) et slime (trois tailles, division)
 - [x] Arc pour les joueurs
 - [x] Poison de l'araignée venimeuse
-- [ ] Monstres à part : sorcière (potions), blaze, ghast et phantom (vol)
+- [x] Créatures volantes : blaze, ghast, phantom
+- [x] Phantoms pour les joueurs qui ne dorment pas ; joueur en feu ; boule de feu renvoyée
+- [x] Potions (à boire, à lancer) et sorcière ; aliments à effets
+- [ ] Alambic (préparer les potions), nuage des potions persistantes, effets sur les créatures
+- [x] Feu sur les blocs et les créatures
 - [x] Effets des joueurs : `/effect`, plugins, affichage chez le joueur
-- [ ] Arbalète, ralentissement de la flèche du vagabond, effets sur les créatures, potions
+- [ ] Ralentissement de la flèche du vagabond
 - [x] Apparition selon la lumière (grottes, torches qui protègent)
-- [ ] Créatures aquatiques et volantes
+- [ ] Créatures aquatiques
 - [ ] Boss : Ender Dragon, Wither, Warden
 - [ ] Raids de pillards
 - [ ] Bateaux et wagonnets
@@ -119,7 +136,7 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 - [x] Joueur contre joueur, recul
 - [x] Loups qui défendent leur maître, golems qui défendent le village
 - [ ] Coups critiques et temps de recharge
-- [ ] Projectiles
+- [x] Projectiles (flèches, boules de feu, potions)
 - [ ] Messages de mort complets
 
 ## 9. Commandes

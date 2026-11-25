@@ -54,8 +54,16 @@ pub struct Config {
     pub spawn_animals: bool,
     /// Des monstres apparaissent la nuit autour des joueurs en survie
     pub spawn_monsters: bool,
+    /// Port de l'API de gestion à distance (0 : éteinte)
+    pub api_port: u16,
+    /// Adresse sur laquelle l'API écoute (127.0.0.1 : la machine elle-même seulement)
+    pub api_bind: String,
+    /// Tests : ouvre l'API sur un port choisi par le système, écrit dans api-port.txt
+    pub api_test: bool,
     /// Les explosions des monstres cassent les blocs
     pub mob_griefing: bool,
+    /// Le feu brûle les blocs et gagne du terrain (`fire-spreads`)
+    pub fire_spreads: bool,
     pub player_view: i32,
     pub max_visible: usize,
     pub auth_keys_file: String,
@@ -115,7 +123,11 @@ impl Default for Config {
             show_players: true,
             spawn_animals: true,
             spawn_monsters: true,
+            api_port: 0,
+            api_bind: "127.0.0.1".into(),
+            api_test: false,
             mob_griefing: true,
+            fire_spreads: true,
             player_view: 4,
             max_visible: usize::MAX,
             auth_keys_file: String::new(),
@@ -199,6 +211,13 @@ show-players=true
 spawn-animals=true
 # Monstres la nuit autour des joueurs en survie (false : monde paisible)
 spawn-monsters=true
+# API de gestion à distance (voir docs/API.md). 0 : éteinte.
+# Les jetons d'accès sont créés au premier démarrage : api-token.txt (lecture)
+# et api-admin-token.txt (actions).
+api-port=0
+# 127.0.0.1 : accessible depuis cette machine seulement. Les échanges ne sont pas
+# chiffrés : pour un accès distant, passez par un tunnel SSH ou un serveur HTTPS.
+api-bind=127.0.0.1
 # Les explosions (creeper…) cassent les blocs (false : elles blessent sans rien détruire)
 mob-griefing=true
 # Distance de simulation (en chunks, de 4 à 12, comme le serveur officiel) : au-delà,
@@ -318,8 +337,13 @@ impl Config {
         c.movement_check = map.get("movement-check").map(|v| v != "false").unwrap_or(true);
         c.show_players = map.get("show-players").map(|v| v != "false").unwrap_or(true);
         c.spawn_animals = map.get("spawn-animals").map(|v| v != "false").unwrap_or(true);
+        c.api_port = map.get("api-port").and_then(|v| v.parse().ok()).unwrap_or(0);
+        if let Some(v) = map.get("api-bind").filter(|v| !v.is_empty()) {
+            c.api_bind = v.clone();
+        }
         c.spawn_monsters = map.get("spawn-monsters").map(|v| v != "false").unwrap_or(true);
         c.mob_griefing = map.get("mob-griefing").map(|v| v != "false").unwrap_or(true);
+        c.fire_spreads = map.get("fire-spreads").map(|v| v != "false").unwrap_or(true);
         c.http_signaling = map.get("nethernet-signaling").map(|v| v != "false").unwrap_or(true);
         c.xbox_auth = map.get("xbox-auth").map(|v| v != "false").unwrap_or(true);
         c.local_bots = map.get("local-bots").map(|v| v == "true" || v == "on").unwrap_or(false);

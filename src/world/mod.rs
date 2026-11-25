@@ -153,6 +153,62 @@ pub struct WorldView {
 }
 
 impl WorldView {
+    /// Le dessus d'un chunk déjà en mémoire : pour chacune de ses 256 colonnes (z * 16 + x),
+    /// le bloc le plus haut qui n'est pas de l'air et sa hauteur. `None` si le chunk n'est ni
+    /// généré ni modifié : rien n'est généré pour répondre.
+    pub fn surface(&self, cx: i32, cz: i32) -> Option<Vec<(u32, i16)>> {
+        let edits = self.edits.get(&(cx, cz));
+        let column = match self.terrain.cached((cx, cz)) {
+            Some(c) => c,
+            None if edits.is_some() => self.terrain.column((cx, cz)),
+            None => return None,
+        };
+        let mut out = Vec::with_capacity(256);
+        for z in 0..16usize {
+            for x in 0..16usize {
+                let mut top = (self.air, (MIN_Y - 1) as i16);
+                for y in (MIN_Y..=MAX_Y).rev() {
+                    let block = match edits.and_then(|e| e.get(&(x as u8, y as i16, z as u8))) {
+                        Some(b) => *b,
+                        None => column.get(x, y, z),
+                    };
+                    if block != self.air {
+                        top = (block, y as i16);
+                        break;
+                    }
+                }
+                out.push(top);
+            }
+        }
+        Some(out)
+    }
+
+    /// Les blocs d'un chunk déjà en mémoire, du creux le plus bas de sa surface (moins
+    /// `below` blocs) jusqu'à son sommet : (y du bas, hauteur, blocs rangés par colonne —
+    /// `(z * 16 + x) * hauteur + (y - bas)`). `None` si le chunk n'est ni généré ni modifié.
+    pub fn volume(&self, cx: i32, cz: i32, below: i32) -> Option<(i32, usize, Vec<u32>)> {
+        let tops = self.surface(cx, cz)?;
+        let lowest = tops.iter().map(|t| t.1 as i32).min().unwrap_or(MIN_Y);
+        let highest = tops.iter().map(|t| t.1 as i32).max().unwrap_or(MIN_Y);
+        let base = (lowest - below).max(MIN_Y);
+        let height = (highest - base + 1).max(1) as usize;
+        let edits = self.edits.get(&(cx, cz));
+        let column = self.terrain.column((cx, cz));
+        let mut out = vec![self.air; 256 * height];
+        for z in 0..16usize {
+            for x in 0..16usize {
+                let top = tops[z * 16 + x].1 as i32;
+                for y in base..=top {
+                    out[(z * 16 + x) * height + (y - base) as usize] = match edits.and_then(|e| e.get(&(x as u8, y as i16, z as u8))) {
+                        Some(b) => *b,
+                        None => column.get(x, y, z),
+                    };
+                }
+            }
+        }
+        Some((base, height, out))
+    }
+
     /// Le générateur vanilla, pour les recherches (`/locate`) faites sur un autre fil.
     pub fn vanilla(&self) -> Option<&vanilla::Vanilla> {
         self.terrain.generator.vanilla()

@@ -53,6 +53,8 @@ impl Food {
             "mushroom_stew" | "suspicious_stew" => (6, 7.2),
             "poisonous_potato" => (2, 1.2),
             "potato" => (1, 0.6),
+            // (une potion se boit comme on mange : elle ne nourrit pas, ses effets viennent de sa variante)
+            "potion" => (0, 0.0),
             "pufferfish" => (1, 0.2),
             "pumpkin_pie" => (8, 4.8),
             "rabbit_stew" => (10, 12.0),
@@ -64,7 +66,7 @@ impl Food {
         let values = FoodValues {
             hunger,
             saturation,
-            always_edible: matches!(short, "golden_apple" | "enchanted_golden_apple" | "chorus_fruit" | "honey_bottle" | "suspicious_stew"),
+            always_edible: matches!(short, "golden_apple" | "enchanted_golden_apple" | "chorus_fruit" | "honey_bottle" | "suspicious_stew" | "potion"),
             eat_ticks: match short {
                 "dried_kelp" => 16,
                 "honey_bottle" => 40,
@@ -72,7 +74,7 @@ impl Food {
             },
             leftover: match short {
                 "mushroom_stew" | "rabbit_stew" | "beetroot_soup" | "suspicious_stew" => Some("bowl"),
-                "honey_bottle" => Some("glass_bottle"),
+                "honey_bottle" | "potion" => Some("glass_bottle"),
                 _ => None,
             },
         };
