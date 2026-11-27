@@ -739,14 +739,14 @@ impl Server {
         let body = match path {
             "/v1" => obj(vec![
                 ("name", text("Basalt")),
-                ("version", text(env!("CARGO_PKG_VERSION"))),
+                ("version", text(crate::VERSION)),
                 ("endpoints", Json::Arr(["GET /v1/me", "GET /v1/status", "GET /v1/players", "GET /v1/items", "GET /v1/blocks", "GET /v1/scan", "POST /v1/scan", "GET /v1/map?cx=&cz=", "GET /v1/world/chunks?list=cx.cz.v,…", "GET /v1/entities?x=&z=&r=", "GET /v1/world/atlas", "GET /v1/world/skin", "GET /v1/world/block?x=&z=", "POST /v1/world/block", "POST /v1/world/fill", "GET /v1/disabled", "GET /v1/textures", "GET /v1/texture?kind=item&name=…", "GET /v1/packs", "POST /v1/packs/encrypt", "POST /v1/players/action", "POST /v1/disable", "POST /v1/enable", "POST /v1/plugins/reload", "POST /v1/command"].iter().map(|e| text(e)).collect())),
             ]),
             "/v1/status" => {
                 let tps = if self.perf.last.0 <= 0.0 { 20.0 } else { self.perf.last.0.min(20.0) };
                 obj(vec![
                     ("name", text("Basalt")),
-                    ("version", text(env!("CARGO_PKG_VERSION"))),
+                    ("version", text(crate::VERSION)),
                     ("uptime_seconds", num(self.started.elapsed().as_secs() as f64)),
                     ("ticks_per_second", round(tps)),
                     ("worst_tick_delay_ms", num(self.perf.last.1.as_millis() as f64)),

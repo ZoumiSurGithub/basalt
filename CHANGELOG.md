@@ -9,6 +9,7 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 
 ## [Non publié]
 
+- Publication : `./release.sh 0.0.7` fait tout (vérifications, journal, numéro, commit, étiquette, envoi) après confirmation ; le programme publié prend toujours le numéro de l'étiquette (vérifié par `basalt --version` à la compilation), la branche dev s'annonce `<numéro>-dev.<commit>` et son étiquette `dev-latest` suit le dernier envoi ; l'archive Windows contient la documentation et a son empreinte sha256.
 - Connexion : une demande d'entrée arrivant de la même adresse et du même port qu'un joueur déjà en jeu (le système réutilise les ports) ne coupe plus ce joueur ; elle reçoit une autre désignation. À 800 bots, 86 joueurs étaient coupés ainsi (« retry »).
 - Croissance : les ticks aléatoires sautent les chunks pas encore générés au lieu de les produire sur place.
 - Mesures : un chunk produit sur place est compté avec l'étape qui l'a demandé (« Chunk sur place ← … »).

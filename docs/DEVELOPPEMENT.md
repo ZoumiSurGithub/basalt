@@ -36,23 +36,30 @@ Tests : `cargo test`
 ## Publier une version
 
 Les changements sont notés au fil de l'eau dans [CHANGELOG.md](../CHANGELOG.md), section
-« Non publié » (catégories Ajouté, Modifié, Corrigé, Retiré). Pour publier :
+« Non publié » (catégories Ajouté, Modifié, Corrigé, Retiré). Pour publier, une seule
+commande, une fois tout enregistré (commit) :
 
 ```sh
-sh release.sh 0.0.2       # sous Windows : depuis « Git Bash »
-git add CHANGELOG.md Cargo.toml Cargo.lock
-git commit -m "Version 0.0.2"
-git push
-git tag v0.0.2
-git push origin v0.0.2
+./release.sh 0.0.7        # sous Windows : depuis « Git Bash »
+./release.sh -n 0.0.7     # pour voir ce qui serait fait, sans rien toucher
 ```
 
-`release.sh` date la section « Non publié » sous le numéro donné, en ouvre une nouvelle et
-met à jour le numéro de version du programme. À l'arrivée de l'étiquette, GitHub compile
-Basalt et crée la page de la version avec ces notes ; la compilation s'arrête si
-l'étiquette ne correspond pas au numéro de `Cargo.toml` ou si le journal n'a pas de
-section pour elle. La préversion de la branche `dev` affiche la section « Non publié ».
-`update.sh` montre les nouveautés de la version qu'il vient d'installer.
+Le script vérifie d'abord que tout est prêt (rien en attente d'enregistrement, branche à jour
+avec GitHub, numéro pas encore utilisé, journal rempli), montre les notes, demande
+confirmation, puis date la section « Non publié » sous ce numéro, inscrit le numéro dans
+`Cargo.toml`, crée le commit « Version 0.0.7 » et l'étiquette `v0.0.7`, et envoie les deux.
+Un numéro avec un tiret (`0.1.0-beta.1`) donne une préversion.
+
+**Le numéro vient de l'étiquette.** À la compilation, GitHub inscrit dans le programme le
+numéro de l'étiquette (`v0.0.7` → `0.0.7`) et vérifie que `basalt --version` l'annonce bien :
+le programme publié porte toujours le numéro de sa page de version, même si `Cargo.toml` a
+été oublié (une étiquette posée à la main reste donc possible ; les notes sont alors prises
+dans « Non publié », avec un avertissement). La branche `dev` et les autres branches donnent
+le numéro de `Cargo.toml` suivi de `-dev.<commit>` (par exemple `0.0.6-dev.ab12cd3`), et
+l'étiquette `dev-latest` suit le dernier envoi. Une compilation locale prend le numéro de
+`Cargo.toml`.
+
+Si la compilation d'une version échoue : corrigez, enregistrez, et publiez le numéro suivant.
 
 Tests sur GitHub : à chaque envoi sur une branche, les tests rapides (sans connexion) ;
 pour une étiquette `v…`, tous les tests, y compris ceux de bout en bout avec de vrais

@@ -54,6 +54,12 @@ pub use security::identity;
 pub use network::nethernet_client;
 pub use utils::{background, config, console, inflate, json, log, timings, yaml};
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Numéro de version : celui que la publication GitHub inscrit d'après l'étiquette (v0.0.7 ->
+/// 0.0.7 ; 0.0.6-dev.abc1234 pour la branche dev), sinon celui de Cargo.toml. L'étiquette fait
+/// foi : le programme publié porte toujours le numéro de sa page de version.
+pub const VERSION: &str = match option_env!("BASALT_VERSION") {
+    Some(v) if !v.is_empty() => v,
+    _ => env!("CARGO_PKG_VERSION"),
+};
 /// Compilation : branche ou étiquette, commit et date, inscrits par la publication GitHub.
 pub const BUILD: Option<&str> = option_env!("BASALT_BUILD");

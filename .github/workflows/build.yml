@@ -54,7 +54,19 @@ jobs:
         run: |
           # Inscrit dans l'executable : branche ou etiquette, commit, date
           export BASALT_BUILD="${GITHUB_REF_NAME} ${GITHUB_SHA::7} $(date -u +%Y-%m-%dT%H:%MZ)"
+          # Numero de version : celui de l'etiquette (v0.0.7 -> 0.0.7), sinon celui de
+          # Cargo.toml suivi de -dev.<commit>. L'etiquette fait foi : le programme publie porte
+          # toujours le numero de sa page de version.
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            export BASALT_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            export BASALT_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)-dev.${GITHUB_SHA::7}"
+          fi
+          echo "Version : $BASALT_VERSION"
           cargo build --release --locked
+          # Verification : le programme annonce bien ce numero
+          ./target/release/basalt --version | tee version.txt
+          grep -qF "basalt $BASALT_VERSION " version.txt
       - name: Archive
         run: |
           mkdir basalt
@@ -93,6 +105,14 @@ jobs:
         shell: pwsh
         run: |
           $env:BASALT_BUILD = "$env:GITHUB_REF_NAME $($env:GITHUB_SHA.Substring(0,7)) $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mmZ'))"
+          # Numero de version : comme pour Linux (etiquette, sinon Cargo.toml + -dev.<commit>)
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $env:BASALT_VERSION = $env:GITHUB_REF_NAME.Substring(1)
+          } else {
+            $cargo = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+            $env:BASALT_VERSION = "$cargo-dev.$($env:GITHUB_SHA.Substring(0,7))"
+          }
+          Write-Output "Version : $env:BASALT_VERSION"
           cargo build --release --locked
       - name: Archive
         shell: pwsh
@@ -101,11 +121,17 @@ jobs:
           Copy-Item target\release\basalt.exe, lua54.dll, README.md, CHANGELOG.md, LICENSE basalt\
           Copy-Item plugins basalt\plugins -Recurse
           Copy-Item data basalt\data -Recurse
+          Copy-Item docs basalt\docs -Recurse
           Compress-Archive -Path basalt\* -DestinationPath basalt-windows-x64.zip
+          # Empreinte, comme pour Linux (format de sha256sum : « empreinte  nom »)
+          $hash = (Get-FileHash basalt-windows-x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  basalt-windows-x64.zip" | Out-File -Encoding ascii -NoNewline basalt-windows-x64.zip.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: basalt-windows-x64
-          path: basalt-windows-x64.zip
+          path: |
+            basalt-windows-x64.zip
+            basalt-windows-x64.zip.sha256
 
   # Publication : seulement si les tests passent et que les deux versions sont pretes, pour
   # que les archives publiees soient toujours testees et toujours les memes
@@ -138,8 +164,16 @@ jobs:
             basalt-linux-x64.tar.gz
             basalt-linux-x64.tar.gz.sha256
             basalt-windows-x64.zip
+            basalt-windows-x64.zip.sha256
       # Branche « dev » : chaque envoi remplace la preversion « dev-latest », sans etiquette
       # a poser. Installation : ./update.sh -v dev
+      # (l'etiquette dev-latest suit le dernier commit : sans cela, la page gardait le code
+      # source et le commit du tout premier envoi)
+      - name: Etiquette dev-latest sur ce commit
+        if: github.ref == 'refs/heads/dev'
+        run: |
+          git tag -f dev-latest "$GITHUB_SHA"
+          git push -f origin refs/tags/dev-latest
       - name: Publication de la branche dev
         if: github.ref == 'refs/heads/dev'
         uses: softprops/action-gh-release@v2
@@ -152,3 +186,4 @@ jobs:
             basalt-linux-x64.tar.gz
             basalt-linux-x64.tar.gz.sha256
             basalt-windows-x64.zip
+            basalt-windows-x64.zip.sha256
