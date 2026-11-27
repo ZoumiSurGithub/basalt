@@ -131,6 +131,9 @@ pub const REMOTE_PLAYER_FLAGS: i64 = 0x0006_0000_0010_0000 | (1 << 14) | (1 << 1
 pub const FLAG_SNEAKING: i64 = 1 << 1;
 /// En train de courir.
 pub const FLAG_SPRINTING: i64 = 1 << 3;
+/// En train de nager (sprint dans l'eau). (Le 56, juste avant, est l'attaque tournoyante du
+/// trident : envoyé à sa place, il faisait tourner le nageur comme une toupie.)
+pub const FLAG_SWIMMING: i64 = 1 << 57;
 
 /// Indicateurs du joueur chez lui : peut grimper (19), respire (35), a des collisions (48),
 /// subit la gravité (49).

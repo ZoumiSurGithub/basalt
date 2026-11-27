@@ -26,6 +26,12 @@ pub(super) struct Shot {
     pub archer: Option<SocketAddr>,
     /// Potion lancée : (variante, part de durée gardée). Elle éclabousse en tombant.
     pub potion: Option<(u16, f32)>,
+    /// Flèche enflammée (arc « flamme ») : la cible brûle cinq secondes
+    pub flame: bool,
+    /// Recul ajouté (arc « frappe »)
+    pub punch: f32,
+    /// Trident lancé par un joueur : l'objet, qu'il retrouvera planté là où il tombe
+    pub trident: Option<inventory::ItemStack>,
     /// Son tireur dans le message de mort (« tué par un squelette »)
     pub cause: &'static str,
     age: u32,
@@ -59,7 +65,7 @@ impl Server {
         let (yaw, _) = heading(vel);
         let meta = bedrock::mob_metadata(0.25, 0.25, 0, 0, 0);
         self.send_near(from, bedrock::ID_ADD_ACTOR, &bedrock::add_actor(id, &kind, from, vel, yaw, (1.0, 1.0), None, None, &meta));
-        self.shots.insert(id, Shot { kind, pos: from, vel, gravity, damage, power, owner, archer: None, potion: None, cause, age: 0 });
+        self.shots.insert(id, Shot { kind, pos: from, vel, gravity, damage, power, owner, archer: None, potion: None, flame: false, punch: 0.0, trident: None, cause, age: 0 });
         Some(id)
     }
 
@@ -101,6 +107,18 @@ impl Server {
     pub(super) fn draw_bow(&mut self, addr: &SocketAddr) -> bool {
         let tick = self.tick;
         let Some(c) = self.clients.get(addr) else { return false };
+        // (le trident se brandit comme l'arc se bande, sans munition)
+        if self.held_name(c) == "trident" {
+            if let Some(c) = self.clients.get_mut(addr) {
+                if c.drawing.is_none() {
+                    c.drawing = Some(tick);
+                }
+            }
+            return true;
+        }
+        if self.held_name(c) == "crossbow" {
+            return self.use_crossbow(addr);
+        }
         if self.held_name(c) != "bow" {
             return false;
         }
@@ -120,6 +138,16 @@ impl Server {
     pub(super) fn release_bow(&mut self, addr: &SocketAddr) -> bool {
         let tick = self.tick;
         let arrow = self.item_id("arrow");
+        if self.clients.get(addr).map(|c| c.drawing.is_some() && self.held_name(c) == "trident").unwrap_or(false) {
+            return self.throw_trident(addr);
+        }
+        // (arbalète : relâcher avant la fin annule le chargement ; après, elle reste chargée)
+        if self.clients.get(addr).map(|c| self.held_name(c) == "crossbow").unwrap_or(false) {
+            if let Some(c) = self.clients.get_mut(addr) {
+                c.drawing = None;
+            }
+            return true;
+        }
         let Some(c) = self.clients.get_mut(addr) else { return false };
         let Some(since) = c.drawing.take() else { return false };
         let (eye, yaw, pitch, survival) = (c.pos, c.yaw.to_radians(), c.pitch.to_radians(), c.mode.takes_damage());
@@ -157,6 +185,8 @@ impl Server {
         // Dégâts : deux fois la vitesse, soit 6 à pleine puissance (9 pour un tir critique du jeu)
         if let Some(id) = self.shoot("minecraft:arrow", from, (dir.0 * speed, dir.1 * speed, dir.2 * speed), (speed * 2.0 * if power > 0.0 { 1.25 + 0.25 * power } else { 1.0 }).ceil(), 0.05, 0.0, None, "une flèche") {
             if let Some(s) = self.shots.get_mut(&id) {
+                s.flame = bow.level(crate::item::enchant::FLAME) > 0;
+                s.punch = 0.6 * bow.level(crate::item::enchant::PUNCH) as f32;
                 s.archer = Some(*addr);
             }
         }
@@ -166,6 +196,191 @@ impl Server {
             self.send_inventory(addr);
         }
         true
+    }
+
+    /// Clic avec une arbalète : chargée, elle tire ; sinon elle commence à se charger, s'il y
+    /// a une flèche (ou en créatif). Le chargement s'achève tout seul après 1,25 seconde de
+    /// clic maintenu (voir `crossbows_tick`).
+    fn use_crossbow(&mut self, addr: &SocketAddr) -> bool {
+        let tick = self.tick;
+        let arrow = self.item_id("arrow");
+        let Some(c) = self.clients.get(addr).filter(|c| c.joined && c.dead.is_none() && !c.mode.is_spectator()) else { return true };
+        let (held, eye) = (c.inv.held(), c.pos);
+        if held.ench.charged() {
+            // (le jeu répète le clic tant que le bouton est tenu : il faut l'avoir relâché depuis le chargement)
+            if c.drawing.is_none() && tick.saturating_sub(c.threw_at) >= 5 {
+                self.fire_crossbow(addr);
+            }
+            return true;
+        }
+        let has_arrow = !c.mode.takes_damage() || c.inv.main.slots.iter().chain(c.inv.offhand.slots.iter()).any(|s| !s.is_empty() && Some(s.id) == arrow);
+        if has_arrow && c.drawing.is_none() && tick.saturating_sub(c.threw_at) >= 5 {
+            let quick = held.ench.level(crate::item::enchant::QUICK_CHARGE) > 0;
+            if let Some(c) = self.clients.get_mut(addr) {
+                c.drawing = Some(tick);
+            }
+            let sound = if quick { "crossbow.quick_charge.start" } else { "crossbow.loading.start" };
+            self.send_near(eye, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound(sound, eye, "", false, -1));
+        }
+        true
+    }
+
+    /// Chaque tick : les arbalètes dont le clic est maintenu assez longtemps se chargent
+    /// (25 ticks, 5 de moins par niveau de charge rapide). Une flèche est dépensée.
+    pub(super) fn crossbows_tick(&mut self) {
+        let tick = self.tick;
+        let arrow = self.item_id("arrow");
+        let ready: Vec<SocketAddr> = self
+            .clients
+            .iter()
+            .filter(|(_, c)| c.drawing.map(|since| since != u64::MAX).unwrap_or(false) && c.joined && c.dead.is_none())
+            .filter(|(_, c)| {
+                let held = c.inv.held();
+                let need = 25u64.saturating_sub(5 * held.ench.level(crate::item::enchant::QUICK_CHARGE) as u64).max(5);
+                !held.ench.charged() && self.held_name(c) == "crossbow" && tick.saturating_sub(c.drawing.unwrap_or(tick)) >= need
+            })
+            .map(|(a, _)| *a)
+            .collect();
+        for addr in ready {
+            let Some(c) = self.clients.get_mut(&addr) else { continue };
+            if c.mode.takes_damage() {
+                let Some(s) = c.inv.offhand.slots.iter_mut().chain(c.inv.main.slots.iter_mut()).find(|s| !s.is_empty() && Some(s.id) == arrow) else {
+                    c.drawing = None;
+                    continue;
+                };
+                s.count -= 1;
+                if s.count == 0 {
+                    *s = inventory::ItemStack::EMPTY;
+                }
+            }
+            let slot = (c.inv.selected as usize).min(8);
+            c.inv.main.slots[slot].ench = c.inv.main.slots[slot].ench.with_charged(true);
+            // (chargée : elle attend que le bouton soit relâché, puis un nouveau clic)
+            c.drawing = Some(u64::MAX);
+            c.inv_touched = true;
+            let (eye, quick) = (c.pos, c.inv.main.slots[slot].ench.level(crate::item::enchant::QUICK_CHARGE) > 0);
+            let sound = if quick { "crossbow.quick_charge.end" } else { "crossbow.loading.end" };
+            self.send_near(eye, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound(sound, eye, "", false, -1));
+            self.send_inventory(&addr);
+            self.show_held(&addr);
+        }
+    }
+
+    /// L'arbalète chargée tire : une flèche plus rapide et plus forte que celle de l'arc (9 de
+    /// dégâts) ; avec « tir multiple », deux de plus, à dix degrés de chaque côté.
+    fn fire_crossbow(&mut self, addr: &SocketAddr) {
+        let tick = self.tick;
+        let Some(c) = self.clients.get_mut(addr) else { return };
+        let slot = (c.inv.selected as usize).min(8);
+        let ench = c.inv.main.slots[slot].ench;
+        c.inv.main.slots[slot].ench = ench.with_charged(false);
+        c.threw_at = tick;
+        c.inv_touched = true;
+        let (eye, yaw, pitch, survival) = (c.pos, c.yaw, c.pitch.to_radians(), c.mode.takes_damage());
+        let spread: &[f32] = if ench.level(crate::item::enchant::MULTISHOT) > 0 { &[0.0, -10.0, 10.0] } else { &[0.0] };
+        for side in spread {
+            let yaw = (yaw + side).to_radians();
+            let dir = (-yaw.sin() * pitch.cos(), -pitch.sin(), yaw.cos() * pitch.cos());
+            let from = (eye.0 + dir.0 * 0.5, eye.1 - 0.1, eye.2 + dir.2 * 0.5);
+            if let Some(id) = self.shoot("minecraft:arrow", from, (dir.0 * 3.15, dir.1 * 3.15, dir.2 * 3.15), 9.0, 0.05, 0.0, None, "une flèche") {
+                if let Some(s) = self.shots.get_mut(&id) {
+                    s.archer = Some(*addr);
+                }
+            }
+        }
+        self.send_near(eye, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound("crossbow.shoot", eye, "", false, -1));
+        if survival {
+            // (le tir multiple use trois fois plus)
+            for _ in 0..spread.len() {
+                self.wear_held(addr, crate::item::Usage::Mine);
+            }
+        }
+        self.send_inventory(addr);
+        self.show_held(addr);
+    }
+
+    /// Bouton relâché, trident en main, après une demi-seconde au moins : il part là où le
+    /// joueur regarde (8 de dégâts, comme dans le jeu). Avec « impulsion », c'est le joueur
+    /// qui est propulsé, s'il est dans l'eau ou sous la pluie.
+    fn throw_trident(&mut self, addr: &SocketAddr) -> bool {
+        let tick = self.tick;
+        let Some(c) = self.clients.get_mut(addr) else { return false };
+        let Some(since) = c.drawing.take() else { return false };
+        if c.dead.is_some() || c.mode.is_spectator() || tick.saturating_sub(since) < 10 {
+            return true;
+        }
+        let (eye, yaw, pitch, survival, held, player) = (c.pos, c.yaw.to_radians(), c.pitch.to_radians(), c.mode.takes_damage(), c.inv.held(), c.id);
+        let dir = (-yaw.sin() * pitch.cos(), -pitch.sin(), yaw.cos() * pitch.cos());
+        use crate::item::enchant::{RIPTIDE, UNBREAKING};
+        let riptide = held.ench.level(RIPTIDE);
+        if riptide > 0 {
+            let feet = (eye.0.floor() as i32, (eye.1 - EYE).floor() as i32, eye.2.floor() as i32);
+            let wet = (crate::world::World::in_bounds(feet.1) && self.is_water(self.world.get(feet.0, feet.1, feet.2))) || self.rained_on((feet.0, eye.1.floor() as i32, feet.2));
+            if wet {
+                // (vitesse du jeu : 1,5 bloc par tick au niveau I, 0,75 de plus par niveau)
+                let speed = 0.75 * (1.0 + riptide as f32);
+                if !self.refused_extras.contains(&bedrock::ID_SET_ACTOR_MOTION) {
+                    self.send(addr, bedrock::ID_SET_ACTOR_MOTION, &bedrock::set_actor_motion(player, (dir.0 * speed, dir.1 * speed, dir.2 * speed)));
+                }
+                self.send_near(eye, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound("item.trident.riptide_1", eye, "", false, -1));
+                if let Some(c) = self.clients.get_mut(addr) {
+                    c.fall_peak = None;
+                }
+                if survival {
+                    self.wear_held(addr, crate::item::Usage::Mine);
+                    self.send_inventory(addr);
+                }
+            }
+            return true;
+        }
+        let from = (eye.0 + dir.0 * 0.5, eye.1 - 0.1, eye.2 + dir.2 * 0.5);
+        let Some(id) = self.shoot("minecraft:thrown_trident", from, (dir.0 * 2.5, dir.1 * 2.5, dir.2 * 2.5), 8.0, 0.1, 0.0, None, "un trident") else { return true };
+        // L'objet part avec le trident (un point d'usure, sauf chance de la solidité) ; en
+        // créatif il reste en main et rien ne sera à ramasser
+        let mut thrown = held;
+        thrown.count = 1;
+        let spared = self.mob_rng.below(1 + held.ench.level(UNBREAKING) as u32) != 0;
+        if !spared {
+            thrown.damage = thrown.damage.saturating_add(1);
+        }
+        if let Some(s) = self.shots.get_mut(&id) {
+            s.archer = Some(*addr);
+            s.trident = survival.then_some(thrown);
+        }
+        self.send_near(eye, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound("item.trident.throw", eye, "", false, -1));
+        if survival {
+            if let Some(c) = self.clients.get_mut(addr) {
+                c.inv.consume_held();
+                c.inv_touched = true;
+            }
+            self.send_inventory(addr);
+            self.show_held(addr);
+        }
+        true
+    }
+
+    /// Un trident lancé a touché quelque chose : il attend là d'être ramassé, ou revient à
+    /// son lanceur s'il est enchanté de loyauté. En plein orage, la canalisation fait tomber
+    /// la foudre sur la créature touchée.
+    fn trident_lands(&mut self, at: (f32, f32, f32), stack: Option<inventory::ItemStack>, archer: Option<SocketAddr>, hit_living: bool) {
+        use crate::item::enchant::{CHANNELING, LOYALTY};
+        let sound = if hit_living { "item.trident.hit" } else { "item.trident.hit_ground" };
+        self.send_near(at, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound(sound, at, "", false, -1));
+        let Some(stack) = stack else { return };
+        let cell = (at.0.floor() as i32, at.1.floor() as i32, at.2.floor() as i32);
+        if hit_living && stack.ench.level(CHANNELING) > 0 && self.weather.sky == weather::Sky::Thunder && self.under_sky(cell) {
+            self.strike(cell);
+        }
+        let home = archer.and_then(|a| self.clients.get(&a)).filter(|c| c.joined && c.dead.is_none()).map(|c| c.pos);
+        match home {
+            Some(pos) if stack.ench.level(LOYALTY) > 0 => {
+                self.send_near(pos, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound("item.trident.return", pos, "", false, -1));
+                self.drop_stack((pos.0, pos.1 - 0.5, pos.2), (0.0, 0.0, 0.0), stack, 0);
+            }
+            _ => {
+                self.drop_stack((at.0, at.1 + 0.2, at.2), (0.0, 0.1, 0.0), stack, 10);
+            }
+        }
     }
 
     /// Clic avec une potion jetable en main : elle part là où le joueur regarde. Vrai si
@@ -279,7 +494,12 @@ impl Server {
             s.age += 1;
             let (from, vel, owner, archer, age) = (s.pos, s.vel, s.owner, s.archer, s.age);
             if age > SHOT_LIFE || !self.world.is_ready((from.0.floor() as i32) >> 4, (from.2.floor() as i32) >> 4) {
+                // (un trident qui se perd revient à son lanceur plutôt que de disparaître)
+                let lost = self.shots.get(&id).and_then(|s| s.trident.map(|t| (t, s.archer)));
                 self.end_shot(id);
+                if let Some((stack, Some(pos))) = lost.map(|(t, a)| (t, a.and_then(|a| self.clients.get(&a)).map(|c| c.pos))) {
+                    self.drop_stack((pos.0, pos.1 - 0.5, pos.2), (0.0, 0.0, 0.0), stack, 0);
+                }
                 continue;
             }
             // Par petits pas, pour ne pas traverser un mur ou une créature d'un bond
@@ -303,7 +523,12 @@ impl Server {
             s.vel = (s.vel.0 * 0.99, s.vel.1 * 0.99 - s.gravity, s.vel.2 * 0.99);
             let (yaw, pitch) = heading(s.vel);
             let packet = bedrock::move_actor_absolute(id, pos, pitch, yaw, yaw, false);
+            let motion = s.kind.contains("thrown_trident").then(|| bedrock::set_actor_motion(id, s.vel));
             self.send_near(pos, bedrock::ID_MOVE_ACTOR_ABSOLUTE, &packet);
+            // (le trident : sa vitesse avec sa position, le jeu ne le déplace pas sur la position seule)
+            if let Some(motion) = motion.filter(|_| !self.refused_extras.contains(&bedrock::ID_SET_ACTOR_MOTION)) {
+                self.send_near(pos, bedrock::ID_SET_ACTOR_MOTION, &motion);
+            }
         }
     }
 
@@ -341,7 +566,16 @@ impl Server {
     /// Le projectile a touché : dégâts, explosion, puis il disparaît.
     fn shot_lands(&mut self, id: i64, at: (f32, f32, f32), target: Touched) {
         let Some(s) = self.shots.get(&id) else { return };
-        let (kind, damage, power, owner, cause, vel, archer, potion) = (s.kind.clone(), s.damage, s.power, s.owner, s.cause, s.vel, s.archer, s.potion);
+        let (kind, damage, power, owner, cause, vel, archer, potion, flame, punch, trident) = (s.kind.clone(), s.damage, s.power, s.owner, s.cause, s.vel, s.archer, s.potion, s.flame, s.punch, s.trident);
+        // Empalement : 2,5 de plus par niveau contre ce qui est dans l'eau ou sous la pluie
+        let damage = match (&trident, &target) {
+            (Some(t), Touched::Player(_) | Touched::Mob(_)) if t.ench.level(crate::item::enchant::IMPALING) > 0 => {
+                let cell = (at.0.floor() as i32, at.1.floor() as i32, at.2.floor() as i32);
+                let wet = (crate::world::World::in_bounds(cell.1) && self.is_water(self.world.get(cell.0, cell.1, cell.2))) || self.rained_on(cell);
+                damage + if wet { 2.5 * t.ench.level(crate::item::enchant::IMPALING) as f32 } else { 0.0 }
+            }
+            _ => damage,
+        };
         if self.plugins.listens("ProjectileHitEvent") {
             let mut fields = vec![
                 ("projectile", Json::Str(kind.clone())),
@@ -362,6 +596,8 @@ impl Server {
             }
         }
         self.end_shot(id);
+        // (un projectile qui retombe fait du bruit : les wardens l'entendent, et en veulent au tireur)
+        self.vibrations.push((at, archer.map(mobs::Prey::Player), 10));
         if let Some((variant, share)) = potion {
             let direct = match target {
                 Touched::Player(a) => Some(a),
@@ -373,6 +609,9 @@ impl Server {
             self.explode(at, power, owner, cause);
             return;
         }
+        if kind.contains("thrown_trident") {
+            self.trident_lands(at, trident, archer, !matches!(target, Touched::Block));
+        }
         // (le bruit de la flèche qui se plante : pour les flèches seulement)
         if kind.contains("arrow") {
             self.send_near(at, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound("bow.hit", at, "", false, -1));
@@ -382,21 +621,24 @@ impl Server {
                 let pid = self.clients.get(&a).map(|c| c.id).unwrap_or(-1);
                 // (tirée par un joueur : c'est lui que nomme le message de mort)
                 let by = archer.and_then(|s| self.clients.get(&s)).and_then(|c| c.name.clone());
+                self.hurt_by = 1;
                 self.hurt(&a, damage, by.map(Cause::Player).unwrap_or(Cause::Mob(cause)));
-                // La petite boule de feu du blaze enflamme sa cible cinq secondes
-                if kind.contains("small_fireball") {
+                self.hurt_by = 0;
+                // La petite boule de feu du blaze enflamme sa cible cinq secondes, la flèche enflammée aussi
+                if kind.contains("small_fireball") || flame {
                     self.ignite(&a, 100);
                 }
                 // La flèche pousse un peu dans son sens
                 let flat = (vel.0 * vel.0 + vel.2 * vel.2).sqrt().max(0.01);
                 if !self.refused_extras.contains(&bedrock::ID_SET_ACTOR_MOTION) {
-                    self.send(&a, bedrock::ID_SET_ACTOR_MOTION, &bedrock::set_actor_motion(pid, (vel.0 / flat * 0.3, 0.3, vel.2 / flat * 0.3)));
+                    self.send(&a, bedrock::ID_SET_ACTOR_MOTION, &bedrock::set_actor_motion(pid, (vel.0 / flat * (0.3 + punch), 0.3, vel.2 / flat * (0.3 + punch))));
                 }
             }
             Touched::Mob(m) if damage > 0.0 => {
                 let from = (at.0 - vel.0, at.1, at.2 - vel.2);
                 self.hit_mob(m, from, damage, archer.map(Attacker::Player).unwrap_or(Attacker::Mob(owner.unwrap_or(m))));
-                if kind.contains("small_fireball") {
+                self.boost_knock(m, punch);
+                if kind.contains("small_fireball") || flame {
                     self.set_mob_fire(m, self.tick + 100);
                 }
             }
@@ -485,7 +727,7 @@ impl Server {
                                     if indestructible(name) {
                                         return (3_600_000.0, false);
                                     }
-                                    let solid = !(name.contains("water") || name.contains("lava") || keeps_things(name) || d.hardness(state).map(|h| h < 0.0).unwrap_or(true));
+                                    let solid = !(name.contains("water") || name.contains("lava") || d.hardness(state).map(|h| h < 0.0).unwrap_or(true));
                                     (d.block_props(name).map(|p| p.blast_resistance).unwrap_or(6.0), solid)
                                 });
                                 force -= (resistance + 0.3) * 0.3;
@@ -517,6 +759,22 @@ impl Server {
                     self.prime_tnt(p, fuse);
                     continue;
                 }
+                // Coffre, four, lit… : ce qu'il contenait tombe, l'autre moitié part avec lui
+                if keeps_things(d.block_name(state).unwrap_or("")) {
+                    self.unpair_chest(p);
+                    if let Some(tile) = self.world.tiles.remove(p) {
+                        for (n, (_, item)) in tile.inventory().map(|inv| inv.contents()).unwrap_or_default().into_iter().enumerate() {
+                            let vel = self.scatter(n as u64, 0.2);
+                            self.drop_stack((p.0 as f32 + 0.5, p.1 as f32 + 0.3, p.2 as f32 + 0.5), vel, crate::inventory::ItemStack { net_id: 0, ..item }, 10);
+                        }
+                    }
+                    self.bed_colors.remove(&p);
+                    if let Some(other) = self.bed_other_half(state, p) {
+                        self.world.tiles.remove(other);
+                        self.bed_colors.remove(&other);
+                        self.change_block(other, air);
+                    }
+                }
                 self.change_block(p, air);
             }
             for (item, (mut count, p)) in loot {
@@ -538,7 +796,9 @@ impl Server {
             if damage <= 0.0 {
                 continue;
             }
+            self.hurt_by = 2;
             self.hurt(&addr, damage, Cause::Mob(cause));
+            self.hurt_by = 0;
             if !self.refused_extras.contains(&bedrock::ID_SET_ACTOR_MOTION) && self.clients.get(&addr).map(|c| c.mode.takes_damage()).unwrap_or(false) {
                 let push = (1.0 - dist / reach).max(0.0);
                 let d = dist.max(0.1);

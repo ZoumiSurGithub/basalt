@@ -37,6 +37,12 @@ pub struct PlayerWindows {
     pub trade_mob: Option<i64>,
     /// Le bloc ouvert est un four (ingrédient, combustible, résultat)
     pub block_is_furnace: bool,
+    /// Inventaire créé par un plugin, ouvert à la place de celui d'un bloc
+    pub menu: Option<String>,
+    /// Les faux coffres montrés au joueur pour afficher cet inventaire
+    pub menu_blocks: Vec<(i32, i32, i32)>,
+    /// Inventaire de plugin à ouvrir, et le tick où l'ouvrir
+    pub menu_due: Option<(String, u64)>,
     next_net_id: i32,
 }
 
@@ -65,6 +71,9 @@ impl PlayerWindows {
             block_mob_carpet: false,
             trade_mob: None,
             block_is_furnace: false,
+            menu: None,
+            menu_blocks: Vec::new(),
+            menu_due: None,
             next_net_id: 1,
         }
     }
@@ -85,7 +94,7 @@ impl PlayerWindows {
             Target::Offhand => Some(&self.offhand),
             Target::Created => Some(&self.created),
             Target::Craft => Some(&self.craft),
-            Target::Block if self.block_pos.is_some() || self.block_mob.is_some() => Some(&self.block),
+            Target::Block if self.block_pos.is_some() || self.block_mob.is_some() || self.menu.is_some() => Some(&self.block),
             Target::Block => None,
         }
     }
@@ -99,7 +108,7 @@ impl PlayerWindows {
             Target::Offhand => Some(&mut self.offhand),
             Target::Created => Some(&mut self.created),
             Target::Craft => Some(&mut self.craft),
-            Target::Block if self.block_pos.is_some() || self.block_mob.is_some() => Some(&mut self.block),
+            Target::Block if self.block_pos.is_some() || self.block_mob.is_some() || self.menu.is_some() => Some(&mut self.block),
             Target::Block => None,
         }
     }
@@ -144,6 +153,18 @@ impl PlayerWindows {
     /// Remet un objet sauvegardé à sa place dans le sac (ou ailleurs dans le sac si la place est prise).
     pub fn restore(&mut self, slot: usize, id: i16, count: u8) {
         self.restore_kind(slot, ItemStack::new(id, count, 0));
+    }
+
+    /// Remplace l'objet tenu en main (la case choisie de la barre) ; quantité 0 : main vide.
+    pub fn set_held(&mut self, id: i16, count: u8) {
+        let slot = (self.selected as usize).min(8);
+        let stack = if count == 0 || id == 0 {
+            ItemStack::EMPTY
+        } else {
+            let net_id = self.fresh_net_id();
+            ItemStack { count: count.min(MAX_STACK), net_id, ..ItemStack::new(id, 0, 0) }
+        };
+        self.main.set_item(slot, stack);
     }
 
     /// Idem avec la variante et l'usure de l'objet.

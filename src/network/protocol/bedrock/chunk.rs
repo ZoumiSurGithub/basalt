@@ -57,10 +57,15 @@ pub fn chunk_variant_name(variant: u8) -> &'static str {
 
 /// LevelChunk des versions d'avant 1.26.60, avec le nombre de sous-chunks du contenu.
 pub fn level_chunk_counted(x: i32, z: i32, count: u32, payload: &[u8], f: crate::versions::Features) -> Vec<u8> {
+    level_chunk_in(0, x, z, count, payload, f)
+}
+
+/// Le même paquet, pour un chunk d'une autre dimension (1 le Nether, 2 l'End).
+pub fn level_chunk_in(dimension: i32, x: i32, z: i32, count: u32, payload: &[u8], f: crate::versions::Features) -> Vec<u8> {
     let mut w = W::default();
     w.vari32(x);
     w.vari32(z);
-    w.vari32(0); // dimension
+    w.vari32(dimension); // dimension
     w.varu32(count); // nombre de sous-chunks
     // Même en-tête que celui accepté par le jeu 1.26.65 (voir `level_chunk_probe`) : la
     // liste du cache est toujours écrite, même vide. Sans elle, le jeu 1.26.40 lisait la

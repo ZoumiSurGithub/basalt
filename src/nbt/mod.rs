@@ -78,6 +78,8 @@ struct Reader<'a> {
     pos: usize,
     /// Garde-fou contre les fichiers malformés : nombre total d'éléments lus
     budget: usize,
+    /// Petit-boutiste (fichiers du jeu Bedrock) au lieu de gros-boutiste
+    le: bool,
 }
 
 impl<'a> Reader<'a> {
@@ -92,17 +94,17 @@ impl<'a> Reader<'a> {
     }
     fn i16(&mut self) -> Option<i16> {
         let b = self.take(2)?;
-        Some(i16::from_be_bytes([b[0], b[1]]))
+        Some(if self.le { i16::from_le_bytes([b[0], b[1]]) } else { i16::from_be_bytes([b[0], b[1]]) })
     }
     fn i32(&mut self) -> Option<i32> {
         let b = self.take(4)?;
-        Some(i32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+        Some(if self.le { i32::from_le_bytes([b[0], b[1], b[2], b[3]]) } else { i32::from_be_bytes([b[0], b[1], b[2], b[3]]) })
     }
     fn i64(&mut self) -> Option<i64> {
         let b = self.take(8)?;
         let mut a = [0u8; 8];
         a.copy_from_slice(b);
-        Some(i64::from_be_bytes(a))
+        Some(if self.le { i64::from_le_bytes(a) } else { i64::from_be_bytes(a) })
     }
     /// Texte précédé de sa longueur sur 2 octets.
     fn string(&mut self) -> Option<String> {
@@ -179,7 +181,7 @@ impl<'a> Reader<'a> {
 
 /// Lit un document NBT grand-boutiste (racine nommée).
 pub fn read_be(data: &[u8]) -> Option<Tag> {
-    let mut r = Reader { d: data, pos: 0, budget: 4_000_000 };
+    let mut r = Reader { d: data, pos: 0, budget: 4_000_000, le: false };
     let id = r.u8()?;
     r.string()?;
     r.value(id, 0)
@@ -337,6 +339,75 @@ fn write_be_value(out: &mut Vec<u8>, tag: &Tag) {
             }
         }
     }
+}
+
+fn write_le_name(out: &mut Vec<u8>, name: &str) {
+    let bytes = &name.as_bytes()[..name.len().min(u16::MAX as usize)];
+    out.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+    out.extend_from_slice(bytes);
+}
+
+/// Valeur d'un tag dans un fichier petit-boutiste.
+fn write_le_value(out: &mut Vec<u8>, tag: &Tag) {
+    match tag {
+        Tag::Byte(v) => out.push(*v as u8),
+        Tag::Short(v) => out.extend_from_slice(&v.to_le_bytes()),
+        Tag::Int(v) => out.extend_from_slice(&v.to_le_bytes()),
+        Tag::Long(v) => out.extend_from_slice(&v.to_le_bytes()),
+        Tag::Float(v) => out.extend_from_slice(&v.to_le_bytes()),
+        Tag::Double(v) => out.extend_from_slice(&v.to_le_bytes()),
+        Tag::ByteArray(v) => {
+            out.extend_from_slice(&(v.len() as i32).to_le_bytes());
+            out.extend_from_slice(v);
+        }
+        Tag::Str(s) => write_le_name(out, s),
+        Tag::List(elem, items) => {
+            out.push(if items.is_empty() { *elem } else { items[0].id() });
+            out.extend_from_slice(&(items.len() as i32).to_le_bytes());
+            for item in items {
+                write_le_value(out, item);
+            }
+        }
+        Tag::Compound(entries) => {
+            for (key, value) in entries {
+                out.push(value.id());
+                write_le_name(out, key);
+                write_le_value(out, value);
+            }
+            out.push(0);
+        }
+        Tag::IntArray(v) => {
+            out.extend_from_slice(&(v.len() as i32).to_le_bytes());
+            for x in v {
+                out.extend_from_slice(&x.to_le_bytes());
+            }
+        }
+        Tag::LongArray(v) => {
+            out.extend_from_slice(&(v.len() as i32).to_le_bytes());
+            for x in v {
+                out.extend_from_slice(&x.to_le_bytes());
+            }
+        }
+    }
+}
+
+/// Écrit un document NBT petit-boutiste (le format des mondes Bedrock), racine sans nom.
+pub fn write_le(tag: &Tag) -> Vec<u8> {
+    let mut out = vec![tag.id()];
+    write_le_name(&mut out, "");
+    write_le_value(&mut out, tag);
+    out
+}
+
+/// Lit un document NBT petit-boutiste à partir de `pos`, qui avance jusqu'à sa fin (les
+/// mondes Bedrock en rangent plusieurs à la suite).
+pub fn read_le(data: &[u8], pos: &mut usize) -> Option<Tag> {
+    let mut r = Reader { d: data, pos: *pos, budget: 4_000_000, le: true };
+    let id = r.u8()?;
+    r.string()?;
+    let tag = r.value(id, 0)?;
+    *pos = r.pos;
+    Some(tag)
 }
 
 /// Écrit un document NBT au format des fichiers (grand-boutiste, racine sans nom).

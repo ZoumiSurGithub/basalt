@@ -158,19 +158,43 @@ pub enum ItemGesture {
 /// relâché), nombre d'actions (0), puis pour un objet utilisé le geste (1 : dans le vide).
 pub fn read_item_gesture(body: &[u8]) -> Option<ItemGesture> {
     let mut pos = 0;
-    if read_vari32(body, &mut pos)? != 0 || *body.get(pos)? != 0 {
-        return None;
+    read_vari32(body, &mut pos)?;
+    // Cases que le jeu a déjà changées de son côté (une armure enfilée d'un clic droit dans
+    // le vide en annonce une : celle de l'armure) : sautées
+    match *body.get(pos)? {
+        0 => pos += 1,
+        1 => {
+            pos += 1;
+            let n = read_varu32(body, &mut pos)? as usize;
+            if n > 64 {
+                return None;
+            }
+            for _ in 0..n {
+                pos += 1; // conteneur
+                let m = read_varu32(body, &mut pos)? as usize;
+                pos = pos.checked_add(m)?;
+            }
+        }
+        _ => return None,
     }
-    pos += 1;
     let kind = read_varu32(body, &mut pos)?;
-    if read_varu32(body, &mut pos)? != 0 {
+    let actions = read_varu32(body, &mut pos)? as usize;
+    if actions == 0 {
+        return match kind {
+            2 => (read_vari32(body, &mut pos)? == 1).then_some(ItemGesture::ClickAir),
+            4 => Some(ItemGesture::Release),
+            _ => None,
+        };
+    }
+    // Le geste arrive avec les objets qu'il déplace (la pièce d'armure qui quitte la main),
+    // dont la disposition exacte n'est pas connue. Le geste lui-même se reconnaît : clic dans
+    // le vide (1), origine, aucun bloc visé (0, 0, 0, face 255), puis la case tenue.
+    if kind != 2 || actions > 16 {
         return None;
     }
-    match kind {
-        2 => (read_vari32(body, &mut pos)? == 1).then_some(ItemGesture::ClickAir),
-        4 => Some(ItemGesture::Release),
-        _ => None,
-    }
+    let rest = body.get(pos..)?;
+    let found = rest.windows(8).any(|w| w[0] == 2 && w[1] <= 2 && w[2..5] == [0, 0, 0] && w[5] == 0xff && w[6] <= 16 && w[6] % 2 == 0 && w[7] == 0);
+    found.then_some(ItemGesture::ClickAir)
 }
 
 /// Vrai si PlayerAuthInput annonce une interaction (sert au diagnostic).
@@ -189,6 +213,21 @@ mod chat_tests {
 
     fn hex(text: &str) -> Vec<u8> {
         (0..text.len() / 2).map(|i| u8::from_str_radix(&text[2 * i..2 * i + 2], 16).unwrap()).collect()
+    }
+
+    /// Clic droit dans le vide avec une pièce d'armure en main, relevé dans le journal d'un
+    /// vrai jeu 1.26.65 : le paquet annonce la case d'armure changée et l'objet qui quitte la
+    /// main. C'est bien un clic dans le vide (il n'était pas reconnu : l'armure restait en main
+    /// pour le serveur).
+    #[test]
+    fn a_click_in_the_air_with_armour_in_hand_is_a_click_in_the_air() {
+        let boots = hex("af31010106010102010001000006720201000000001cffff010a000003060044616d6167650000000000000000000000000000000000000000000200000000ff0c00720201000000001cffff010a000003060044616d616765000000000000000000000000001447e9c5723d8142f22a77c3000000000000000000000000000000");
+        assert_eq!(read_item_gesture(&boots), Some(ItemGesture::ClickAir));
+        let enchanted = hex("b7310101060103020100010000057402010000000038ffff010a000003060044616d6167650e000000090400656e63680a01000000020200696419000203006c766c02000000000000000000000000000000000000000200000000ff0a007402010000000038ffff010a000003060044616d6167650e000000090400656e63680a01000000020200696419000203006c766c0200000000000000000000003ef2e8c5723d814257057ac3000000000000000000000000000000");
+        assert_eq!(read_item_gesture(&enchanted), Some(ItemGesture::ClickAir));
+        // Un clic ordinaire dans le vide et un clic sur un bloc restent ce qu'ils étaient
+        assert_eq!(read_item_gesture(&hex("0000020002")), Some(ItemGesture::ClickAir));
+        assert_eq!(read_item_gesture(&hex("000002000001bb747cf503010a00")), None);
     }
 
     /// Paquets relevés dans le journal d'un vrai jeu 1.26.65 (sans la position du joueur).

@@ -22,6 +22,27 @@ pub const RESPAWN_SEARCHING: u8 = 0;
 pub const RESPAWN_READY: u8 = 1;
 pub const RESPAWN_CLIENT_READY: u8 = 2;
 
+/// Action « changement de dimension terminé » de PlayerAction. Depuis la 1.19.50, c'est le
+/// serveur qui l'envoie au jeu (le jeu la renvoie ensuite) : sans elle, le joueur reste figé
+/// après ChangeDimension. Valeur et usage d'après les serveurs existants (Dragonfly), pas
+/// relevés auprès du serveur officiel.
+pub const ACTION_DIMENSION_CHANGE_DONE: i32 = 14;
+
+/// PlayerAction envoyé par le serveur : identifiant du joueur, action, deux positions de bloc
+/// et une face, ici toutes nulles.
+pub fn player_action(runtime_id: u64, action: i32) -> Vec<u8> {
+    let mut w = W::default();
+    w.varu64(runtime_id);
+    w.vari32(action);
+    for _ in 0..2 {
+        w.vari32(0);
+        w.varu32(0);
+        w.vari32(0);
+    }
+    w.vari32(0);
+    w.0
+}
+
 /// Action « réapparaître » de PlayerAction.
 pub const ACTION_RESPAWN: i32 = 7;
 /// Le joueur quitte son lit (bouton « Quitter le lit »)

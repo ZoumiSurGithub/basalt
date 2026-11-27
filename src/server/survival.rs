@@ -117,9 +117,10 @@ impl Server {
             }
             let Some(d) = c.data.as_mut() else { continue };
             let mut dirty = false;
-            if spared.contains(addr) {
+            if spared.contains(addr) || !self.cfg.vanilla.hunger {
                 c.exhaustion = 0.0;
             }
+            let regenerates = self.cfg.vanilla.natural_regeneration;
             while c.exhaustion >= EXHAUSTION_STEP {
                 c.exhaustion -= EXHAUSTION_STEP;
                 if c.saturation > 0.0 {
@@ -131,7 +132,9 @@ impl Server {
             }
             let hurt = d.health < d.max_health;
             c.food_timer += 1;
-            if hurt && d.food >= 20.0 && c.saturation > 0.0 {
+            if !regenerates && d.food > 0.0 {
+                c.food_timer = 0;
+            } else if hurt && d.food >= 20.0 && c.saturation > 0.0 {
                 // Ventre plein et rassasié : la satiété se change en vie toutes les
                 // demi-secondes (6 points de satiété pour un demi-cœur, pas davantage que
                 // ce qu'il en reste : la barre de faim, elle, n'est pas entamée)
@@ -233,6 +236,8 @@ impl Server {
 
     /// Le repas en cours est mené à son terme : l'aliment est mangé.
     fn finish_meal(&mut self, addr: &SocketAddr) {
+        // (manger s'entend : les wardens l'entendent)
+        self.vibrate(addr, 35);
         if let Some(c) = self.clients.get_mut(addr) {
             c.eating = None;
         }
@@ -382,7 +387,7 @@ impl Server {
     /// Lâche une orbe d'expérience à cet endroit : le joueur qui s'en approche l'attire et
     /// la ramasse.
     pub(super) fn drop_xp(&mut self, at: (f32, f32, f32), value: i32) {
-        if value <= 0 {
+        if value <= 0 || !self.cfg.vanilla.experience {
             return;
         }
         if self.orbs.len() >= MAX_ORBS {
@@ -403,6 +408,22 @@ impl Server {
             self.send(a, bedrock::ID_ADD_ACTOR, &packet);
         }
         self.orbs.insert(id, Orb { pos: at, value, born: self.tick, seen });
+    }
+
+    /// Raccommodage : l'expérience ramassée répare d'abord un objet usé qui porte cet
+    /// enchantement (en main, en seconde main ou sur soi), deux points d'usure par point
+    /// d'expérience. Rend l'expérience qui reste.
+    fn mend(&mut self, addr: &SocketAddr, value: i32) -> i32 {
+        let Some(c) = self.clients.get_mut(addr).filter(|c| c.joined && c.mode.takes_damage()) else { return value };
+        let held = (c.inv.selected as usize).min(8);
+        let worn = |s: &&mut inventory::ItemStack| !s.is_empty() && s.damage > 0 && s.ench.level(crate::item::enchant::MENDING) > 0;
+        let (main, armor, offhand) = (&mut c.inv.main.slots, &mut c.inv.armor.slots, &mut c.inv.offhand.slots);
+        let Some(stack) = main.iter_mut().skip(held).take(1).chain(armor.iter_mut()).chain(offhand.iter_mut()).find(worn) else { return value };
+        let repaired = (stack.damage as i32).min(value * 2);
+        stack.damage -= repaired as u16;
+        c.inv_touched = true;
+        self.send_inventory(addr);
+        value - (repaired + 1) / 2
     }
 
     /// Retire une orbe du monde et de l'écran de ceux qui la voyaient.
@@ -461,6 +482,7 @@ impl Server {
         }
         for (id, who, value) in taken {
             self.remove_orb(id);
+            let value = self.mend(&who, value);
             self.give_xp(&who, value);
         }
     }
@@ -594,6 +616,15 @@ impl Server {
                 let held = c.inv.main.slots[slot];
                 let Some(def) = d.item_by_id(held.id).filter(|_| held.count == 1) else { return false };
                 let name = def.name.trim_start_matches("minecraft:");
+                // (le jeu répète le clic, et peut avoir envoyé sa propre demande pour ce geste :
+                // une pièce qui vient de changer n'est pas échangée une seconde fois)
+                let wearable = name.ends_with("_helmet") || name.ends_with("_chestplate") || name == "elytra" || name.ends_with("_leggings") || name.ends_with("_boots");
+                // (…mais seulement si cette demande a vraiment changé l'armure : refusée, elle
+                // laissait la pièce en main, visible sur le joueur sans le protéger)
+                let asked = self.tick.saturating_sub(c.armor_asked_at) < 6 && [0, 1, 2, 3].map(|i| c.inv.armor.slots[i].id) != c.armor_before;
+                if wearable && (self.tick.saturating_sub(c.armor_at) < 6 || asked) {
+                    return true;
+                }
                 let piece = if name.ends_with("_helmet") {
                     0
                 } else if name.ends_with("_chestplate") || name == "elytra" {
@@ -609,17 +640,25 @@ impl Server {
                 c.inv.armor.slots[piece] = held;
                 c.inv.main.slots[slot] = worn;
                 c.inv_touched = true;
+                c.armor_at = self.tick;
                 c.pos
             }
             _ => return false,
         };
+        if self.cfg.debug {
+            info!("armure enfilée d'un clic droit (échange fait par le serveur)");
+        }
         self.send_inventory_with(addr, true);
         self.show_held(addr);
-        self.send_near(at, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound("armor.equip_generic", at, "", false, -1));
+        // (le bruit de la pièce enfilée part avec l'annonce de l'armure, voir `show_armor`)
+        let _ = at;
         true
     }
 
     pub(super) fn wear_held(&mut self, addr: &SocketAddr, usage: crate::item::Usage) {
+        if !self.cfg.vanilla.durability {
+            return;
+        }
         let Some(d) = self.data.clone() else { return };
         let broke = match self.clients.get_mut(addr) {
             Some(c) if c.joined && c.mode.takes_damage() => {
@@ -656,14 +695,18 @@ impl Server {
 
     /// Clic sur un lit : le point de réapparition est fixé ; la nuit, le joueur se couche.
     pub(super) fn use_bed(&mut self, addr: &SocketAddr, pos: (i32, i32, i32)) {
+        if !self.cfg.vanilla.sleeping {
+            return;
+        }
         let tick = self.tick;
         let other = self.bed_other_half(self.world.get(pos.0, pos.1, pos.2), pos);
         let taken = self.clients.iter().any(|(a, c)| a != addr && c.sleeping.is_some() && (c.sleeping == Some(pos) || c.sleeping == other)) || self.mob_sleeps_in(pos) || other.map(|o| self.mob_sleeps_in(o)).unwrap_or(false);
         match self.clients.get_mut(addr) {
             Some(c) if c.joined && c.dead.is_none() && !c.mode.is_spectator() => {
                 if let Some(d) = c.data.as_mut() {
-                    if d.spawn != Some(pos) {
+                    if d.spawn != Some(pos) || d.spawn_world != self.realm {
                         d.spawn = Some(pos);
+                        d.spawn_world = self.realm.clone();
                         self.reply(Some(*addr), "§7Point de réapparition défini");
                     }
                 }
@@ -769,7 +812,10 @@ impl Server {
 
     /// Point de réapparition d'un joueur : son lit s'il est toujours là, sinon celui du monde.
     pub(super) fn respawn_point(&mut self, addr: &SocketAddr) -> (f32, f32, f32) {
-        let bed = self.clients.get(addr).and_then(|c| c.data.as_ref()).and_then(|d| d.spawn);
+        // (un lit ne vaut que dans son monde : mort ailleurs, on revient au point d'apparition
+        // de ce monde-là, et le lit reste valable chez lui)
+        let (realm, main) = (self.realm.clone(), self.main_realm.clone());
+        let bed = self.clients.get(addr).and_then(|c| c.data.as_ref()).filter(|d| if d.spawn_world.is_empty() { realm == main } else { d.spawn_world == realm }).and_then(|d| d.spawn);
         if let Some((x, y, z)) = bed {
             let state = self.world.get(x, y, z);
             if self.data.as_ref().and_then(|d| d.block_name(state)) == Some("minecraft:bed") {

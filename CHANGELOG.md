@@ -1,7 +1,6 @@
 # Journal des versions
 
 Les changements de chaque version de Basalt. La section « Non publié » reçoit au fil de l'eau
-
 ce qui est fait sur la branche `dev` ; `./release.sh <version>` la transforme en version
 datée au moment de publier (voir « Publier une version » dans le README).
 
@@ -9,6 +8,157 @@ Catégories : **Ajouté** (nouveautés), **Modifié** (changements de comporteme
 **Corrigé** (bugs), **Retiré** (fonctions supprimées).
 
 ## [Non publié]
+
+- Connexion : une demande d'entrée arrivant de la même adresse et du même port qu'un joueur déjà en jeu (le système réutilise les ports) ne coupe plus ce joueur ; elle reçoit une autre désignation. À 800 bots, 86 joueurs étaient coupés ainsi (« retry »).
+- Croissance : les ticks aléatoires sautent les chunks pas encore générés au lieu de les produire sur place.
+- Mesures : un chunk produit sur place est compté avec l'étape qui l'a demandé (« Chunk sur place ← … »).
+- Objets au sol : les déplacements des objets sont mis en forme une fois et envoyés à chaque joueur d'après ce qu'il voit, au lieu de chercher les spectateurs de chaque objet parmi tous les joueurs (16 ms par tick à 800 joueurs).
+- Objets au sol : ce qu'est chaque bloc pour un objet est calculé une fois (plus par son nom à chaque pas), et chaque joueur ne regarde que les objets de son voisinage — la physique et l'affichage des objets prenaient 15 à 30 ms par tick à 500 joueurs.
+- Terrain : le cache de chunks grandit avec ce que les joueurs voient (de 8 192 à 65 536 chunks) ; les objets au sol dont le chunk n'est pas en mémoire attendent au lieu de le faire générer sur place. À 500 joueurs dispersés, des chunks étaient régénérés sans cesse (70 ms chacun, jusqu'à 1,5 s).
+- Objets au sol : un objet lâché n'est montré qu'à ceux qui sont près, sans refaire le tour de tous les objets pour chaque joueur — casser un bloc coûtait 15 ms à 500 joueurs, et une mort (inventaire répandu) jusqu'à plus d'une seconde.
+- Blocs : un bloc qui change n'est annoncé qu'aux joueurs qui ont son chunk chargé (comme dans le jeu), plus à tout le serveur ; les messages diffusés sont mis en forme une seule fois pour tous. Casser un bloc coûtait 13 ms à 500 joueurs.
+- Réseau : les paquets d'un joueur sont regroupés en un seul lot par tour de boucle, comme le serveur officiel, au lieu d'un lot par paquet ; le lot est emballé et compressé sur le fil NetherNet du joueur, plus sur celui du jeu. Avec une foule (et Chaos), les fils NetherNet recevaient plus de 100 000 envois par seconde chacun et saturaient vers 250 joueurs : toutes les liaisons tombaient (« liaison perdue ») et plus personne ne pouvait entrer.
+- Journal : bilan de chaque fil NetherNet toutes les 5 s au-delà de 50 sessions (sessions, envois en attente, ordres par seconde, tours saturés).
+- NetherNet : tampons UDP agrandis (16 Mo côté serveur) — Windows n'en garde que quelques dizaines de Ko, et une rafale (explosions, chunks) faisait jeter des datagrammes, dont les vérifications de liaison : des joueurs coupés pour « liaison perdue ».
+- Connexion : un lot de paquets illisible isolé est ignoré au lieu de déconnecter le joueur (déconnexion au-delà de 3 par seconde), et la raison exacte est écrite dans le journal ; un lot peut contenir 1024 paquets (128 avant) ; 30 s pour se connecter au lieu de 10 sur une machine chargée.
+- Feu : les flammes sont traitées par dixièmes, à chaque tick, au lieu de toutes d'un coup tous les dix ticks — une forêt en feu ne fige plus le serveur (jusqu'à 390 ms relevés à 327 joueurs).
+- Bateau : annoncé comme le fait le serveur officiel (relevé par capture) — il se heurte aux blocs, tombe et flotte ; le regard du passager est verrouillé comme en jeu.
+- Aura de feu : une créature tuée d'un seul coup meurt en flammes, sa viande tombe cuite.
+- Terrain : la zone servie est annoncée à chaque tick, sur la position exacte du joueur, avec les chunks qui viennent de partir — comme le serveur officiel (relevé par capture).
+- Monde importé : ses créatures sont reprises à la première ouverture (espèce, position, bébé, apprivoisée, variante, couleur).
+- Noyé : il coule et vit au fond, et remonte à la nage vers le joueur qu'il poursuit.
+- Bateau : posé sur une herbe ou une fleur, il prend sa place au lieu de se poser dessus.
+- Nether et End : deux générations de terrain, `nether` et `end`, pour un monde à part (`/world load <nom> nether|end`, ou `level-type`). Le jeu y affiche la bonne dimension (ciel, brouillard, hauteur), d'après les formats relevés auprès du serveur officiel.
+- Nether : cinq biomes (terres désolées, forêts carmin et biscornue avec leurs grands champignons, vallée des âmes, deltas de basalte), mer de lave, minerais, forteresses de briques ; ghasts, blazes, wither squelettes, squelettes et endermen y apparaissent.
+- End : île centrale, piliers d'obsidienne, fontaine de roche mère, îles lointaines avec leurs plantes de chorus ; des endermen y apparaissent.
+- Portails : un cadre d'obsidienne allumé au briquet devient un portail du Nether (il s'éteint si le cadre est cassé) ; douze yeux de l'Ender ouvrent un portail de l'End. Le serveur ne téléporte pas : il émet `PlayerPortalEvent` pour les plugins (voir MultiWorld, `portails` dans config.lua).
+- Forteresse du Nether complète : salle centrale, quatre ponts bordés de barrières, jardin de verrues du Nether, deux salles au coffre (butin des forteresses), terrasse des blazes, piliers jusqu'à la lave.
+- Monde importé : son Nether et son End deviennent deux mondes à part (`<nom>_nether`, `<nom>_the_end`) à la première ouverture ; la base d'origine n'est pas modifiée.
+- Créatures, objets au sol et bateaux : une copie au format du jeu est tenue dans la base du monde (clés `actorprefix` et `digp`), pour les mondes créés par Basalt. Basalt relit toujours ses propres fichiers.
+- Bestiaire : trente-neuf créatures de plus (renard, ocelot, panda, ours polaire, tortue, grenouille, chameau, renifleur, tatou, arpenteur, golem de neige, chevaux squelette et zombie, lama et marchand ambulants ; chauve-souris, abeille, perroquet, allay ; morue, saumon, poisson tropical, poisson-globe, poulpe, poulpe luisant, dauphin, axolotl, têtard ; piglin, piglin barbare, piglin zombifié, hoglin, zoglin, cube de magma, endermite, ravageur, évocateur, squelette des marais, warden), avec la vie, la taille, la vitesse et le butin du jeu et un comportement générique : elles marchent, volent, nagent sans quitter l'eau, ou attaquent au contact. Piglins, piglins zombifiés, hoglins, cubes de magma et arpenteurs apparaissent au Nether.
+- Bestiaire, comme en vanilla (d'après les fiches Mojang) : nourriture qui attire, reproduction et croissance des petits pour les nouveaux animaux (baies pour le renard, bambou pour le panda, cactus pour le dromadaire, fleurs pour l'abeille, champignon biscornu pour l'arpenteur, champignon carmin pour le hoglin…) ; vitesses de promenade, de fuite et d'attrait du jeu.
+- Neutres : ours polaire, abeille et dauphin ne répondent qu'aux coups ; piglins, piglins zombifiés, hoglins, ours, abeilles et dauphins ameutent leurs semblables. Le piglin laisse en paix qui porte une pièce d'armure en or, et troque un lingot d'or (il l'admire six secondes, puis jette son lot).
+- L'abeille pique (poison) puis meurt ; le renard et l'ocelot chassent les poules et les lapins, la grenouille gobe les petits slimes et cubes de magma ; le cube de magma saute et se divise comme le slime.
+- Poissons, calamars et têtard s'étouffent hors de l'eau et y frétillent ; axolotl et dauphin se dessèchent sur la terre (cinq et deux minutes), le dauphin se noie au bout de quatre minutes sous l'eau. Un seau d'eau attrape un poisson, un axolotl ou un têtard, et le seau vidé le relâche.
+- Montures : dromadaire, chevaux squelette et zombie se sellent et se dirigent d'emblée ; l'arpenteur se selle et se dirige au champignon biscornu sur un bâton, et marche sur la lave. Perroquet apprivoisé aux graines (le cookie l'empoisonne), il suit son maître et s'assoit.
+- Grenouilles : elles pondent des têtards, qui deviennent grenouilles au bout de vingt minutes (froide, tempérée ou chaude selon le biome). Tatou : écailles au fil du temps et à la brosse ; renifleur : il déterre des graines.
+- Apparition : renards (taïgas), ours polaires, tortues (plages), grenouilles (marais), pandas, ocelots et perroquets (jungles), tatous (savanes, badlands) ; dans l'eau, morues, calamars, saumons, poissons tropicaux, poissons-globes et dauphins selon l'océan ; calamars luisants et axolotls dans les grottes ; chauves-souris dans le noir. La nuit, zombies momifiés au désert, vagabonds dans le froid, squelettes des marais et slimes dans les marécages ; endermen et sorcières.
+- Course : relâcher la touche de sprint ne fait plus cesser de courir (la course est suivie à ses débuts et à ses fins, comme la nage).
+- Créatures : renards, loups et autres n'apparaissent plus sur les arbres (feuillage et troncs ne comptent pas comme un sol) ; tortues et grenouilles nagent sous l'eau et marchent au fond au lieu de flotter ; les poulpes et poissons restent sous la surface et tournent peu à peu ; les poissons apparaissent vraiment dans l'eau (la recherche visait surtout la terre, et l'eau profonde passait pour une grotte) ; des abeilles près des fleurs (forêt fleurie, prairie, cerisiers, plaines).
+- /summon propose toutes les créatures dans l'aide à la saisie (warden, piglin, axolotl…) : une liste de choix d'une commande n'est plus coupée à 64 mots (256 maintenant), et un test veille à ce qu'aucune créature n'y manque.
+- Tortues : elles pondent de un à quatre œufs sur le sable voisin, qui se fêlent la nuit puis éclosent en bébés tortues.
+- Évocateur : il garde ses distances et fait jaillir des lignes de crocs (6 points).
+- Warden, comme dans le jeu : invoqué, il sort de terre (7 s) ; il rugit en trouvant sa cible (4,2 s) et ne la lâche plus (64 blocs) ; hors de portée de ses bras, il charge son onde sonique (3 s, tir à 1,7 s : 10 points à travers l'armure et les murs, grand recul, 2 s de recharge) ; obscurité autour de lui toutes les six secondes ; une minute sans cible, il s'enfouit et disparaît. Animations de sortie, rugissement, onde, flair et enfouissement.
+- Warden : il ne tire plus son onde sonique dès qu'on est hors de portée de ses bras, mais quand il ne peut pas atteindre sa cible (pas de chemin, trois secondes sans se rapprocher, ou cible perchée) ; sinon il marche sur elle, en contournant les murs par un chemin à sa taille (trois blocs de haut). Il ne recule plus sous les coups (comme le golem de fer ; le ravageur, le hoglin et le zoglin un peu moins). Il entend aussi les portes, trappes et leviers, les coffres ouverts, les objets jetés, les repas et les chutes ; le bruit met un tick par bloc à lui parvenir, la laine l'arrête, et marcher sur la laine ou un tapis est silencieux. À colère égale, un joueur passe avant une créature. Ses grognements suivent sa colère (calme, agité, furieux).
+- Tailles : le bébé tortue n'a plus une tête énorme (0,16 comme dans le jeu, au lieu de 0,5) ; bébés panda, dromadaire, renifleur, tatou et dauphin à leur taille ; poisson-globe, poisson tropical et wither squelette adultes un peu plus grands, comme dans le jeu.
+- Warden aveugle, comme dans le jeu : il entend les pas (pas ceux de qui avance accroupi), les blocs cassés et posés, les projectiles qui retombent, à 16 blocs, et flaire ce qui vit à 24 blocs ; sa colère monte contre chaque suspect, joueur ou créature (35 par bruit, 100 pour un coup, 1 de moins par seconde) et à 80 il rugit et poursuit le plus haï ; un bruit sans auteur, il va voir. Son cœur bat, de plus en plus vite avec la colère.
+- Les chasseurs à pattes (renard, ocelot, loup) ne s'acharnent plus sur une proie dans l'eau.
+- Golem de neige : il lance des boules de neige aux monstres (le blaze en souffre), laisse une traînée de neige et fond dans les biomes chauds et hors de la surface.
+- Allay : on lui confie un objet, il rapporte à son joueur les objets pareils trouvés au sol (32 blocs) ; main vide, on le reprend.
+- Axolotl : il chasse poissons, calamars et noyés sous l'eau. Poisson-globe : il empoisonne qui le frôle. Hoglin : il fuit le champignon biscornu, les portails et les ancres de réapparition. Warden : aveugle, il ne repère pas qui avance accroupi (sauf tout près).
+- Poulpes : leur corps s'incline dans le sens de leur nage, tentacules derrière.
+- Charge (501 joueurs simulés, Ryzen 9 9900X : 10,5 ticks/s, chaque paquet de mouvement coûtait 170 µs en moyenne et jusqu'à 135 ms) : le contrôle des pieds d'un joueur ne génère plus jamais de chunk sur la boucle du jeu (chunk pas encore là : la chute reste en suspens), et le cache de chunks passe de 2 048 à 8 192 (ils sortaient puis revenaient sans cesse avec des joueurs dispersés). Le rapport /timings détaille le traitement d'un mouvement et compte les chunks produits sur place.
+- Plugins : `joueur:setItemInHand(objet, quantité)` remplace l'objet tenu en main (sans objet : main vide).
+- NetherNet : `nethernet-threads=auto` par défaut (un fil pour 150 places, sans dépasser la moitié des cœurs). Mesuré à 248 joueurs simulés sur un seul fil : boucle du jeu à 20 ticks/s (3,7 ms par tick) mais fil NetherNet saturé (envoi, chiffrement, lecture), d'où le lag.
+- Enregistrement du monde sans à-coups : l'encodage des chunks (des centaines quand on court dans du terrain neuf) et la copie des entités au format du jeu (jusqu'à 1 024 lectures de la base par nouvelle région) se font sur le fil des écritures, et non plus pendant le tick. Ils figeaient le serveur une à plusieurs secondes toutes les minutes (1,2 s mesurée, jusqu'à 7 s), d'où les retours en arrière en courant. Le rapport /timings détaille désormais l'enregistrement.
+- Contrôle des déplacements : la distance permise se recharge à chaque mouvement du jeu (un par tick) et non plus à l'horloge. Après un à-coup du serveur, les mouvements en attente arrivaient d'un bloc et le joueur qui courait simplement était replacé (« rollback »).
+- Warden : l'onde sonique se voit (anneaux « sonic_explosion » de sa poitrine à sa cible) ; il ne fonce plus tout droit dans un arbre : il ne va en ligne droite que si tout son corps passe (0,9 de large, 2,9 de haut), sinon il prend un chemin qui contourne.
+- Course : quand la faim tombe à 6 ou moins, la course s'arrête aussi pour le serveur (elle restait imposée au joueur, qui courait sans plus toucher à la touche).
+- Changement de dimension : le joueur n'est plus figé en arrivant (le serveur envoie « changement de dimension terminé », comme l'attend le jeu depuis la 1.19.50).
+- Changement de dimension : l'écran de chargement du jeu se referme dès que les chunks autour du joueur sont partis.
+- Outil de capture : tout ce qui est reçu en jeu est écrit dans `logs/capture-sequence.txt`.
+
+### Ajouté
+
+- **Mondes enregistrés au format du jeu** : `level.dat`, `levelname.txt` et une base LevelDB
+  dans `db/` (lecteur et écrivain écrits de zéro, vérifiés contre le LevelDB de référence).
+  Les chunks modifiés y sont écrits entiers ; un ancien `level.nbt` est converti puis gardé
+  sous `level.nbt.ancien`.
+- L'heure, la météo (avec sa durée restante) et les règles du monde sont dans `level.dat` ;
+  les coffres, fours, panneaux et lits sont dans la base du monde, au format du jeu (objets
+  avec usure et enchantements). `time.txt`, `weather.txt` et `tiles.nbt` ne servent plus.
+- `/gamerule dodaylightcycle|doweathercycle`, par monde.
+- **Rapport de plantage** : une erreur interne écrit `crashdumps/crash-<date>.txt` (erreur,
+  endroit du code, pile d'appels, version, joueurs, mondes, plugins, dernières lignes du
+  journal). Si elle touche la boucle principale, le serveur enregistre les joueurs et les
+  mondes avant de s'arrêter. `debug-crash` (console) en produit un pour essai.
+- Messages des commandes : une présentation unique (chevron vert : fait, rouge : refusé,
+  jaune : mode d'emploi, gris : information) ; arrivées et départs en `[+]` / `[-]`.
+- **Ouverture des mondes du jeu** : un dossier de monde ou un `.mcworld` déposé dans `worlds/`
+  s'ouvre avec `/world load <nom>` : blocs, contenu des coffres et des fours, panneaux, heure,
+  météo et règles du monde normal (créatures d'origine pas encore reprises).
+- Tous les mondes sont rangés dans `worlds/<nom>/` ; le monde principal est
+  `worlds/<level-name>` (nouveau réglage). Le dossier `world/` y est déplacé au démarrage.
+
+- **Plusieurs mondes ouverts à la fois.** Chaque monde a ses joueurs, ses créatures, ses objets
+  au sol, son heure et sa météo. Commande `/world list|load|unload|tp`, mondes rangés dans
+  `worlds/<nom>/` et rouverts au démarrage ; un joueur revient dans le monde où il s'était
+  arrêté. Pour les plugins : `server.worlds.list/load/unload/isLoaded/default`,
+  `joueur:getWorld()`, `joueur:setWorld(nom)`. Plugin d'exemple `examples/plugins/MultiWorld`
+  (`/mw`, `/monde`). Le tchat traverse les mondes.
+- Plugins : `server.getWorld(nom)` lit et pose des blocs, place créatures et PNJ dans le monde
+  nommé (`world:spawnEntity`, `world:spawnNpc`, `world:getPlayers`, `world:getName`).
+- Terrain `void` (monde vide), avec une plateforme de pierre au point d'apparition.
+- Les commandes du jeu atteignent un joueur d'un autre monde (`/give`, `/kill`, `/gamemode`…) ;
+  `/tp <joueur>` emmène dans son monde. Un lit ne vaut que dans son monde.
+
+- `vanilla.properties` : un fichier à part où chaque mécanique du jeu se coupe d'une ligne (faim, régénération, dégâts de chute, feu, noyade, combat entre joueurs, foudre, pousse des cultures et des arbres, écoulement des liquides, TNT, pêche, bateaux, butin, expérience, usure, échanges, sommeil…). Les réglages de jeu de `server.properties` y figurent aussi. Voir docs/INSTALLER.md.
+- Plugins : `server.on("damage", …)` annule ou modifie un coup, et `server.on("death", …)` remplace ou supprime le message de mort.
+- Villages : les enclos sont peuplés de deux à quatre vaches, moutons, cochons ou chevaux.
+- Sons des blocs qui s'ouvrent : portes, portillons, trappes et boutons, avec la variante de leur matière (bois, fer, cuivre…) ; coffres, coffres de l'Ender, boîtes de Shulker et tonneaux, dont le couvercle s'ouvre et se referme chez tous ceux qui les voient.
+- Coffres doubles : un coffre posé contre un autre de même sorte et de même orientation s'unit à lui (pas en étant accroupi) ; les deux s'ouvrent comme un seul inventaire de 54 cases, et redeviennent simples quand l'un est cassé. Deux coffres voisins arrivés autrement (`/setblock`, anciens mondes) s'unissent à leur première ouverture.
+- Plugins : `server.inventory(titre, taille)` crée un écran de coffre de 27 ou 54 cases, que le plugin remplit (`setItem`), ouvre chez un joueur (`open`) et dont il reçoit les clics (`onClick`) et la fermeture (`onClose`). Verrouillé par défaut, pour faire des menus ; `{ free = true }` en fait un vrai coffre sans bloc. Voir docs/PLUGINS.md.
+- Enchantements, suite. Sur les outils : fortune (les minerais rendent davantage) et toucher de soie (le bloc lui-même : minerais, pierre, herbe, verre, glace, feuilles…). Sur les armes : butin (les créatures lâchent plus), recul, châtiment contre les morts-vivants et fléau des arthropodes ; l'aura de feu enflamme aussi les joueurs. Sur l'arc : flamme et frappe. Sur l'armure : épines, protection contre les projectiles et contre les explosions. Raccommodage : l'expérience ramassée répare l'objet usé tenu en main ou porté. Semelles givrantes : l'eau gèle sous les pas, puis fond.
+- Le gravier donne parfois du silex, et les feuilles cassées à la main une pousse, des bâtons ou une pomme ; la fortune améliore ces chances, ainsi que la récolte des cultures, du melon, de la pierre lumineuse et de la lanterne marine.
+
+- Météo : la pluie et l'orage viennent et repartent d'eux-mêmes (`weather-cycle=false` pour l'empêcher), et se commandent avec `/weather <clear|rain|thunder> [secondes]` ou `/weather query`. La pluie éteint les feux et les joueurs à ciel ouvert, et les morts-vivants n'y brûlent plus au soleil. Pendant l'orage, la foudre tombe près des joueurs : elle blesse, enflamme et allume un feu ; `/summon lightning_bolt` la fait tomber où l'on veut. Dans les biomes enneigés la neige se dépose et l'eau gèle ; ailleurs la pluie arrose la terre labourée et remplit les chaudrons ; il ne pleut pas dans les déserts, les savanes et les badlands. La météo est gardée avec le monde.
+- Arbalète : elle se charge en 1,25 seconde de clic maintenu, reste chargée, puis tire au clic suivant une flèche plus rapide et plus forte que celle de l'arc. Charge rapide et tir multiple agissent.
+- Trident : brandi une demi-seconde puis lancé (8 de dégâts), il se ramasse là où il tombe. Ses enchantements agissent : loyauté (il revient), impulsion (dans l'eau ou sous la pluie, c'est le joueur qui est propulsé), canalisation (la foudre tombe sur la cible en plein orage), empalement (plus de dégâts dans l'eau ou sous la pluie). Un noyé sur seize naît armé d'un trident, le lance, et le lâche parfois en mourant (valeurs des fiches du jeu).
+- Pêche : la canne lance un bouchon qui flotte ; après 5 à 30 secondes ça mord (éclaboussure, le bouchon plonge), et relever la ligne à ce moment rapporte une prise et un peu d'expérience. Poissons, rebuts et trésors suivent les tables de butin du jeu ; l'appât raccourcit l'attente et la chance de la mer favorise les trésors.
+- Bateaux : l'objet se pose sur l'eau ou sur le sol, le bateau flotte, se monte d'un clic droit, se dirige, et se casse à coups de poing en rendant son objet. Deux places : le premier monté rame, le second est passager et prend les rames si le rameur descend. Un bateau vide suit le courant. Les dix bois, radeau de bambou compris. Les bateaux sont enregistrés avec le monde.
+- Poudre d'os : une culture gagne de deux à cinq stades, une pousse a 45 % de chances de devenir un arbre, l'herbe se couvre d'herbes hautes et de fleurs.
+- Les créatures se noient : quinze secondes d'air, puis deux points de vie par seconde. Les morts-vivants respirent sous l'eau ; le zombie resté quinze secondes sous l'eau devient un noyé, le zombie momifié un zombie (valeurs des fiches du jeu).
+
+### Corrigé
+
+- Créatures : leur corps a désormais une largeur dans les collisions (la moitié du corps
+  passait dans le bloc d'à côté) et elles se posent sur le bord d'une marche.
+- Dans l'eau, les animaux flottent le corps immergé et la tête dehors (ils semblaient marcher
+  sur l'eau) ; zombies et squelettes coulent pour de bon et marchent au fond, même en
+  poursuivant un joueur (ils remontaient le long des parois), et finissent par s'y noyer.
+- Une pousse (poudre d'os ou temps) donne le même arbre que la génération du monde : chêne
+  et grand chêne, bouleau, sapin, acacia, cerisier, arbre de la jungle ; quatre pousses en
+  carré donnent le grand sapin, le grand arbre de la jungle, le chêne noir, le chêne pâle.
+- Armure enfilée d'un clic droit, en visant un bloc comme dans le vide : le serveur l'enfile
+  vraiment (elle n'était que visible ; dans le vide, le paquet du jeu n'était pas reconnu). Bruit de la pièce enfilée, selon sa matière, quel que soit le geste.
+- La liste des joueurs est celle du serveur entier, tous mondes confondus.
+- Monstres : ils contournent les obstacles pour atteindre leur proie (recherche de chemin,
+  refaite chaque seconde) au lieu de buter en ligne droite ; ils ne frappent plus à travers
+  un mur ; zombies et vindicateurs défoncent les portes en bois (douze secondes).
+- Une explosion casse aussi les coffres, fours et lits ; leur contenu tombe au sol.
+- Un animal mort en flammes (aura de feu) lâche sa viande cuite.
+- Bateau : il ne traverse plus les blocs pleins.
+- Nager continue quand on lâche la touche de sprint ; manger sous l'eau n'est plus interrompu.
+- Grands sapins : leur cime a de nouveau des feuilles (le tronc dépassait, nu). Lianes des
+  marais et de la jungle : elles ont une face, donc elles se voient.
+- La liste des joueurs (« @ » dans le tchat, choix d'un joueur dans une commande) suit les
+  arrivées et les départs, où que soient les joueurs.
+- Créatures : elles traversent herbes marines et laminaires, et se tiennent à la bonne hauteur
+  sur un lit ou une dalle basse (un chat couché sur un lit flottait au-dessus).
+- Sprinter ou nager dans l'eau n'est plus annulé cinq fois par seconde par la mise à jour de
+  l'air.
+
+- Les clôtures en chêne noir des structures étaient remplacées par de la pierre.
+
+- Accroupi avec un objet en main, cliquer sur un coffre, une porte ou un autre bloc utilisable pose l'objet au lieu d'utiliser le bloc, comme dans le jeu (on peut donc poser un coffre contre un autre).
+- Armure enfilée d'un clic droit : l'échange n'est plus fait deux fois quand le jeu envoie aussi sa propre demande, ce qui le défaisait côté serveur.
+- Effet de rapidité : le sprint ne s'interrompt plus (la vitesse envoyée au jeu tient compte du sprint, et repart à chaque changement d'allure).
+- Les zombies et les squelettes coulent et marchent au fond de l'eau au lieu d'y flotter ; le noyé nage toujours.
+- En bateau, le joueur est assis dans la coque et non plus dessous.
+
+### Modifié
+
+- `/enchant` applique les règles du jeu : un enchantement ne va que sur les objets qui l'acceptent, et pas avec un enchantement qu'il exclut. Les objets de plugins acceptent tout.
 
 ## [0.0.6] — 2026-11-25
 

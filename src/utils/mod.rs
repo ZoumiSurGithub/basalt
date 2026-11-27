@@ -3,12 +3,14 @@
 #[macro_use]
 pub mod log;
 pub mod config;
+pub mod vanilla;
 pub mod inflate;
 pub mod image;
 pub mod deflate;
 pub mod json;
 pub mod yaml;
 pub mod console;
+pub mod crash;
 pub mod timings;
 pub mod background;
 pub mod pack_crypt;

@@ -20,8 +20,12 @@ data/*/packets/add_player.bin
 data/*/packets/start_game.bin
 data/*/packets/available_commands.bin
 
+# Dossier des tests de charge (monde jetable, rapports)
+/charge/
+
 # Plugins privés (non publiés)
 /plugins/Bots/
+/plugins/Chaos/
 /examples/bots.rs
 
 # Plans de structures de Mojang (non publiés)
@@ -42,3 +46,10 @@ disabled.txt
 
 # Pack de ressources du jeu, fourni par chacun pour les images du tableau de bord
 vanilla_resource_pack/
+vanilla.properties
+
+# Mondes supplémentaires (voir /world)
+worlds/
+
+# Rapports de plantage
+/crashdumps/

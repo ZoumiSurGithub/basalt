@@ -138,10 +138,11 @@ impl Server {
     /// finit. Le jeu ne la recalcule de lui-même qu'en changeant d'allure : sans cela, la
     /// rapidité n'agit qu'au premier sprint.
     pub(super) fn sync_speed(&mut self, addr: &SocketAddr) {
-        // (jamais pendant un sprint : recevoir sa vitesse l'interromprait, et le jeu la recalcule
-        // de lui-même, effets compris, dès qu'il change d'allure)
-        let Some(c) = self.clients.get(addr).filter(|c| c.joined && !c.sprinting) else { return };
-        let value = 0.1 * Self::speed_factor(c);
+        // Comme le serveur du jeu : la valeur tient compte du sprint (30 % de plus). Une valeur
+        // sans le sprint, reçue en pleine course, l'interrompait.
+        let Some(c) = self.clients.get_mut(addr).filter(|c| c.joined) else { return };
+        c.speed_managed = true;
+        let value = 0.1 * Self::speed_factor(c) * if c.sprinting { 1.3 } else { 1.0 };
         let packet = bedrock::update_movement(c.id as u64, value);
         self.send(addr, bedrock::ID_UPDATE_ATTRIBUTES, &packet);
     }
@@ -203,7 +204,8 @@ impl Server {
         let Some(c) = self.clients.get(addr) else { return };
         let (id, sneaking, sprinting) = (c.id, c.sneaking, c.sprinting);
         let extra = (on as i64) | if c.riding.is_some() { bedrock::FLAG_RIDING } else { 0 };
-        self.send(addr, bedrock::ID_SET_ACTOR_DATA, &bedrock::set_actor_data(id, &[(0, bedrock::Meta::Long(bedrock::OWN_PLAYER_FLAGS | extra))]));
+        let own = bedrock::OWN_PLAYER_FLAGS | extra | Self::posture_flags(c);
+        self.send(addr, bedrock::ID_SET_ACTOR_DATA, &bedrock::set_actor_data(id, &[(0, bedrock::Meta::Long(own))]));
         let packet = bedrock::set_actor_data(id, &[(0, bedrock::Meta::Long(Self::remote_flags(sneaking, sprinting) | extra))]);
         let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(a, c)| *a != addr && c.visible.contains(&id)).map(|(a, _)| *a).collect();
         for v in viewers {
@@ -244,6 +246,8 @@ impl Server {
         let late: Vec<SocketAddr> = self.clients.iter_mut().filter(|(_, c)| c.resync_at != 0 && tick >= c.resync_at).map(|(a, c)| { c.resync_at = 0; *a }).collect();
         for addr in late {
             self.send_attributes(&addr, false);
+            // (et le temps qu'il fait, s'il pleut)
+            self.show_weather(&addr);
         }
         // Les effets d'avant la déconnexion, rendus deux secondes après le retour
         let back: Vec<(SocketAddr, Vec<i32>)> = self.clients.iter_mut().filter(|(_, c)| !c.returning.is_empty() && c.joined && tick.saturating_sub(c.probe_tick) >= 40).map(|(a, c)| (*a, std::mem::take(&mut c.returning))).collect();

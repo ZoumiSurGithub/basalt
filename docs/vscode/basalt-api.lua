@@ -118,6 +118,10 @@ function Player:save() end
 ---@param objet string nom de l'objet
 ---@param quantite? integer
 function Player:give(objet, quantite) end
+--- Remplace l'objet tenu en main (case choisie de la barre) ; sans objet, la main se vide.
+---@param objet? string nom de l'objet
+---@param quantite? integer de 1 à 64
+function Player:setItemInHand(objet, quantite) end
 ---@return string nom de l'objet tenu ("" si la main est vide)
 function Player:getItemInHand() end
 ---@return number

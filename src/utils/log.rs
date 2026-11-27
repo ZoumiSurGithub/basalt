@@ -57,6 +57,7 @@ pub fn write(level: Level, msg: &str) {
     // L'écriture (fichier et console) se fait sur un fil à part : un terminal ou un disque
     // lent ne retarde pas le serveur. L'ordre des lignes est conservé.
     let msg = msg.to_string();
+    crate::utils::crash::remember(&format!("{} [{}] {}", time, label, msg));
     crate::background::LOG.run(move || emit(&time, label, color, text_color, &msg));
 }
 

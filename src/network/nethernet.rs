@@ -390,6 +390,10 @@ impl NetherNet {
     pub fn bind(ip: &str, port: u16, public_ip: &str, domain: &str, cpk_as_jwk: bool) -> Result<NetherNet, String> {
         let socket = UdpSocket::bind(format!("{}:{}", ip, port)).map_err(|e| format!("port UDP {} : {}", port, e))?;
         socket.set_nonblocking(true).map_err(|e| e.to_string())?;
+        // (tous les joueurs arrivent sur cette prise : voir network::sockbuf)
+        if !crate::network::sockbuf::enlarge(&socket, 16 << 20) {
+            warn!("NetherNet : tampons UDP laissés à leur taille par défaut (le système a refusé de les agrandir)");
+        }
         let port = socket.local_addr().map(|a| a.port()).unwrap_or(port);
         let public_ip = match public_ip.trim() {
             "" => None,
@@ -469,6 +473,18 @@ impl NetherNet {
     /// Nombre de connexions.
     pub fn len(&self) -> usize {
         self.peers.len()
+    }
+
+    /// État pour le diagnostic : sessions, sessions pas encore ouvertes, préparations en cours
+    /// (et âge de la plus ancienne, en ms), octets en attente d'envoi (total, et le plus gros
+    /// d'une session).
+    pub fn health(&self) -> (usize, usize, usize, u128, usize, usize) {
+        let now = Instant::now();
+        let waiting = self.peers.values().filter(|p| !p.announced).count();
+        let oldest = self.preparing.values().map(|at| now.duration_since(*at).as_millis()).max().unwrap_or(0);
+        let queued: usize = self.peers.values().map(|p| p.outbound_bytes).sum();
+        let worst = self.peers.values().map(|p| p.outbound_bytes).max().unwrap_or(0);
+        (self.peers.len(), waiting, self.preparing.len(), oldest, queued, worst)
     }
 
     pub fn is_empty(&self) -> bool {

@@ -381,6 +381,7 @@ fn full_connection_flow() {
     assert_eq!(c.recv_after_state(), (70, vec![6]));
     assert_eq!(c.recv_game(true).0, 121);
     let mut chunks = 0;
+    let mut listed = 0;
     let mut first_chunk_len = 0;
     loop {
         // Ce client de test ne remet pas les messages dans l'ordre : les listes volumineuses
@@ -394,7 +395,13 @@ fn full_connection_flow() {
                 first_chunk_len = body.len();
             }
             chunks += 1;
+        } else if id == 121 {
+            // La zone servie, annoncée avec les chunks qui viennent de partir (comme le
+            // serveur officiel) : centre (0, -59, 0), 64 blocs, puis leur nombre
+            assert_eq!(&body[..4], &[0, 117, 0, 64]);
+            listed += u32::from_le_bytes([body[4], body[5], body[6], body[7]]);
         } else {
+            assert_eq!(listed, 29, "tous les chunks envoyés sont annoncés dans la zone servie");
             assert_eq!((id, body), (2, vec![0, 0, 0, 3]), "PlayStatus PlayerSpawn attendu");
             break;
         }
@@ -433,10 +440,22 @@ fn full_connection_flow() {
     // acquitté à temps, et ce client ne filtre pas les doublons : les zones sont comptées
     // une fois chacune)
     let (mut zones, mut chunk_set) = (std::collections::HashSet::new(), std::collections::HashSet::new());
+    let mut listed = std::collections::HashSet::new();
     for (id, body) in c.drain_games(Duration::from_millis(500)) {
         match id {
             121 => {
-                zones.insert(body);
+                // centre (x, y, z), rayon (64 blocs), nombre de chunks annoncés, puis leurs x et z
+                let mut pos = 0;
+                let x = basalt::bedrock::read_vari32(&body, &mut pos);
+                pos += 3;
+                let count = u32::from_le_bytes([body[pos], body[pos + 1], body[pos + 2], body[pos + 3]]);
+                pos += 4;
+                for _ in 0..count {
+                    let cx = basalt::bedrock::read_vari32(&body, &mut pos);
+                    let cz = basalt::bedrock::read_vari32(&body, &mut pos);
+                    listed.insert((cx, cz));
+                }
+                zones.insert(x);
             }
             58 => {
                 // x et z : entiers variables en tête du paquet
@@ -450,7 +469,10 @@ fn full_connection_flow() {
             _ => {}
         }
     }
-    assert_eq!(zones.len(), 2, "une zone publiée par chunk franchi : {:?}", zones);
+    // La zone servie suit la position exacte du joueur (comme le serveur officiel), et chaque
+    // chunk envoyé y est annoncé
+    assert!(zones.contains(&Some(41)), "la zone suit le joueur jusqu'à son arrivée : {:?}", zones);
+    assert_eq!(listed, chunk_set, "les chunks annoncés sont ceux envoyés");
     let chunks = chunk_set.len();
     assert!(chunks >= at_least && chunks <= at_most, "{} chunks reçus, attendu entre {} et {}", chunks, at_least, at_most);
 
@@ -960,6 +982,135 @@ fn a_chest_opens_and_keeps_what_is_put_in_it() {
 }
 
 #[test]
+fn a_plugin_rewrites_death_messages_and_cancels_damage() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-degats-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("regles.lua"),
+        r#"
+server.on("damage", function(joueur, degats, cause, auteur)
+  if cause == "custom" then return false end      -- les coups des plugins ne passent pas
+end)
+server.on("death", function(joueur, message)
+  return "FIN DE " .. joueur.name
+end)
+server.command("fin", "tue le joueur", function(args, joueur)
+  if joueur then joueur:setHealth(0) end
+end)
+server.command("frappe", "blesse le joueur", function(args, joueur)
+  if joueur then
+    joueur:damage(5)
+    server.afterSeconds(0.3, function() joueur:sendMessage("vie " .. joueur:getHealth()) end)
+  end
+end)
+"#,
+    )
+    .unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    let expect_text = |c: &mut Client, needle: &str| {
+        for _ in 0..30 {
+            if String::from_utf8_lossy(&c.wait_for(9)).contains(needle) {
+                return;
+            }
+        }
+        panic!("message « {} » jamais reçu", needle);
+    };
+    let mut steve = Client::join(addr, "Steve");
+    // Le coup du plugin est annulé par l'écouteur : la vie reste entière
+    command(&mut steve, "/frappe");
+    expect_text(&mut steve, "vie 20");
+    // La mort, elle, a lieu, et son message est celui du plugin
+    command(&mut steve, "/fin");
+    expect_text(&mut steve, "FIN DE Steve");
+
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_plugin_inventory_opens_reports_clicks_and_gives_nothing() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-menu-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("boutique.lua"),
+        r#"
+local menu = server.inventory("Boutique", 27)
+menu:setItem(14, "minecraft:diamond", 2)
+menu:onClick(function(joueur, case, objet, quantite)
+  joueur:sendMessage("clic " .. case .. " " .. tostring(objet) .. " " .. quantite)
+end)
+menu:onClose(function(joueur, contenu)
+  joueur:sendMessage("ferme " .. tostring(contenu[14] and contenu[14].count))
+end)
+server.command("boutique", "ouvre la boutique", function(args, joueur)
+  if joueur then menu:open(joueur) end
+end)
+"#,
+    )
+    .unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    let expect_text = |c: &mut Client, needle: &str| {
+        for _ in 0..20 {
+            if String::from_utf8_lossy(&c.wait_for(9)).contains(needle) {
+                return;
+            }
+        }
+        panic!("message « {} » jamais reçu", needle);
+    };
+    let mut steve = Client::join(addr, "Steve");
+    command(&mut steve, "/boutique");
+    // Un faux coffre apparaît chez lui, avec le titre de l'inventaire, puis l'écran s'ouvre
+    let fake = steve.wait_for(21);
+    let named = steve.wait_for(56);
+    assert!(String::from_utf8_lossy(&named).contains("Boutique"), "le coffre porte le titre : {:02x?}", named);
+    let opened = steve.wait_for(46);
+    assert_eq!(&opened[..2], &[2, 0], "fenêtre 2, écran de coffre");
+    let content = loop {
+        let content = steve.wait_for(49);
+        if content[0] == 2 {
+            break content;
+        }
+    };
+    assert_eq!(content[1], 27);
+    // Prendre les diamants (conteneur 7, case 13) : refusé, et le clic est rapporté au plugin
+    let mut request = vec![1, 0x05, 1, 0, 2];
+    request.extend_from_slice(&[7, 0, 13, 0, 0, 0, 0]);
+    request.extend_from_slice(&[28, 0, 0, 0, 0, 0, 0]);
+    request.extend_from_slice(&[0, 0, 0, 0, 0]);
+    steve.game(147, &request, Some(0xff));
+    assert_eq!(&steve.wait_for(148)[..3], &[1, 1, 0x05], "rien ne sort d'un inventaire verrouillé");
+    expect_text(&mut steve, "clic 14 minecraft:diamond 2");
+    // Fermeture : le plugin est prévenu (les diamants y sont toujours), le vrai bloc reparaît
+    steve.game(47, &[2, 0, 0], Some(0xff));
+    expect_text(&mut steve, "ferme 2");
+    command(&mut steve, "/boutique");
+    let again = steve.wait_for(21);
+    assert_eq!(again, fake, "le faux coffre revient à la même place à la réouverture");
+    assert_eq!(&steve.wait_for(46)[..2], &[2, 0]);
+
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn vanilla_commands_work_like_in_the_game() {
     let dir = std::env::temp_dir().join(format!("basalt-e2e-vanilla-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -1441,7 +1592,7 @@ fn generated_world_spawns_players_on_dry_land() {
     }
     assert_eq!(chunks, 29, "chunks dans un rayon de 3");
     assert_eq!(tall, chunks, "terrain en relief : plusieurs sous-chunks par chunk");
-    assert!(dir.join("world").join("level.nbt").exists(), "graine enregistrée dès la création");
+    assert!(dir.join("world").join("level.dat").exists(), "graine enregistrée dès la création");
     drop(c);
     stop.store(true, Ordering::Relaxed);
     handle.join().unwrap();
@@ -1494,6 +1645,331 @@ fn chunks_are_sent_again_when_a_player_comes_back() {
         assert!(back.contains(&chunk), "chunk {:?} renvoyé au retour (reçus : {:?})", chunk, back);
     }
     drop(c);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Deux mondes ouverts à la fois : un joueur passe dans l'autre, l'autre joueur ne le voit
+/// plus, le tchat traverse les mondes, et il revient dans son monde après un redémarrage.
+#[test]
+fn players_live_in_several_worlds_at_once() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-mondes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("mondes.lua"),
+        r#"
+server.command("creer", "crée le lobby", function(args, joueur)
+  server.worlds.load("lobby", "flat", "7")
+end)
+server.command("aller", "change de monde", function(args, joueur)
+  if joueur then joueur:setWorld(args[1]) end
+end)
+server.command("ou", "dit où l'on est", function(args, joueur)
+  if joueur then joueur:sendMessage("monde " .. joueur:getWorld() .. " parmi " .. table.concat(server.worlds.list(), ",")) end
+end)
+server.command("vide", "crée un monde vide", function(args, joueur)
+  server.worlds.load("vide", "void")
+end)
+server.command("poser", "pose une pierre dans le lobby", function(args, joueur)
+  server.getWorld("lobby"):setBlock(3, -50, 3, "minecraft:stone")
+end)
+server.command("lire", "lit le même bloc dans les deux mondes", function(args, joueur)
+  local la, ici = server.getWorld("lobby"):getBlock(3, -50, 3), server.getWorld():getBlock(3, -50, 3)
+  joueur:sendMessage("blocs " .. la:getName() .. " / " .. ici:getName() .. " / " .. tostring(server.getWorld("absent")))
+end)
+server.command("sol", "dit sur quoi l'on se tient", function(args, joueur)
+  local x, y, z = joueur:getPosition()
+  local sous = server.getWorld(joueur:getWorld()):getBlock(x, y - 1, z)
+  joueur:sendMessage("sol " .. sous:getName() .. " hauteur " .. math.floor(y + 0.5))
+end)
+server.command("crier", "parle à tous", function(args, joueur)
+  server.broadcast("cri de " .. joueur.name)
+end)
+"#,
+    )
+    .unwrap();
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    let expect_text = |c: &mut Client, needle: &str| {
+        for _ in 0..30 {
+            if String::from_utf8_lossy(&c.wait_for(9)).contains(needle) {
+                return;
+            }
+        }
+        panic!("message « {} » jamais reçu", needle);
+    };
+    std::fs::write(dir.join("ops.txt"), "alex\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let mut alex = Client::join(addr, "Alex");
+    std::thread::sleep(Duration::from_millis(600));
+    alex.drain_games(Duration::from_millis(300));
+    command(&mut steve, "/ou");
+    expect_text(&mut steve, "monde world parmi world");
+    command(&mut steve, "/creer");
+    std::thread::sleep(Duration::from_millis(400));
+    steve.drain_games(Duration::from_millis(200));
+    command(&mut steve, "/aller lobby");
+    // Il est replacé, et reçoit le terrain du nouveau monde
+    let got = steve.drain_games(Duration::from_millis(700));
+    assert!(got.iter().any(|(id, _)| *id == 19), "replacé dans le nouveau monde");
+    let chunks = got.iter().filter(|(id, _)| *id == 58).count();
+    assert!(chunks >= 20, "terrain du nouveau monde envoyé ({} chunks)", chunks);
+    command(&mut steve, "/ou");
+    expect_text(&mut steve, "monde lobby parmi world,lobby");
+    // Alex, resté dans le monde principal, ne le voit plus
+    let seen = alex.drain_games(Duration::from_millis(400));
+    assert!(seen.iter().any(|(id, _)| *id == 14), "Steve a disparu de l'écran d'Alex");
+    // …mais un message à tous traverse les mondes
+    command(&mut alex, "/crier");
+    expect_text(&mut steve, "cri de Alex");
+    // Un monde inconnu : rien ne bouge
+    command(&mut steve, "/aller nulle-part");
+    command(&mut steve, "/ou");
+    expect_text(&mut steve, "monde lobby");
+    // Un plugin pose et lit des blocs dans le monde qu'il nomme, sans toucher au principal
+    command(&mut alex, "/poser");
+    std::thread::sleep(Duration::from_millis(300));
+    command(&mut alex, "/lire");
+    expect_text(&mut alex, "blocs minecraft:stone / minecraft:air / nil");
+    // Une commande du jeu atteint un joueur d'un autre monde : /tp y emmène son auteur
+    command(&mut alex, "/tp Steve");
+    std::thread::sleep(Duration::from_millis(300));
+    command(&mut alex, "/ou");
+    expect_text(&mut alex, "monde lobby");
+    // Un monde vide accueille les joueurs sur une plateforme, pas dans le vide
+    command(&mut steve, "/vide");
+    std::thread::sleep(Duration::from_millis(400));
+    command(&mut steve, "/aller vide");
+    std::thread::sleep(Duration::from_millis(400));
+    command(&mut steve, "/sol");
+    expect_text(&mut steve, "sol minecraft:stone hauteur 64");
+    command(&mut steve, "/aller lobby");
+    std::thread::sleep(Duration::from_millis(300));
+    drop(steve);
+    drop(alex);
+    std::thread::sleep(Duration::from_millis(300));
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    assert!(dir.join("worlds").join("lobby").join("level.dat").exists() && dir.join("worlds").join("lobby").join("db").join("CURRENT").exists(), "le nouveau monde est enregistré dans worlds/, au format du jeu");
+    let kept = basalt::player::PlayerData::load(&dir, "Steve").unwrap().unwrap();
+    assert_eq!(kept.world, "lobby", "le monde du joueur est enregistré avec lui");
+
+    // Au redémarrage, le monde est rouvert et le joueur y revient
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    command(&mut steve, "/ou");
+    expect_text(&mut steve, "monde lobby parmi world,lobby,vide");
+    drop(steve);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Le monde est rangé comme le fait le jeu (level.dat, db/) : un ancien monde de Basalt y
+/// est converti, ce qu'on y construit se relit avec le format du jeu, et un monde venu du
+/// jeu, déposé dans worlds/, s'ouvre tel qu'il est.
+#[test]
+fn worlds_are_saved_the_way_the_game_saves_them() {
+    use basalt::world::generator::{Biome, Column, Generator, Kind, Palette};
+    use basalt::world::mojang::{Batch, Store};
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-format-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let data = basalt::data::GameData::load(std::path::Path::new("data")).unwrap();
+    let state = |name: &str| data.default_state(name).unwrap();
+    let air = state("minecraft:air");
+    let world_dir = dir.join("world");
+    // 1. Un monde d'une version précédente : level.nbt, avec un bloc d'or posé
+    {
+        let mut old = basalt::world::World::with_generator(Generator::new(Kind::Flat, 0, Palette::new(&|n| data.state_from_spec(n))));
+        old.set(5, -50, 5, state("minecraft:gold_block"));
+        old.save(&world_dir).unwrap();
+        assert!(world_dir.join("level.nbt").exists());
+    }
+    // 2. Un monde venu du jeu, déposé dans worlds/ : un sol d'émeraude à y = 10 dans un chunk
+    let game_dir = dir.join("worlds").join("jeu");
+    {
+        let store = Store::open(&game_dir, data.table.clone(), false).unwrap();
+        let emerald = state("minecraft:emerald_block");
+        let mut batch = Batch::new();
+        let (chest_block, sign_block) = (state("minecraft:chest"), state("minecraft:standing_sign"));
+        let block = |x: usize, y: i32, z: usize| match (x, y, z) {
+            (_, 10, _) => emerald,
+            (5, 11, 5) => chest_block,
+            (6, 11, 5) => sign_block,
+            _ => air,
+        };
+        store.encode(0, 0, &block, &|_, _, _| false, &|_, _, _, _| 1, &mut batch);
+        // …et un coffre du jeu posé dessus, avec une épée enchantée usée et des pommes
+        let tag = basalt::nbt::Tag::compound;
+        let chest = tag(vec![
+            ("id", basalt::nbt::Tag::string("Chest")),
+            ("x", basalt::nbt::Tag::Int(5)),
+            ("y", basalt::nbt::Tag::Int(11)),
+            ("z", basalt::nbt::Tag::Int(5)),
+            ("Findable", basalt::nbt::Tag::Byte(0)),
+            (
+                "Items",
+                basalt::nbt::Tag::List(
+                    10,
+                    vec![
+                        tag(vec![
+                            ("Slot", basalt::nbt::Tag::Byte(0)),
+                            ("Name", basalt::nbt::Tag::string("minecraft:diamond_sword")),
+                            ("Count", basalt::nbt::Tag::Byte(1)),
+                            ("Damage", basalt::nbt::Tag::Short(0)),
+                            ("tag", tag(vec![("Damage", basalt::nbt::Tag::Int(30)), ("ench", basalt::nbt::Tag::List(10, vec![tag(vec![("id", basalt::nbt::Tag::Short(9)), ("lvl", basalt::nbt::Tag::Short(4))])]))])),
+                        ]),
+                        tag(vec![("Slot", basalt::nbt::Tag::Byte(13)), ("Name", basalt::nbt::Tag::string("minecraft:apple")), ("Count", basalt::nbt::Tag::Byte(7)), ("Damage", basalt::nbt::Tag::Short(0))]),
+                    ],
+                ),
+            ),
+        ]);
+        let sign = tag(vec![
+            ("id", basalt::nbt::Tag::string("Sign")),
+            ("x", basalt::nbt::Tag::Int(6)),
+            ("y", basalt::nbt::Tag::Int(11)),
+            ("z", basalt::nbt::Tag::Int(5)),
+            ("FrontText", tag(vec![("Text", basalt::nbt::Tag::string("Bienvenue\nici"))])),
+        ]);
+        let mut both = basalt::nbt::write_le(&chest);
+        both.extend_from_slice(&basalt::nbt::write_le(&sign));
+        Store::encode_block_entities(0, 0, Some(both), &mut batch);
+        store.write(batch).unwrap();
+        let level = basalt::nbt::Tag::compound(vec![
+            ("Time", basalt::nbt::Tag::Long(18_000)),
+            ("dodaylightcycle", basalt::nbt::Tag::Byte(0)),
+            ("rainLevel", basalt::nbt::Tag::Float(1.0)),
+            ("lightningLevel", basalt::nbt::Tag::Float(0.0)),
+            ("rainTime", basalt::nbt::Tag::Int(500_000)),
+            ("Generator", basalt::nbt::Tag::Int(2)),
+            ("RandomSeed", basalt::nbt::Tag::Long(5)),
+            ("SpawnX", basalt::nbt::Tag::Int(3)),
+            ("SpawnY", basalt::nbt::Tag::Int(11)),
+            ("SpawnZ", basalt::nbt::Tag::Int(3)),
+            ("LevelName", basalt::nbt::Tag::string("Carte du jeu")),
+        ]);
+        let body = basalt::nbt::write_le(&level);
+        let mut raw = 10i32.to_le_bytes().to_vec();
+        raw.extend_from_slice(&(body.len() as i32).to_le_bytes());
+        raw.extend_from_slice(&body);
+        std::fs::write(game_dir.join("level.dat"), raw).unwrap();
+    }
+    std::fs::write(
+        dir.join("blocs.lua"),
+        r#"
+local function nom(monde, x, y, z) return server.getWorld(monde):getBlock(x, y, z):getName() end
+server.command("lire", "lit les blocs", function(args, joueur)
+  joueur:sendMessage("ici " .. nom(nil, 5, -50, 5) .. " " .. nom(nil, 6, -50, 5) .. " " .. nom(nil, 0, -61, 0))
+end)
+server.command("poser", "pose un bloc", function(args, joueur)
+  server.getWorld():setBlock(6, -50, 5, "minecraft:diamond_block")
+  server.getWorld("jeu"):setBlock(3, 11, 3, "minecraft:torch")
+end)
+server.command("jeu", "lit le monde du jeu", function(args, joueur)
+  joueur:sendMessage("jeu " .. nom("jeu", 3, 10, 3) .. " " .. nom("jeu", 3, 11, 3) .. " " .. nom("jeu", 40, -61, 40) .. " " .. joueur:getWorld())
+end)
+server.command("aller", "va dans le monde du jeu", function(args, joueur) joueur:setWorld("jeu") end)
+server.command("ou", "hauteur", function(args, joueur)
+  local x, y, z = joueur:getPosition()
+  joueur:sendMessage("position " .. math.floor(x) .. " " .. math.floor(y + 0.5) .. " " .. math.floor(z))
+end)
+"#,
+    )
+    .unwrap();
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    let expect_text = |c: &mut Client, needle: &str| {
+        let mut seen = Vec::new();
+        for _ in 0..30 {
+            let text = String::from_utf8_lossy(&c.wait_for(9)).into_owned();
+            if text.contains(needle) {
+                return;
+            }
+            seen.push(text);
+        }
+        panic!("message « {} » jamais reçu (reçus : {:?})", needle, seen);
+    };
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    command(&mut steve, "/lire");
+    expect_text(&mut steve, "ici minecraft:gold_block minecraft:air minecraft:grass_block");
+    // Le monde du jeu : ses blocs enregistrés, et du terrain généré là où il n'a rien
+    command(&mut steve, "/jeu");
+    expect_text(&mut steve, "jeu minecraft:emerald_block minecraft:air minecraft:grass_block world");
+    command(&mut steve, "/poser");
+    std::thread::sleep(Duration::from_millis(300));
+    // On y arrive à son point d'apparition, celui de level.dat
+    command(&mut steve, "/aller");
+    std::thread::sleep(Duration::from_millis(400));
+    command(&mut steve, "/ou");
+    expect_text(&mut steve, "position 3 11 3");
+    drop(steve);
+    std::thread::sleep(Duration::from_millis(300));
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+
+    // Sur le disque : le format du jeu, et l'ancien fichier mis de côté
+    assert!(world_dir.join("level.dat").exists() && world_dir.join("levelname.txt").exists() && world_dir.join("db").join("CURRENT").exists());
+    assert!(!world_dir.join("level.nbt").exists() && world_dir.join("level.nbt.ancien").exists(), "l'ancien fichier est converti puis mis de côté");
+    let read = |dir: &std::path::Path, native: bool, at: (usize, i32, usize)| {
+        let store = Store::open(dir, data.table.clone(), native).unwrap();
+        let stored = store.load(0, 0).expect("chunk enregistré");
+        let mut column = Column::from_blocks(&vec![air; 256 * 384], air, Biome::Plains);
+        stored.apply(&mut column, air);
+        data.block_name(column.get(at.0, at.1, at.2)).unwrap_or("?").to_string()
+    };
+    assert_eq!(read(&world_dir, true, (5, -50, 5)), "minecraft:gold_block");
+    assert_eq!(read(&world_dir, true, (6, -50, 5)), "minecraft:diamond_block");
+    assert_eq!(read(&world_dir, true, (0, -61, 0)), "minecraft:grass_block", "le chunk est enregistré entier, terrain compris");
+    assert_eq!(read(&game_dir, false, (3, 11, 3)), "minecraft:torch");
+    assert_eq!(read(&game_dir, false, (9, 10, 9)), "minecraft:emerald_block", "le reste du chunk du jeu est intact");
+    let level = basalt::world::mojang::read_level(&game_dir).unwrap().unwrap();
+    assert!(level.get("BasaltGenerator").is_none() && level.str_of("LevelName") == Some("jeu"));
+    // L'heure arrêtée du monde du jeu, sa pluie et ses règles sont restées celles du jeu
+    let number = |key: &str| level.get(key).and_then(|t| t.as_i64());
+    assert_eq!((number("Time"), number("dodaylightcycle"), number("doweathercycle")), (Some(18_000), Some(0), Some(1)));
+    assert_eq!(level.get("rainLevel").and_then(|t| t.as_f32()), Some(1.0));
+    assert!(number("rainTime").map(|t| (490_000..=500_000).contains(&t)).unwrap_or(false), "la pluie garde sa durée restante : {:?}", number("rainTime"));
+    assert!(!game_dir.join("time.txt").exists() && !game_dir.join("weather.txt").exists() && !game_dir.join("tiles.nbt").exists(), "plus de fichiers à part : tout est dans level.dat et db/");
+    // Le coffre et le panneau du jeu sont toujours dans la base, au format du jeu ; le coffre
+    // que le plugin a rempli dans le monde principal y est aussi
+    let tiles = |dir: &std::path::Path| -> Vec<basalt::nbt::Tag> { Store::open(dir, data.table.clone(), true).unwrap().block_entities().into_iter().flat_map(|(_, e)| e).collect() };
+    let game_tiles = tiles(&game_dir);
+    let chest = game_tiles.iter().find(|t| t.str_of("id") == Some("Chest")).expect("coffre du jeu gardé");
+    let items = chest.get("Items").and_then(|t| t.as_list()).unwrap();
+    let sword = items.iter().find(|i| i.str_of("Name") == Some("minecraft:diamond_sword")).expect("épée gardée");
+    let in_tag = sword.get("tag").unwrap();
+    assert_eq!(in_tag.get("Damage").and_then(|t| t.as_i64()), Some(30), "usure gardée");
+    let ench = &in_tag.get("ench").and_then(|t| t.as_list()).unwrap()[0];
+    assert_eq!((ench.get("id").and_then(|t| t.as_i64()), ench.get("lvl").and_then(|t| t.as_i64())), (Some(9), Some(4)), "enchantement gardé");
+    assert!(items.iter().any(|i| i.str_of("Name") == Some("minecraft:apple") && i.get("Count").and_then(|t| t.as_i64()) == Some(7) && i.get("Slot").and_then(|t| t.as_i64()) == Some(13)));
+    let sign = game_tiles.iter().find(|t| t.str_of("id") == Some("Sign")).expect("panneau du jeu gardé");
+    assert_eq!(sign.get("FrontText").and_then(|f| f.str_of("Text")), Some("Bienvenue\nici"));
+
+    // Au redémarrage, tout est relu depuis la base
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    command(&mut steve, "/lire");
+    expect_text(&mut steve, "ici minecraft:gold_block minecraft:diamond_block minecraft:grass_block");
+    command(&mut steve, "/jeu");
+    expect_text(&mut steve, "jeu minecraft:emerald_block minecraft:torch minecraft:grass_block jeu");
+    drop(steve);
     stop.store(true, Ordering::Relaxed);
     handle.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
@@ -1583,8 +2059,8 @@ fn a_plugin_generator_shapes_the_world() {
     drop(c);
     stop.store(true, Ordering::Relaxed);
     handle.join().unwrap();
-    let doc = basalt::nbt::load_file(&dir.join("world").join("level.nbt")).unwrap().unwrap();
-    assert_eq!(doc.get("Generator").and_then(|t| t.as_str()), Some("plugin:archipel"));
+    let level = basalt::world::mojang::read_level(&dir.join("world")).unwrap().unwrap();
+    assert_eq!(level.str_of("BasaltGenerator"), Some("plugin:archipel"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2296,6 +2772,66 @@ fn animals_climb_one_block() {
     }
     assert!(cow.is_some(), "vache montrée");
     assert!(crossed, "la vache a sauté le muret");
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = handle.join();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Dans l'eau : une vache flotte, le corps dans l'eau et la tête dehors ; un zombie coule et
+/// se retrouve au fond (où il finira par se noyer).
+#[test]
+fn animals_float_and_zombies_sink() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-eau-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    // Un bassin de pierre rempli d'eau sur cinq blocs de profondeur : le fond est à y = -60,
+    // la surface de l'eau à y = -54
+    command(&mut steve, "/fill 2 -60 2 8 -55 8 stone");
+    std::thread::sleep(Duration::from_millis(600));
+    command(&mut steve, "/fill 3 -60 3 7 -55 7 water");
+    std::thread::sleep(Duration::from_millis(600));
+    command(&mut steve, "/summon cow 4.5 -54 4.5");
+    command(&mut steve, "/summon zombie 6.5 -54 6.5");
+    let (mut cow, mut zombie) = (None, None);
+    let (mut cow_y, mut zombie_y) = (Vec::new(), Vec::new());
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_secs(8) {
+        if let Some((id, body)) = steve.poll_game(Duration::from_millis(200)) {
+            if id == 13 && body.windows(13).any(|w| w == b"minecraft:cow") {
+                cow = Some(body[1]);
+            }
+            if id == 13 && body.windows(16).any(|w| w == b"minecraft:zombie") {
+                zombie = Some(body[1]);
+            }
+            if id == 18 && body.len() >= 14 {
+                let y = f32::from_le_bytes([body[6], body[7], body[8], body[9]]);
+                if body.first() == cow.as_ref() {
+                    cow_y.push(y);
+                } else if body.first() == zombie.as_ref() {
+                    zombie_y.push(y);
+                }
+            }
+        }
+    }
+    assert!(cow.is_some() && zombie.is_some(), "vache et zombie montrés");
+    let zombie_last = zombie_y.last().copied().unwrap_or(-54.0);
+    assert!(zombie_last < -59.5, "le zombie a coulé et reste au fond, tête sous l'eau (y = {})", zombie_last);
+    // (surface à -54 ; une vache mesure 1,3 bloc : plus de la moitié sous l'eau, la tête dehors.
+    // Elle peut ensuite nager jusqu'au bord et s'y hisser.)
+    let lowest = cow_y.iter().cloned().fold(f32::MAX, f32::min);
+    let floating = cow_y.iter().filter(|y| (-54.95..=-54.5).contains(*y)).count();
+    assert!(lowest > -55.0, "la vache ne coule pas (au plus bas : {})", lowest);
+    assert!(floating >= 15, "la vache flotte le corps dans l'eau, pas posée sur la surface ({} positions à cette profondeur : {:?})", floating, cow_y);
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = handle.join();
     let _ = std::fs::remove_dir_all(&dir);
@@ -3355,5 +3891,427 @@ fn the_management_api_answers_with_a_token_only() {
     assert_eq!(ask("GET", "/v1/me", Some(&token)).0, 200);
     stop.store(true, Ordering::Relaxed);
     handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Le Nether est un monde à part, avec sa dimension : un joueur qui se tient dans un portail
+/// déclenche `PlayerPortalEvent` (le serveur ne le déplace pas), et le plugin qui l'envoie dans
+/// un monde `nether` lui fait changer de dimension — paquet ChangeDimension, puis des chunks
+/// de la dimension 1.
+#[test]
+fn a_portal_tells_plugins_and_a_nether_world_is_another_dimension() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-portail-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("portail.lua"),
+        r#"
+server.command("enfer", "crée le nether", function() server.worlds.load("enfer", "nether", "7") end)
+local Portails = {}
+function Portails:onPlayerPortal(e)
+  e:getPlayer():sendMessage("portail " .. e:getPortal() .. " dans " .. e:getWorld())
+  e:getPlayer():setWorld("enfer")
+end
+server.registerEvents(Portails)
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    command(&mut steve, "/enfer");
+    command(&mut steve, "/gamemode creative");
+    // Un bloc de portail du Nether posé là où il marche
+    command(&mut steve, "/setblock 3 -60 0 portal");
+    std::thread::sleep(Duration::from_millis(500));
+    steve.drain_games(Duration::from_millis(300));
+    steve.walk_to(3.5, 0.5);
+    let got = steve.drain_games(Duration::from_millis(900));
+    let said = got.iter().filter(|(id, _)| *id == 9).any(|(_, body)| String::from_utf8_lossy(body).contains("portail nether dans world"));
+    assert!(said, "le plugin est prévenu du passage dans le portail");
+    // Le changement de dimension : vers le Nether (1, en zigzag 2), sans « réapparition »
+    let change = got.iter().find(|(id, _)| *id == 61).expect("paquet de changement de dimension");
+    assert_eq!(change.1[0], 2, "{:?}", change.1);
+    assert_eq!(change.1.len(), 19, "{:?}", change.1);
+    // Puis le terrain de cette dimension : chaque chunk la porte après ses coordonnées
+    let mut chunks = 0;
+    for (_, body) in got.iter().filter(|(id, _)| *id == 58) {
+        let mut pos = 0;
+        basalt::bedrock::read_vari32(body, &mut pos);
+        basalt::bedrock::read_vari32(body, &mut pos);
+        assert_eq!(basalt::bedrock::read_vari32(body, &mut pos), Some(1), "chunk du Nether");
+        let count = basalt::bedrock::read_varu32(body, &mut pos).unwrap();
+        assert!((1..=8).contains(&count), "{} tranches dans un chunk du Nether", count);
+        chunks += 1;
+    }
+    assert!(chunks > 0, "des chunks du Nether sont envoyés");
+    // Et le signal qui referme l'écran de chargement
+    assert!(got.iter().any(|(id, body)| *id == 2 && body == &[0, 0, 0, 3]), "PlayStatus PlayerSpawn après les chunks");
+    // Et « changement de dimension terminé » (PlayerAction 14), sans quoi le joueur reste figé
+    let spawned = got.iter().position(|(id, body)| *id == 2 && body == &[0, 0, 0, 3]).unwrap();
+    let done = got.iter().skip(spawned).find(|(id, _)| *id == 36).expect("PlayerAction « dimension changée »");
+    let mut pos = 0;
+    basalt::bedrock::read_varu32(&done.1, &mut pos);
+    assert_eq!(basalt::bedrock::read_vari32(&done.1, &mut pos), Some(14), "{:?}", done.1);
+    stop.store(true, Ordering::Relaxed);
+    handle.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Le reste du bestiaire : un poisson nage sans quitter son bassin, une chauve-souris vole
+/// au-dessus du sol, un renard marche.
+#[test]
+fn fish_swim_bats_fly_and_foxes_walk() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-bestiaire-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    // Un bassin de pierre de 9 × 9 rempli d'eau : fond à -60, surface à -54
+    command(&mut steve, "/fill 2 -60 2 12 -55 12 stone");
+    std::thread::sleep(Duration::from_millis(600));
+    command(&mut steve, "/fill 3 -60 3 11 -55 11 water");
+    std::thread::sleep(Duration::from_millis(600));
+    command(&mut steve, "/summon cod 7.5 -58 7.5");
+    command(&mut steve, "/summon bat -8.5 -58 -8.5");
+    command(&mut steve, "/summon fox -8.5 -60 6.5");
+    let kinds: [&[u8]; 3] = [b"minecraft:cod", b"minecraft:bat", b"minecraft:fox"];
+    let mut ids: [Option<u8>; 3] = [None; 3];
+    let mut seen: [Vec<(f32, f32, f32)>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    // (le renard flâne quand l'envie lui en prend, comme dans le jeu : une fois toutes les
+    // six secondes en moyenne ; on lui laisse jusqu'à trente secondes)
+    let started = std::time::Instant::now();
+    let walked = |p: &[(f32, f32, f32)]| p.len() >= 3 && p.iter().any(|q| (q.0 - p[0].0).abs().max((q.2 - p[0].2).abs()) > 0.5);
+    while started.elapsed() < Duration::from_secs(14) || (!walked(&seen[2]) && started.elapsed() < Duration::from_secs(40)) {
+        if let Some((id, body)) = steve.poll_game(Duration::from_millis(200)) {
+            for (i, kind) in kinds.iter().enumerate() {
+                if id == 13 && body.windows(kind.len()).any(|w| w == *kind) {
+                    ids[i] = Some(body[1]);
+                }
+                if id == 18 && body.len() >= 14 && body.first() == ids[i].as_ref() {
+                    let f = |at: usize| f32::from_le_bytes([body[at], body[at + 1], body[at + 2], body[at + 3]]);
+                    seen[i].push((f(2), f(6), f(10)));
+                }
+            }
+        }
+    }
+    assert!(ids.iter().all(|i| i.is_some()), "poisson, chauve-souris et renard montrés : {:?}", ids);
+    let span = |p: &[(f32, f32, f32)]| {
+        let (lo, hi) = p.iter().fold(((f32::MAX, f32::MAX), (f32::MIN, f32::MIN)), |(lo, hi), q| ((lo.0.min(q.0), lo.1.min(q.2)), (hi.0.max(q.0), hi.1.max(q.2))));
+        (hi.0 - lo.0).max(hi.1 - lo.1)
+    };
+    // Le poisson a nagé, et n'est jamais sorti de l'eau du bassin
+    assert!(span(&seen[0]) > 0.8, "le poisson nage ({} positions)", seen[0].len());
+    assert!(seen[0].iter().all(|(x, y, z)| (3.0..12.0).contains(x) && (3.0..12.0).contains(z) && (-60.0..-54.0).contains(y)), "le poisson reste dans l'eau : {:?}", seen[0]);
+    // La chauve-souris a volé, au-dessus du sol (le dessus de l'herbe est à -60)
+    assert!(span(&seen[1]) > 1.0, "la chauve-souris vole ({} positions)", seen[1].len());
+    assert!(seen[1].iter().skip(20).all(|(_, y, _)| *y > -59.9), "elle vole au-dessus du sol : {:?}", seen[1]);
+    // Le renard s'est promené, les pattes au sol
+    assert!(span(&seen[2]) > 0.5, "le renard marche ({} positions)", seen[2].len());
+    assert!(seen[2].iter().all(|(_, y, _)| (-60.1..-59.0).contains(y)), "{:?}", seen[2]);
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = handle.join();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Les deux numéros en tête d'une apparition (AddActor) : l'identifiant unique, puis celui de
+/// la partie, tels qu'écrits (varints).
+fn ids_of(body: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let unique = body.iter().position(|b| b & 0x80 == 0).unwrap() + 1;
+    let runtime = unique + body[unique..].iter().position(|b| b & 0x80 == 0).unwrap() + 1;
+    (body[..unique].to_vec(), body[unique..runtime].to_vec())
+}
+
+/// Comme dans le jeu : un piglin prend le lingot d'or qu'on lui tend, le montre dans sa main, et
+/// jette son troc six secondes plus tard ; un seau d'eau tendu à une morue la met en seau.
+#[test]
+fn a_piglin_barters_gold_and_a_bucket_catches_a_fish() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-troc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    command(&mut steve, "/give @s gold_ingot 1");
+    std::thread::sleep(Duration::from_millis(1200));
+    // (un bassin à portée de main : la morue ne peut pas s'éloigner de plus de 6 blocs)
+    command(&mut steve, "/fill ~3 ~-1 ~-2 ~6 ~ ~2 water");
+    std::thread::sleep(Duration::from_millis(600));
+    command(&mut steve, "/summon piglin ~2 ~ ~");
+    command(&mut steve, "/summon cod ~4 ~-1 ~");
+    // Les deux créatures apparaissent : leur numéro
+    let (mut piglin, mut cod) = (None, None);
+    let started = std::time::Instant::now();
+    while (piglin.is_none() || cod.is_none()) && started.elapsed() < Duration::from_secs(8) {
+        if let Some((13, body)) = steve.poll_game(Duration::from_millis(200)) {
+            if body.windows(16).any(|w| w == b"minecraft:piglin") {
+                piglin = Some(ids_of(&body));
+            }
+            if body.windows(13).any(|w| w == b"minecraft:cod") {
+                cod = Some(ids_of(&body));
+            }
+        }
+    }
+    let (piglin, cod) = (piglin.expect("piglin montré"), cod.expect("morue montrée"));
+    let interact = |c: &mut Client, id: (Vec<u8>, Vec<u8>)| {
+        let mut use_on = vec![0x00, 0x03, 0x00];
+        use_on.extend_from_slice(&id.1);
+        use_on.push(0x00);
+        use_on.extend_from_slice(&[0x00, 0, 0, 0, 0, 0, 0, 0, 0]);
+        c.game(30, &use_on, Some(0xff));
+    };
+    // (ce qui était déjà en route : l'épée montrée à son apparition)
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_millis(500) {
+        let _ = steve.poll_game(Duration::from_millis(100));
+    }
+    interact(&mut steve, piglin.clone());
+    // Il montre le lingot (équipement), puis un objet tombe au sol
+    let (mut shown, mut dropped) = (false, false);
+    let started = std::time::Instant::now();
+    while !(shown && dropped) && started.elapsed() < Duration::from_secs(12) {
+        match steve.poll_game(Duration::from_millis(200)) {
+            Some((31, body)) if body.starts_with(&piglin.1) => shown = true,
+            Some((15, _)) if shown => dropped = true,
+            _ => {}
+        }
+    }
+    assert!(shown, "le piglin tient le lingot");
+    assert!(dropped, "le troc tombe au sol");
+    // Un seau d'eau tendu à la morue : elle disparaît dans le seau
+    command(&mut steve, "/clear");
+    command(&mut steve, "/give @s water_bucket 1");
+    std::thread::sleep(Duration::from_millis(1200));
+    interact(&mut steve, cod.clone());
+    let started = std::time::Instant::now();
+    let mut caught = false;
+    while !caught && started.elapsed() < Duration::from_secs(6) {
+        if let Some((14, body)) = steve.poll_game(Duration::from_millis(200)) {
+            caught |= body.starts_with(&cod.0) && body.len() == cod.0.len();
+        }
+    }
+    assert!(caught, "la morue est dans le seau");
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = handle.join();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Comme dans le jeu : un golem de neige bombarde de boules de neige le monstre qui passe.
+#[test]
+fn a_snow_golem_throws_snowballs_at_monsters() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-golem-neige-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    command(&mut steve, "/summon snow_golem ~3 ~ ~");
+    command(&mut steve, "/summon zombie ~8 ~ ~");
+    let started = std::time::Instant::now();
+    let mut thrown = false;
+    while !thrown && started.elapsed() < Duration::from_secs(8) {
+        if let Some((13, body)) = steve.poll_game(Duration::from_millis(200)) {
+            thrown |= body.windows(18).any(|w| w == b"minecraft:snowball");
+        }
+    }
+    assert!(thrown, "une boule de neige part vers le zombie");
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = handle.join();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Comme dans le jeu : l'évocateur ne frappe pas, il fait jaillir des crocs vers sa proie.
+#[test]
+fn an_evoker_summons_fangs() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-evocateur-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    command(&mut steve, "/gamemode survival");
+    std::thread::sleep(Duration::from_millis(300));
+    command(&mut steve, "/summon evocation_illager ~6 ~ ~");
+    let started = std::time::Instant::now();
+    let mut fangs = false;
+    while !fangs && started.elapsed() < Duration::from_secs(10) {
+        if let Some((13, body)) = steve.poll_game(Duration::from_millis(200)) {
+            fangs |= body.windows(24).any(|w| w == b"minecraft:evocation_fang");
+        }
+    }
+    assert!(fangs, "des crocs jaillissent");
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = handle.join();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Comme dans le jeu : le warden invoqué sort de terre (7 s), rugit en trouvant sa cible
+/// (4,2 s), puis l'atteint de son onde sonique, même de loin.
+#[test]
+fn a_warden_emerges_roars_and_booms() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-warden-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    command(&mut steve, "/gamemode survival");
+    std::thread::sleep(Duration::from_millis(300));
+    command(&mut steve, "/summon warden ~3 ~ ~");
+    let started = std::time::Instant::now();
+    let (mut warden, mut hurt_at, mut hit) = (None::<(Vec<u8>, Vec<u8>)>, None, false);
+    while hurt_at.is_none() && started.elapsed() < Duration::from_secs(20) {
+        // Steve le frappe : aveugle, c'est à lui qu'il en voudra (il ne bouge pas, sinon)
+        if let (false, Some(w)) = (hit, warden.as_ref()) {
+            let mut attack = vec![0x00, 0x03, 0x00];
+            attack.extend_from_slice(&w.1);
+            attack.push(0x01);
+            attack.extend_from_slice(&[0x00, 0, 0, 0, 0, 0, 0, 0, 0]);
+            steve.game(30, &attack, Some(0xff));
+            hit = true;
+        }
+        match steve.poll_game(Duration::from_millis(200)) {
+            Some((13, body)) if body.windows(16).any(|w| w == b"minecraft:warden") => warden = Some(ids_of(&body)),
+            Some((27, body)) if body.get(1) == Some(&2) && warden.as_ref().map(|w| !body.starts_with(&w.1)).unwrap_or(false) => hurt_at = Some(started.elapsed()),
+            _ => {}
+        }
+    }
+    let hurt_at = hurt_at.expect("l'onde sonique atteint le joueur");
+    // (pas avant d'être sorti de terre et d'avoir rugi)
+    assert!(hurt_at > Duration::from_secs(10), "trop tôt : {:?}", hurt_at);
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = handle.join();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Comme dans le jeu : le warden entend ce qui bouge (ici une chauve-souris qui volète) et
+/// finit par s'en prendre à elle, joueur ou pas.
+#[test]
+fn a_warden_hunts_what_it_hears() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-warden-entend-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ops.txt"), "steve\n").unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let command = |c: &mut Client, text: &str| {
+        let mut body = vec![text.len() as u8];
+        body.extend_from_slice(text.as_bytes());
+        body.extend_from_slice(&[0, 0, 0]);
+        c.game(77, &body, Some(0xff));
+    };
+    // (Steve en créatif : le warden ne s'occupe pas de lui)
+    command(&mut steve, "/summon warden ~6 ~ ~");
+    command(&mut steve, "/summon bat ~6 ~2 ~3");
+    let started = std::time::Instant::now();
+    let (mut bat, mut dead) = (None::<(Vec<u8>, Vec<u8>)>, false);
+    // (la chauve-souris peut s'éloigner un moment : on laisse le temps)
+    while !dead && started.elapsed() < Duration::from_secs(50) {
+        match steve.poll_game(Duration::from_millis(200)) {
+            Some((13, body)) if body.windows(13).any(|w| w == b"minecraft:bat") => bat = Some(ids_of(&body)),
+            Some((14, body)) => dead |= bat.as_ref().map(|b| body == b.0).unwrap_or(false),
+            Some((27, body)) => dead |= bat.as_ref().map(|b| body.starts_with(&b.1) && body.get(b.1.len()) == Some(&3)).unwrap_or(false),
+            _ => {}
+        }
+    }
+    assert!(bat.is_some(), "chauve-souris montrée");
+    assert!(dead, "le warden a eu la chauve-souris");
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = handle.join();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `joueur:setItemInHand` remplace l'objet tenu en main ; le plugin Chaos (outil de test de
+/// charge, privé) s'en sert pour armer les bots.
+#[test]
+fn a_plugin_puts_an_item_in_hand() {
+    let dir = std::env::temp_dir().join(format!("basalt-e2e-main-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Main")).unwrap();
+    std::fs::write(dir.join("Main").join("plugin.yml"), "name: Main\nversion: 1.0.0\nmain: main.lua\napi: 1\n").unwrap();
+    std::fs::write(
+        dir.join("Main").join("main.lua"),
+        r#"
+local T = {}
+function T:onPlayerJoin(e)
+  local nom = e:getPlayer():getName()
+  server.afterSeconds(0.5, function()
+    local j = server.getPlayer(nom)
+    j:give("minecraft:stone", 3)
+    j:setItemInHand("minecraft:tnt", 8)
+    server.afterSeconds(0.5, function()
+      local j2 = server.getPlayer(nom)
+      j2:sendMessage("main " .. j2:getItemInHand())
+      j2:setItemInHand()
+      server.afterSeconds(0.5, function()
+        local j3 = server.getPlayer(nom)
+        j3:sendMessage("vide [" .. j3:getItemInHand() .. "]")
+      end)
+    end)
+  end)
+end
+server.registerEvents(T)
+"#,
+    )
+    .unwrap();
+    let (addr, stop, handle) = start(&dir);
+    std::thread::sleep(Duration::from_millis(500));
+    let mut steve = Client::join(addr, "Steve");
+    let started = std::time::Instant::now();
+    let (mut tnt, mut empty) = (false, false);
+    while !(tnt && empty) && started.elapsed() < Duration::from_secs(8) {
+        if let Some((9, body)) = steve.poll_game(Duration::from_millis(200)) {
+            tnt |= body.windows(18).any(|w| w == b"main minecraft:tnt");
+            empty |= body.windows(7).any(|w| w == b"vide []");
+        }
+    }
+    assert!(tnt, "la TNT est en main");
+    assert!(empty, "la main est vidée");
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = handle.join();
     let _ = std::fs::remove_dir_all(&dir);
 }

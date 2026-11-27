@@ -1,11 +1,19 @@
 //! Boucle principale : relie le réseau, la console et les plugins.
 
 mod mob_store;
+mod actors;
 mod api;
 mod effects;
+mod boats;
+mod chests;
+mod menus;
 mod fire;
+mod fishing;
+mod weather;
 mod map;
 mod mobs;
+mod portals;
+mod realms;
 mod nature;
 mod scan;
 mod shots;
@@ -136,12 +144,16 @@ impl TileContext for ItemCatalog<'_> {
 // --- Limites anti-abus par joueur ---------------------------------------------
 /// Lots de paquets acceptés par seconde.
 const MAX_BATCHES_PER_SEC: u32 = 300;
+/// Taille des paquets en attente d'un joueur au-delà de laquelle ils partent sans attendre
+const OUTBOX_FLUSH_AT: usize = 256 * 1024;
 /// Octets de paquets (après décompression) acceptés par seconde.
 const MAX_BYTES_PER_SEC: usize = 6 * 1024 * 1024;
 /// Octets décompressés par seconde, tous joueurs confondus ; au-delà, les lots sont ignorés.
+/// Lots illisibles tolérés par seconde avant de déconnecter le client
+const MAX_BAD_BATCHES_PER_SEC: u32 = 3;
 const MAX_GLOBAL_BYTES_PER_SEC: usize = 64 * 1024 * 1024;
 /// Délai pour envoyer le login après la connexion.
-const LOGIN_DEADLINE: Duration = Duration::from_secs(10);
+const LOGIN_DEADLINE: Duration = Duration::from_secs(30);
 /// Délai pour apparaître dans le monde après la connexion.
 const SPAWN_DEADLINE: Duration = Duration::from_secs(90);
 /// Chunks envoyés par joueur et par tick quand il se déplace (4 = 80 par seconde).
@@ -300,6 +312,8 @@ struct Client {
     connected_at: Instant,
     window: Instant,
     batches: u32,
+    /// Lots illisibles reçus dans la fenêtre d'une seconde (ignorés, puis déconnexion)
+    bad_batches: u32,
     bytes: usize,
     id: i64,
     pack_responses: u8,
@@ -313,6 +327,8 @@ struct Client {
     pos: (f32, f32, f32),
     /// Chunk au centre de la zone chargée, et rayon accordé
     center: (i32, i32),
+    /// Dernière position (en blocs) annoncée au jeu comme centre de la zone servie
+    zone: (i32, i32, i32),
     radius: i32,
     /// Chunks déjà envoyés, et chunks restant à envoyer (les plus proches d'abord)
     loaded: HashSet<(i32, i32)>,
@@ -349,6 +365,8 @@ struct Client {
     /// Accroupi / en course, d'après les mouvements envoyés par le jeu
     sneaking: bool,
     sprinting: bool,
+    /// Nage (sprint dans l'eau), d'après ce que son jeu annonce
+    swimming: bool,
     /// Apparence annoncée par le jeu à la connexion (None : apparence par défaut)
     skin: Option<Arc<crate::player::Skin>>,
     /// Tick du dernier geste du bras relayé aux autres joueurs
@@ -371,6 +389,14 @@ struct Client {
     returning: Vec<i32>,
     /// Tick de sa dernière potion lancée
     threw_at: u64,
+    /// Dernier tick où une pièce d'armure a été enfilée d'un clic droit, et dernier tick où
+    /// le jeu a demandé un changement d'armure
+    armor_at: u64,
+    armor_asked_at: u64,
+    /// Pièces portées juste avant cette demande : si elles n'ont pas changé, la demande a échoué
+    armor_before: [i16; 4],
+    /// Le jeu de ce joueur a reçu sa vitesse du serveur : il l'attend désormais à chaque changement d'allure
+    speed_managed: bool,
     /// Tick du dernier message « objet désactivé » qu'il a reçu
     told_off_at: u64,
     /// Heure du monde de son dernier repos (nuit dormie, mort ou arrivée) : au bout de trois
@@ -394,6 +420,11 @@ struct Client {
     last_input: Instant,
     /// Le signal d'apparition reste à envoyer, une fois le terrain initial parti
     spawn_pending: bool,
+    /// Changement de dimension : le signal « apparu » part dès ce numéro de chunk envoyé (les
+    /// neuf autour du joueur), sans attendre tout le terrain. 0 : pas de raccourci.
+    spawn_quick: u64,
+    /// Ticks passés dans un portail (65535 : déjà franchi, tant qu'il n'en sort pas)
+    in_portal: u16,
     /// Chunks confiés aux fils d'encodage : numéro du prochain, du prochain à envoyer, et
     /// ceux déjà prêts (envoyés dans l'ordre, du centre vers l'extérieur)
     chunk_next: u64,
@@ -410,6 +441,9 @@ struct Client {
     eating: Option<u64>,
     /// Lits de couleur déjà annoncés à ce joueur
     beds_seen: HashSet<(i32, i32, i32)>,
+    /// Coffres doubles déjà annoncés à ce joueur, et coffres dont l'union vient de changer
+    pairs_seen: HashSet<(i32, i32, i32)>,
+    pairs_stale: HashSet<(i32, i32, i32)>,
     /// Lit où le joueur dort, et depuis quel tick
     sleeping: Option<(i32, i32, i32)>,
     slept_at: u64,
@@ -443,6 +477,20 @@ pub struct Server {
     /// Transport de test (fermé hors des tests) ; les joueurs entrent par NetherNet
     local: LocalServer,
     clients: HashMap<SocketAddr, Client>,
+    /// Le monde où le serveur se trouve en ce moment (voir `realms.rs`)
+    realm: String,
+    /// Le monde principal, celui de `world-dir`
+    main_realm: String,
+    /// Les autres mondes ouverts, rangés
+    realms: HashMap<String, realms::Realm>,
+    /// Le monde de chaque joueur connecté
+    homes: HashMap<SocketAddr, String>,
+    /// Pertes déjà signalées à la lecture d'un monde venu du jeu (pour ne pas les répéter)
+    losses_told: usize,
+    /// Règle `dodaylightcycle` à faux dans ce monde : l'heure est arrêtée sur cette valeur
+    time_frozen: Option<i64>,
+    /// Règle `doweathercycle` de ce monde : la météo change d'elle-même
+    do_weather: bool,
     plugins: PluginHost,
     motd: String,
     tick: u64,
@@ -532,6 +580,33 @@ pub struct Server {
     decaying: HashMap<(i32, i32, i32), u64>,
     /// Orbes d'expérience au sol
     orbs: HashMap<i64, survival::Orb>,
+    /// Créatures blessées par une armure à épines, à traiter après leur tour : (créature, dégâts)
+    thorned: Vec<(i64, f32)>,
+    /// Crocs d'évocateur : (tick d'apparition, identifiant, position, lanceur)
+    fangs: Vec<(u64, i64, (f32, f32, f32), i64)>,
+    /// Bruits du tick pour les wardens : (où, qui, colère qu'il suscite)
+    vibrations: Vec<((f32, f32, f32), Option<mobs::Prey>, u32)>,
+    /// Bruits en route vers un warden : (tick d'arrivée, warden, où, qui, colère)
+    heard_later: Vec<(u64, i64, (f32, f32, f32), Option<mobs::Prey>, u32)>,
+    /// Le temps qu'il fait
+    weather: weather::Weather,
+    /// Éclairs montrés aux joueurs, à retirer à la seconde suivante
+    bolts: Vec<i64>,
+    /// Les bateaux du monde
+    boats: HashMap<i64, boats::Boat>,
+    boats_dirty: bool,
+    /// Conteneurs dont le couvercle est ouvert
+    lids: HashSet<(i32, i32, i32)>,
+    /// Le bouchon de chaque pêcheur
+    hooks: HashMap<SocketAddr, fishing::Hook>,
+    /// Coffres doubles : chaque moitié → (x, z) de l'autre
+    pairs: HashMap<(i32, i32, i32), (i32, i32)>,
+    /// Inventaires créés par les plugins
+    menus: HashMap<String, menus::Menu>,
+    /// Eau gelée par les semelles givrantes : (bloc) → tick où elle fond
+    frost: HashMap<(i32, i32, i32), u64>,
+    /// Ce qui porte le coup en cours : 1 un projectile, 2 une explosion (0 : autre chose)
+    hurt_by: u8,
     /// Départs de joueurs en jeu depuis le démarrage, par cause (pour le rapport de mesures)
     leaves: HashMap<&'static str, u64>,
     /// Le jeu a refusé le paquet de déplacement des autres joueurs : il n'est plus envoyé
@@ -566,6 +641,14 @@ pub struct Server {
     tile_net_id: i32,
     /// Gros paquets déjà compressés, par (identifiant, taille, empreinte du contenu)
     packet_cache: HashMap<(u32, usize, u64), Arc<Vec<u8>>>,
+    /// Paquets en attente pour chaque joueur, déjà mis en forme (et sa compression) : envoyés
+    /// en un seul lot à la fin du tour de boucle, comme le serveur officiel regroupe ses
+    /// paquets. Un lot par paquet faisait, avec une foule, des centaines de milliers d'envois
+    /// par seconde à chiffrer : les fils NetherNet saturaient vers 250 joueurs et toutes les
+    /// liaisons tombaient. Global (pas propre à un monde).
+    outbox: HashMap<SocketAddr, (Vec<u8>, bool)>,
+    /// Ce qu'est chaque état de bloc pour un objet au sol (voir `cell`)
+    cell_kinds: std::cell::RefCell<HashMap<u32, Cell>>,
     /// Résultats des recherches `/locate`, faites sur un fil à part : (destinataire, message)
     locate_tx: std::sync::mpsc::Sender<(Option<SocketAddr>, String)>,
     locate_rx: std::sync::mpsc::Receiver<(Option<SocketAddr>, String)>,
@@ -666,6 +749,8 @@ enum Footing {
     Air,
     Solid,
     Liquid,
+    /// Chunk pas encore en mémoire : on ne sait pas (rien ne change pour la chute)
+    Unknown,
 }
 
 /// Cause d'un dégât ou d'une mort.
@@ -771,7 +856,7 @@ impl ChunkPool {
                         Err(_) => return,
                     };
                     let payload = job.view.chunk_payload(job.x, job.z);
-                    let pk = build_chunk(job.exp, job.x, job.z, payload, job.features);
+                    let pk = build_chunk(job.exp, job.view.dimension(), job.x, job.z, payload, job.features);
                     // Hors de la boucle du jeu : compression la plus forte (8 fois plus petit environ)
                     let packet = bedrock::encode_packet_with(bedrock::ID_LEVEL_CHUNK, &pk, job.compression, crate::utils::deflate::Level::Best);
                     if outbox.send((job.addr, job.owner, job.seq, EncodedChunk { x: job.x, z: job.z, version: job.version, packet })).is_err() {
@@ -785,7 +870,7 @@ impl ChunkPool {
 }
 
 /// Paquet LevelChunk complet, selon ce que gère la version du joueur.
-fn build_chunk(exp: u8, x: i32, z: i32, payload: (u32, Vec<u8>), features: crate::versions::Features) -> Vec<u8> {
+fn build_chunk(exp: u8, dimension: i32, x: i32, z: i32, payload: (u32, Vec<u8>), features: crate::versions::Features) -> Vec<u8> {
     if features.chunk_biome_update_flag && (exp == 1 || exp == 4) {
         // Expérience de mise au point : aucun sous-chunk, seulement les biomes et l'octet des
         // blocs de bordure
@@ -798,9 +883,9 @@ fn build_chunk(exp: u8, x: i32, z: i32, payload: (u32, Vec<u8>), features: crate
     }
     let (sections, payload) = payload;
     if features.chunk_biome_update_flag {
-        return bedrock::level_chunk_probe(x, z, sections, &payload, false);
+        return bedrock::level_chunk_probe_in(dimension, x, z, sections, &payload, false);
     }
-    bedrock::level_chunk_counted(x, z, sections, &payload, features)
+    bedrock::level_chunk_in(dimension, x, z, sections, &payload, features)
 }
 
 /// Paquets propres à Bedrock, que la version Java ne connaît pas.
@@ -817,11 +902,19 @@ impl Server {
         let plugins = PluginHost::new(Path::new(&cfg.plugins_dir), cfg.plugin_sandbox, &cfg.plugin_trusted, cfg.plugin_memory_mb);
         let (locate_tx, locate_rx) = std::sync::mpsc::channel();
         bedrock::COMPRESS.store(cfg.network_compression, std::sync::atomic::Ordering::Relaxed);
+        let main_realm = Path::new(&cfg.world_dir).file_name().map(|n| n.to_string_lossy().into_owned()).filter(|n| !n.is_empty()).unwrap_or_else(|| "world".to_string());
         let mut s = Server {
             motd: cfg.server_name.clone(),
             cfg,
             local: rak,
             clients: HashMap::new(),
+            realm: main_realm.clone(),
+            main_realm,
+            realms: HashMap::new(),
+            homes: HashMap::new(),
+            losses_told: 0,
+            time_frozen: None,
+            do_weather: true,
             plugins,
             tick: 0,
             running: true,
@@ -856,6 +949,20 @@ impl Server {
             add_player_refused: false,
             leaves: HashMap::new(),
             orbs: HashMap::new(),
+            thorned: Vec::new(),
+            fangs: Vec::new(),
+            vibrations: Vec::new(),
+            heard_later: Vec::new(),
+            weather: weather::Weather { sky: weather::Sky::Clear, until: 12_000 },
+            bolts: Vec::new(),
+            boats: HashMap::new(),
+            boats_dirty: false,
+            lids: HashSet::new(),
+            hooks: HashMap::new(),
+            pairs: HashMap::new(),
+            menus: HashMap::new(),
+            frost: HashMap::new(),
+            hurt_by: 0,
             decaying: HashMap::new(),
             falling: HashSet::new(),
             fires: HashSet::new(),
@@ -888,6 +995,8 @@ impl Server {
             liquids: None,
             tile_net_id: 1_000_000_000,
             packet_cache: HashMap::new(),
+            outbox: HashMap::new(),
+            cell_kinds: std::cell::RefCell::new(HashMap::new()),
             locate_tx,
             locate_rx,
             locate_busy: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -980,13 +1089,13 @@ impl Server {
 
     /// Pseudos des joueurs connectés.
     fn players(&self) -> Vec<String> {
-        self.clients.values().filter_map(|c| c.name.clone()).collect()
+        self.everyone().into_iter().filter_map(|(_, _, c)| c.name.clone()).collect()
     }
 
     /// Photo de l'état du serveur donnée aux plugins à chaque appel.
     fn info(&self) -> Info {
         let (mut players, mut positions, mut pdata) = (Vec::new(), Vec::new(), Vec::new());
-        for c in self.clients.values() {
+        for (world, _, c) in self.everyone() {
             if let Some(n) = &c.name {
                 players.push(n.clone());
                 positions.push(c.pos);
@@ -1009,6 +1118,7 @@ impl Server {
                     op: self.ops.is_op(&d.name),
                     gamemode: c.mode.save_id(),
                     perms: d.permissions.clone(),
+                    world: world.to_string(),
                 });
             }
         }
@@ -1018,7 +1128,9 @@ impl Server {
             positions: Arc::new(positions),
             pdata: Arc::new(pdata),
             perms: Arc::new(self.plugins.permissions()),
-            world: Some(self.world.view()),
+            world: Some(self.main_view()),
+            worlds: Arc::new(self.world_names()),
+            others: self.other_views(),
             blocks: self.plugin_blocks.clone(),
         };
         info
@@ -1213,6 +1325,20 @@ impl Server {
             c.data = Some(data);
             c.first_visit = fresh;
         }
+        // Son monde : celui où il s'était arrêté s'il est ouvert, sinon le monde principal
+        // (à son point d'apparition : sa position enregistrée était celle d'un autre monde)
+        let saved = self.clients.get(addr).and_then(|c| c.data.as_ref()).map(|d| d.world.clone()).unwrap_or_default();
+        if !fresh && !saved.is_empty() && saved != self.realm {
+            if self.world_names().contains(&saved) {
+                if let Some(c) = self.clients.remove(addr) {
+                    self.homes.insert(*addr, saved.clone());
+                    self.enter(&saved);
+                    self.clients.insert(*addr, c);
+                }
+            } else if let Some(d) = self.clients.get_mut(addr).and_then(|c| c.data.as_mut()) {
+                d.has_pos = false;
+            }
+        }
         fresh
     }
 
@@ -1375,7 +1501,6 @@ impl Server {
         // Le déplacement sera diffusé au prochain tick
         let tick = self.tick + 1;
         let mut correction = None;
-        let mut publish = None;
         match self.clients.get_mut(addr) {
             Some(c) => {
                 // Tourner la tête sans avancer se voit aussi chez les autres joueurs
@@ -1391,10 +1516,15 @@ impl Server {
                 let (dx, dy, dz) = (pos.0 - c.pos.0, pos.1 - c.pos.1, pos.2 - c.pos.2);
                 let horizontal = (dx * dx + dz * dz).sqrt();
                 if check && c.chunks_sent {
-                    // La distance autorisée se recharge à la vitesse maximale, jusqu'à 2 secondes d'avance
+                    // La distance autorisée se recharge à la vitesse maximale, jusqu'à 2 secondes
+                    // d'avance, au rythme des mouvements du jeu (un par tick, 1/20 s) et non de
+                    // l'horloge : après un à-coup du serveur, les mouvements en attente arrivent
+                    // d'un bloc, et l'horloge ne voyait passer qu'un instant — le joueur, qui
+                    // courait simplement, était replacé
                     let now = Instant::now();
                     let cap = max_speed * 2.0;
-                    c.move_budget = (c.move_budget + max_speed * now.duration_since(c.move_budget_at).as_secs_f32()).min(cap);
+                    // (un mouvement vaut 1/20 s ; un peu plus, pour un tick du jeu un peu long)
+                    c.move_budget = (c.move_budget + max_speed * 0.06).min(cap);
                     c.move_budget_at = now;
                     if horizontal > MAX_STEP || dy.abs() > MAX_STEP_VERTICAL || horizontal > c.move_budget {
                         c.corrections += 1;
@@ -1419,6 +1549,8 @@ impl Server {
                     let feet = pos.1 - player_eye_height();
                     if feet < -128.0 {
                         fall = Some(Cause::Void);
+                    } else if footing == Footing::Unknown {
+                        // (terrain pas encore là : la chute en cours reste en suspens)
                     } else if !c.mode.takes_damage() || footing == Footing::Liquid || riding {
                         c.fall_peak = None;
                     } else if footing == Footing::Air {
@@ -1451,7 +1583,6 @@ impl Server {
                         c.delivered.retain(|xz| loaded.contains(xz));
                         let wanted = Self::chunks_around(center, c.radius);
                         c.queue = wanted.into_iter().filter(|xz| !c.loaded.contains(xz)).collect();
-                        publish = Some((pos, c.radius));
                     }
                 }
             }
@@ -1464,14 +1595,9 @@ impl Server {
             self.follow_rider(addr);
         }
         if let Some(cause) = fall {
+            // (une chute qui fait mal s'entend : les wardens l'entendent)
+            self.vibrate(addr, 35);
             self.hurt(addr, fall_amount, cause);
-        }
-        if let Some((pos, radius)) = publish {
-            self.send(
-                addr,
-                bedrock::ID_CHUNK_PUBLISHER_UPDATE,
-                &bedrock::chunk_publisher_update(pos.0.floor() as i32, pos.1.floor() as i32, pos.2.floor() as i32, (radius as u32 + 1) * 16),
-            );
         }
     }
 
@@ -1635,7 +1761,9 @@ impl Server {
         }
         let mut players: Vec<Seen> = Vec::new();
         // Joueurs connectés, même morts : seuls ceux qui ont quitté le serveur sortent de la liste
-        let online: HashSet<i64> = self.clients.values().filter(|c| c.joined && c.stage == Stage::InGame).map(|c| c.id).collect();
+        // (la liste des joueurs est celle du serveur entier, tous mondes confondus)
+        let everyone: Vec<(i64, String, Option<Arc<crate::player::Skin>>)> = self.everyone().into_iter().filter(|(_, _, c)| c.joined && c.stage == Stage::InGame).filter_map(|(_, _, c)| Some((c.id, c.name.clone()?, c.skin.clone()))).collect();
+        let online: HashSet<i64> = everyone.iter().map(|e| e.0).collect();
         let now_tick = self.tick;
         for c in self.clients.values() {
             // Un mort reste visible le temps de sa chute (1 seconde), puis disparaît
@@ -1707,7 +1835,7 @@ impl Server {
         let still = self.move_actor_refused;
         let no_equipment = self.equip_refused;
         let no_list = self.player_list_refused;
-        let mut out: Vec<(SocketAddr, Vec<u8>)> = Vec::new();
+        let mut out: Vec<(SocketAddr, Vec<u8>, bool)> = Vec::new();
         for (addr, c) in self.clients.iter_mut() {
             if !(c.joined && c.stage == Stage::InGame) {
                 continue;
@@ -1741,6 +1869,25 @@ impl Server {
                 if !departed.is_empty() {
                     let uuids: Vec<[u8; 16]> = departed.iter().filter_map(|id| c.listed.remove(id)).collect();
                     packets.push((bedrock::ID_PLAYER_LIST, bedrock::player_list_remove(&uuids)));
+                }
+                // Tous les joueurs du serveur figurent dans la liste (celle qu'ouvre « @ » dans le
+                // tchat et que proposent les commandes), pas seulement ceux qu'on voit de près ;
+                // par petits groupes, un skin pesant lourd
+                if !no_list && c.protocol == 2225 {
+                    let mut added = 0;
+                    for (oid, oname, oskin) in everyone.iter().filter(|e| e.0 != c.id) {
+                        if added >= 3 {
+                            break;
+                        }
+                        if let (Some(skin), false) = (oskin, c.listed.contains_key(oid)) {
+                            let uuid = crate::crypto::sha256(oname.to_lowercase().as_bytes());
+                            let mut id16 = [0u8; 16];
+                            id16.copy_from_slice(&uuid[..16]);
+                            c.listed.insert(*oid, id16);
+                            packets.push((bedrock::ID_PLAYER_LIST, bedrock::player_list_add(&[(&id16, *oid, oname, skin, list_colour(*oid))])));
+                            added += 1;
+                        }
+                    }
                 }
                 // Ajoute les joueurs proches, dans la limite du plafond
                 let mut appeared = 0;
@@ -1832,22 +1979,33 @@ impl Server {
                 c.synced_tick = tick;
             }
             if !packets.is_empty() || !tail.is_empty() {
-                out.push((*addr, bedrock::encode_batch_with(&packets, &tail, c.compression)));
+                // (mis en forme ici, emballé et compressé avec les autres paquets du joueur
+                // sur son fil NetherNet : voir `outbox`)
+                let mut framed = Vec::with_capacity(packets.iter().map(|p| p.1.len() + 8).sum::<usize>() + tail.len());
+                for (id, body) in &packets {
+                    framed.extend_from_slice(&bedrock::frame_packet(*id, body));
+                }
+                framed.extend_from_slice(&tail);
+                out.push((*addr, framed, c.compression));
             }
         }
-        for (addr, batch) in out {
-            self.net_send(&addr, &batch);
+        for (addr, framed, compression) in out {
+            self.queue_framed(&addr, &framed, compression);
+        }
+    }
+
+    /// Range les chunks encodés par les fils chez leur joueur, quel que soit son monde. Un
+    /// chunk demandé avant un changement de monde porte un numéro dépassé : il est jeté.
+    fn collect_chunks(&mut self) {
+        while let Ok((addr, owner, seq, chunk)) = self.chunk_pool.done.try_recv() {
+            if let Some(c) = self.client_mut_anywhere(&addr).filter(|c| c.id == owner && seq >= c.chunk_sent) {
+                c.chunk_ready.insert(seq, chunk);
+            }
         }
     }
 
     /// Envoie quelques chunks en attente à chaque joueur, pour étaler la charge.
     fn send_queued_chunks(&mut self) {
-        // 1. Chunks encodés par les fils : rangés par joueur, dans l'ordre de la file
-        while let Ok((addr, owner, seq, chunk)) = self.chunk_pool.done.try_recv() {
-            if let Some(c) = self.clients.get_mut(&addr).filter(|c| c.id == owner) {
-                c.chunk_ready.insert(seq, chunk);
-            }
-        }
         // 2. Nouveaux chunks à encoder (quelques-uns par tick et par joueur, sans trop d'avance)
         let exp = self.experiment;
         let mut jobs = Vec::new();
@@ -1884,12 +2042,15 @@ impl Server {
         // encodage est réencodé ici, pour ne jamais effacer un bloc déjà envoyé à part.
         let mut out: Vec<(SocketAddr, Vec<u8>)> = Vec::new();
         let mut stale: Vec<(SocketAddr, i32, i32, crate::versions::Features, bool)> = Vec::new();
-        let mut spawn: Vec<SocketAddr> = Vec::new();
+        let mut spawn: Vec<(SocketAddr, bool, i64)> = Vec::new();
+        let mut zones: Vec<(SocketAddr, Vec<u8>)> = Vec::new();
         for (addr, c) in self.clients.iter_mut() {
+            let mut wave: Vec<(i32, i32)> = Vec::new();
             while let Some(chunk) = c.chunk_ready.remove(&c.chunk_sent) {
                 c.chunk_sent += 1;
                 if c.loaded.contains(&(chunk.x, chunk.z)) {
                     c.delivered.insert((chunk.x, chunk.z));
+                    wave.push((chunk.x, chunk.z));
                 }
                 if chunk.version != self.world.chunk_version(chunk.x, chunk.z) {
                     stale.push((*addr, chunk.x, chunk.z, crate::versions::features(c.protocol), c.compression));
@@ -1897,20 +2058,40 @@ impl Server {
                     out.push((*addr, chunk.packet));
                 }
             }
-            if c.spawn_pending && c.queue.is_empty() && c.chunk_sent == c.chunk_next {
+            if c.spawn_pending && ((c.queue.is_empty() && c.chunk_sent == c.chunk_next) || (c.spawn_quick != 0 && c.chunk_sent >= c.spawn_quick)) {
                 c.spawn_pending = false;
-                spawn.push(*addr);
+                // (spawn_quick n'est posé que pour un changement de dimension)
+                spawn.push((*addr, c.spawn_quick != 0, c.id));
+                c.spawn_quick = 0;
+            }
+            // Comme le serveur officiel (relevé par capture) : la zone servie suit la position
+            // exacte du joueur, et l'annonce porte les chunks qui viennent de partir. Annoncée
+            // seulement au passage d'un chunk, elle restait centrée sur un bord : le jeu
+            // pouvait jeter des chunks lointains que le serveur croyait chargés. (Le serveur
+            // officiel la répète à chaque tick ; ici, seulement quand elle change.)
+            let at = (c.pos.0.floor() as i32, c.pos.1.floor() as i32, c.pos.2.floor() as i32);
+            if c.chunks_sent && (at != c.zone || !wave.is_empty()) {
+                c.zone = at;
+                zones.push((*addr, bedrock::chunk_publisher_update_with(c.pos.0.floor() as i32, c.pos.1.floor() as i32, c.pos.2.floor() as i32, (c.radius as u32 + 1) * 16, &wave)));
             }
         }
         for (addr, x, z, features, compression) in stale {
-            let pk = build_chunk(self.experiment, x, z, self.world.chunk_payload(x, z), features);
+            let pk = build_chunk(self.experiment, self.world.generator().kind.dimension(), x, z, self.world.chunk_payload(x, z), features);
             out.push((addr, bedrock::encode_packet(bedrock::ID_LEVEL_CHUNK, &pk, compression)));
         }
         for (addr, packet) in out {
             self.net_send(&addr, &packet);
         }
-        for addr in spawn {
+        for (addr, zone) in zones {
+            self.send(&addr, bedrock::ID_CHUNK_PUBLISHER_UPDATE, &zone);
+        }
+        for (addr, changed_dimension, runtime) in spawn {
             self.send(&addr, bedrock::ID_PLAY_STATUS, &bedrock::play_status(bedrock::STATUS_PLAYER_SPAWN));
+            // D'une dimension à l'autre, le jeu attend aussi « changement terminé » : sans lui
+            // le joueur ne peut plus bouger
+            if changed_dimension {
+                self.send(&addr, bedrock::ID_PLAYER_ACTION, &bedrock::player_action(runtime as u64, bedrock::ACTION_DIMENSION_CHANGE_DONE));
+            }
         }
     }
 
@@ -1989,6 +2170,7 @@ impl Server {
     /// Range les objets créés par les plugins parmi les objets connus, avec les composants
     /// qui seront déclarés aux joueurs. Sans effet tant que les données du jeu manquent.
     fn register_custom_items(&mut self) {
+        self.cell_kinds.borrow_mut().clear();
         let Some(data) = self.data.as_mut() else { return };
         for (def, id) in crate::item::custom::all() {
             let components = crate::nbt::write_network(&def.components());
@@ -2017,8 +2199,85 @@ impl Server {
     /// Applique ce que les plugins ont demandé pendant leurs appels.
     fn apply_actions(&mut self) {
         let mut modified = false;
+        let back = self.realm.clone();
         for a in self.plugins.take_actions() {
+            // Une action sur un joueur se fait dans son monde ; les blocs et les PNJ des
+            // plugins sont ceux du monde principal
+            // …sauf si le plugin a visé un autre monde (`server.getWorld(nom)`)
+            let (a, target) = match a {
+                Action::In(world, inner) => (*inner, Some(world)),
+                a => (a, None),
+            };
+            let go = |s: &mut Self| match &target {
+                Some(w) => {
+                    let found = s.world_names().into_iter().find(|n| n.eq_ignore_ascii_case(w));
+                    found.map(|n| s.enter(&n)).unwrap_or(false)
+                }
+                None => {
+                    s.enter_main();
+                    true
+                }
+            };
+            let reached = match &a {
+                Action::Kick(n, _) | Action::PlayerSet(n, _, _) | Action::PlayerMessage(n, _) | Action::PlayerTeleport(n, _, _, _) | Action::PlayerSave(n) | Action::PlayerGive(n, _, _) | Action::PlayerHand(n, _, _) => {
+                    self.enter_player(n);
+                    true
+                }
+                Action::SetBlocks(_) => go(self),
+                Action::Modify(_, kind, _, _, _) if kind == "spawn-entity" || kind == "shoot" => go(self),
+                // Une créature est là où elle est : l'ordre la suit dans son monde
+                Action::Modify(_, kind, id, _, _) if kind == "mob-act" => {
+                    if let Ok(id) = id.parse::<i64>() {
+                        self.enter_mob(id);
+                    }
+                    true
+                }
+                Action::Npc(owner, order) => {
+                    match order {
+                        // Un PNJ replacé dans un autre monde quitte celui où il était
+                        NpcOrder::Spawn(name, ..) => {
+                            let ok = go(self);
+                            if ok {
+                                let here = self.realm.clone();
+                                if let Some(old) = self.world_of_npc(name).filter(|w| *w != here) {
+                                    self.enter(&old);
+                                    self.npc_order(owner.clone(), NpcOrder::Remove(name.clone()));
+                                    self.enter(&here);
+                                }
+                            }
+                            ok
+                        }
+                        NpcOrder::Walk(name, ..) | NpcOrder::Teleport(name, ..) | NpcOrder::Remove(name) => {
+                            if let Some(w) = self.world_of_npc(name) {
+                                self.enter(&w);
+                            }
+                            true
+                        }
+                        NpcOrder::RemoveAll => {
+                            let owner = owner.clone();
+                            self.each_world(|s| s.npc_order(owner.clone(), NpcOrder::RemoveAll));
+                            continue;
+                        }
+                    }
+                }
+                _ => true,
+            };
+            if !reached {
+                warn!("Plugin : le monde « {} » n'est pas ouvert, action ignorée", crate::log::clean(target.as_deref().unwrap_or(""), 64));
+                continue;
+            }
             match a {
+                Action::Modify(_, kind, order, name, extra) if kind == "world" => {
+                    let mut words = extra.split_whitespace();
+                    let result = match order.as_str() {
+                        "load" => self.load_realm(&name, words.next(), words.next()).map(|_| ()),
+                        "unload" => self.unload_realm(&name),
+                        _ => Ok(()),
+                    };
+                    if let Err(e) = result {
+                        warn!("Plugin : monde « {} » : {}", crate::log::clean(&name, 64), e);
+                    }
+                }
                 Action::Modify(plugin, kind, name, _, sheet) if kind == "new-item" => {
                     // Objet créé par le plugin : gabarit côté serveur, et fiche ajoutée aux
                     // objets connus pour qu'il soit déclaré aux joueurs à leur connexion
@@ -2045,6 +2304,7 @@ impl Server {
                         Err(why) => warn!("[{}] server.items.create(\"{}\") : {}", plugin, name, why),
                     }
                 }
+                Action::Modify(plugin, kind, name, key, sheet) if kind == "menu" => self.menu_action(&plugin, &name, &key, &sheet),
                 Action::Modify(plugin, kind, name, _, sheet) if kind == "new-entity" => {
                     let made = crate::entity::custom::CustomEntity::parse(&name, &sheet).and_then(|def| {
                         if mobs::species_known(&def.looks) {
@@ -2159,6 +2419,23 @@ impl Server {
                         Some(a) => a,
                         None => continue,
                     };
+                    if let ("menu", LVal::Str(id)) = (key.as_str(), &value) {
+                        self.open_menu(&addr, id);
+                        continue;
+                    }
+                    if let ("world", LVal::Str(world)) = (key.as_str(), &value) {
+                        if !self.move_player(&addr, world, None) {
+                            warn!("Plugin : {} ne peut pas aller dans le monde « {} » (il n'est pas ouvert)", name, crate::log::clean(world, 64));
+                        }
+                        continue;
+                    }
+                    // joueur:damage(n) : un coup comme un autre (armure, effets, écouteurs)
+                    if let ("damage", LVal::Num(amount)) = (key.as_str(), &value) {
+                        if amount.is_finite() && *amount > 0.0 {
+                            self.hurt(&addr, (*amount).min(1.0e6) as f32, Cause::Plugin);
+                        }
+                        continue;
+                    }
                     if let ("op", LVal::Bool(b)) = (key.as_str(), &value) {
                         self.set_op(&name, *b);
                         continue;
@@ -2230,10 +2507,24 @@ impl Server {
                     }
                 }
                 Action::SetBlocks(list) => self.set_blocks_from_plugin(list),
+                // (déjà déballée plus haut : un monde visé n'en contient pas un autre)
+                Action::In(_, _) => {}
                 Action::Npc(owner, order) => self.npc_order(owner, order),
                 Action::PlayerGive(name, item, count) => {
                     if let (Some(addr), Some(id)) = (self.addr_of(&name), self.item_id(&item)) {
                         self.add_item(&addr, id, count);
+                    }
+                }
+                Action::PlayerHand(name, item, count) => {
+                    if let Some(addr) = self.addr_of(&name) {
+                        // (un objet inconnu laisse la main telle quelle ; vide : la main se vide)
+                        let id = if item.is_empty() { Some(0) } else { self.item_id(&item) };
+                        if let (Some(id), Some(c)) = (id, self.clients.get_mut(&addr)) {
+                            c.inv.set_held(id, count);
+                            c.inv_touched = true;
+                            self.send_inventory(&addr);
+                            self.show_held(&addr);
+                        }
                     }
                 }
                 Action::PlayerSave(name) => {
@@ -2243,6 +2534,7 @@ impl Server {
                 }
             }
         }
+        self.enter(&back);
         if modified {
             self.refresh_templates();
         }
@@ -2316,6 +2608,7 @@ impl Server {
             };
             let doomed: Vec<(i32, i32, i32)> = self.world.tiles.positions().into_iter().filter(|p| !still_there(*p)).collect();
             for pos in doomed {
+                self.unpair_chest(pos);
                 self.world.tiles.remove(pos);
             }
         }
@@ -2368,13 +2661,57 @@ impl Server {
 
     /// Heure du monde, en ticks de jeu (20 par seconde).
     fn world_time(&self) -> i64 {
-        self.time_base + (self.started.elapsed().as_millis() / 50) as i64
+        self.time_frozen.unwrap_or_else(|| self.time_base + (self.started.elapsed().as_millis() / 50) as i64)
+    }
+
+    /// Fixe l'heure du monde (arrêtée ou non).
+    fn set_world_time(&mut self, time: i64) {
+        match self.time_frozen.as_mut() {
+            Some(frozen) => *frozen = time,
+            None => self.time_base = time - (self.started.elapsed().as_millis() / 50) as i64,
+        }
+    }
+
+    /// La règle `dodaylightcycle` : l'heure avance, ou reste où elle est.
+    fn set_daylight_cycle(&mut self, on: bool) {
+        let now = self.world_time();
+        self.time_frozen = if on { None } else { Some(now) };
+        self.set_world_time(now);
+    }
+
+    /// Présentation des réponses du serveur dans le tchat : un chevron de couleur en tête
+    /// (verte : fait, rouge : refusé, jaune : mode d'emploi, grise : simple information), puis
+    /// le texte en clair. Tous les messages de commandes passent par ici : ils se ressemblent.
+    fn styled(message: &str) -> String {
+        // (déjà mis en forme par un plugin ou par le serveur : laissé tel quel)
+        if message.chars().nth(2) == Some('»') || message.starts_with("§r") {
+            return message.to_string();
+        }
+        let (kind, text) = match message {
+            m if m.starts_with("§c") => (if m[3..].trim_start().starts_with("Usage") { 'e' } else { 'c' }, &m[3..]),
+            m if m.starts_with("§7") => ('7', &m[3..]),
+            m if m.starts_with("§a") => ('a', &m[3..]),
+            m if m.starts_with("§e") => ('e', &m[3..]),
+            m => ('a', m),
+        };
+        let body = match kind {
+            'c' => "§c",
+            '7' => "§7",
+            'e' => "§7",
+            _ => "§f",
+        };
+        // Mode d'emploi : la commande elle-même ressort en blanc
+        let text = match (kind, text.split_once(": ")) {
+            ('e', Some((label, usage))) if label.trim_end().ends_with("Usage") => format!("{}: §f{}", label, usage),
+            _ => text.to_string(),
+        };
+        format!("§{}» §r{}{}", kind, body, text)
     }
 
     /// Réponse à l'auteur d'une commande : dans son chat, ou dans la console.
     fn reply(&mut self, sender: Option<SocketAddr>, message: &str) {
         match sender {
-            Some(addr) => self.send(&addr, bedrock::ID_TEXT, &bedrock::text_raw(message)),
+            Some(addr) => self.send(&addr, bedrock::ID_TEXT, &bedrock::text_raw(&Self::styled(message))),
             None => {
                 // Sans les codes de couleur du jeu
                 let mut plain = String::new();
@@ -2433,11 +2770,30 @@ impl Server {
     fn run_vanilla(&mut self, sender: Option<SocketAddr>, command: &str, args: &[String]) {
         let _t = timings::scope_with(|| format!("Commande /{}", command));
         const NO_TARGET: &str = "§cAucune cible ne correspond au sélecteur";
+        if command == "world" {
+            let words: Vec<&str> = args.iter().map(|a| a.as_str()).collect();
+            let answer = self.world_command(sender, &words);
+            return self.reply(sender, &answer);
+        }
+
         let who = match sender {
             Some(a) => self.name_at(&a),
             None => "Serveur".to_string(),
         };
         let here = sender.and_then(|a| self.clients.get(&a)).map(|c| (c.pos.0, c.pos.1 - 1.62, c.pos.2)).unwrap_or((0.0, 0.0, 0.0));
+        // Un joueur nommé qui se trouve dans un autre monde : `/tp <joueur>` y emmène celui qui
+        // tape la commande ; les autres commandes (give, kill, gamemode…) s'exécutent chez lui
+        if let Some((world, pos)) = args.iter().find_map(|a| self.locate_player(a)).filter(|(w, _)| *w != self.realm) {
+            match sender {
+                Some(me) if matches!(command, "tp" | "teleport") && args.len() == 1 => {
+                    self.move_player(&me, &world, Some(pos));
+                    return self.reply(sender, &format!("Téléporté auprès de {} (monde « {} »)", args[0], world));
+                }
+                _ => {
+                    self.enter(&world);
+                }
+            }
+        }
         let usage = |s: &mut Self| {
             let text = VanillaCommands::get(command).map(|c| c.usage).unwrap_or("");
             s.reply(sender, &format!("§cErreur de syntaxe. Usage : {}", text));
@@ -2460,12 +2816,12 @@ impl Server {
             }
             "me" => {
                 let text = crate::log::clean(&args.join(" "), 256);
-                self.broadcast(bedrock::ID_TEXT, &bedrock::text_raw(&format!("* {} {}", who, text)), None);
+                self.broadcast_all(bedrock::ID_TEXT, &bedrock::text_raw(&format!("* {} {}", who, text)));
             }
             "say" => {
                 let text = crate::log::clean(&args.join(" "), 256);
                 info!("[{}] {}", who, text);
-                self.broadcast(bedrock::ID_TEXT, &bedrock::text_raw(&format!("[{}] {}", who, text)), None);
+                self.broadcast_all(bedrock::ID_TEXT, &bedrock::text_raw(&format!("[{}] {}", who, text)));
             }
             "tell" | "msg" | "w" => {
                 let targets = self.targets(sender, arg(0));
@@ -2563,13 +2919,29 @@ impl Server {
                     _ => return self.reply(sender, &format!("§cLe niveau va de 0 à {} pour {}", max, crate::item::enchant::enchant_name(id))),
                 };
                 let mut done = 0;
+                let mut refused: Option<String> = None;
                 for addr in targets {
+                    let items = self.data.clone();
                     let changed = match self.clients.get_mut(&addr) {
                         Some(c) => {
                             let slot = (c.inv.selected as usize).min(8);
                             let stack = &mut c.inv.main.slots[slot];
                             let before = stack.ench;
-                            if !stack.is_empty() {
+                            // Les règles du jeu : l'enchantement doit aller sur cet objet, et ne pas
+                            // en exclure un qu'il porte déjà (les objets de plugins acceptent tout)
+                            let full = items.as_ref().and_then(|d| d.item_by_id(stack.id)).map(|def| def.name.clone()).unwrap_or_default();
+                            let short = full.trim_start_matches("minecraft:");
+                            let vanilla = full.starts_with("minecraft:") && self.cfg.vanilla.enchant_rules;
+                            let clash = before.list().into_iter().map(|(other, _)| other).find(|&other| crate::item::enchant::conflict(id, other));
+                            if stack.is_empty() {
+                                refused = Some("§cIl ne tient rien en main".into());
+                            } else if level > 0 && vanilla && !crate::item::enchant::fits(id, short) {
+                                refused = Some(format!("§c{} ne va pas sur {}", crate::item::enchant::enchant_name(id), short));
+                            } else if let Some(other) = clash.filter(|_| level > 0) {
+                                refused = Some(format!("§c{} ne va pas avec {}, déjà sur l'objet", crate::item::enchant::enchant_name(id), crate::item::enchant::enchant_name(other)));
+                            } else if level > 0 && before.level(id) == 0 && before.list().len() >= 5 {
+                                refused = Some("§cCet objet porte déjà cinq enchantements".into());
+                            } else {
                                 stack.ench = stack.ench.with(id, level);
                             }
                             c.inv_touched |= stack.ench != before;
@@ -2584,7 +2956,7 @@ impl Server {
                     }
                 }
                 let name = crate::item::enchant::enchant_name(id);
-                self.reply(sender, &if done == 0 { "§cRien à enchanter : l'objet tenu en main est absent, ou porte déjà cinq enchantements".to_string() } else { format!("{} {} sur l'objet tenu par {} joueur(s)", name, level, done) });
+                self.reply(sender, &if done == 0 { refused.unwrap_or_else(|| "§cRien n'a changé : l'objet porte déjà cet enchantement à ce niveau".to_string()) } else { format!("{} {} sur l'objet tenu par {} joueur(s)", name, level, done) });
             }
             "effect" => {
                 let targets = if args.is_empty() { Vec::new() } else { self.targets(sender, arg(0)) };
@@ -2713,6 +3085,43 @@ impl Server {
                     (true, n) => self.reply(sender, &format!("{} blocs remplis", n)),
                 }
             }
+            "gamerule" => {
+                // Les règles enregistrées avec le monde (level.dat), comme dans le jeu
+                let rule = arg(0).to_ascii_lowercase();
+                let current = match rule.as_str() {
+                    "dodaylightcycle" => self.time_frozen.is_none(),
+                    "doweathercycle" => self.do_weather,
+                    "" => return self.reply(sender, &format!("dodaylightcycle = {}, doweathercycle = {}", self.time_frozen.is_none(), self.do_weather)),
+                    _ => return self.reply(sender, "§cRègles de ce monde : dodaylightcycle, doweathercycle (les autres mécaniques se règlent dans vanilla.properties)"),
+                };
+                let value = match args.get(1).map(|w| w.to_ascii_lowercase()) {
+                    None => return self.reply(sender, &format!("{} = {}", rule, current)),
+                    Some(w) if w == "true" || w == "false" => w == "true",
+                    Some(_) => return self.reply(sender, "§cLa valeur est true ou false"),
+                };
+                if rule == "dodaylightcycle" {
+                    self.set_daylight_cycle(value);
+                } else {
+                    self.do_weather = value;
+                }
+                self.world.dirty = true;
+                self.reply(sender, &format!("Règle {} mise à jour : {}", rule, value));
+            }
+            "weather" => {
+                if arg(0) == "query" {
+                    let left = self.weather.until.saturating_sub(self.tick) / 20;
+                    return self.reply(sender, &format!("Météo : {} (encore {} s{})", self.weather.sky.name(), left, if self.cfg.weather_cycle { "" } else { ", cycle naturel arrêté" }));
+                }
+                let Some(sky) = weather::Sky::parse(arg(0)) else { return usage(self) };
+                // (durée en secondes, comme dans le jeu ; sans durée, une durée naturelle)
+                let span = match args.get(1).map(|w| w.parse::<u64>()) {
+                    None => None,
+                    Some(Ok(seconds)) if (1..=1_000_000).contains(&seconds) => Some(seconds * 20),
+                    _ => return self.reply(sender, "§cLa durée se donne en secondes, de 1 à 1 000 000"),
+                };
+                self.set_weather(sky, span);
+                self.reply(sender, &format!("Météo : {}", sky.name()));
+            }
             "time" => {
                 let now = self.world_time();
                 let wanted = match (arg(0), args.get(1)) {
@@ -2723,7 +3132,7 @@ impl Server {
                 };
                 match wanted {
                     Some(time) => {
-                        self.time_base += time - now;
+                        self.set_world_time(time);
                         self.broadcast(bedrock::ID_SET_TIME, &bedrock::set_time(time as i32), None);
                         self.reply(sender, &format!("Heure définie sur {}", time));
                     }
@@ -2764,6 +3173,11 @@ impl Server {
                 let Some(pos) = pos else { return usage(self) };
                 let baby = args.iter().skip(1).any(|a| a == "minecraft:entity_born" || a == "entity_born");
                 let tamed = args.iter().skip(1).any(|a| a == "minecraft:on_tame" || a == "on_tame");
+                // (la foudre n'est pas une créature : elle tombe, et c'est tout)
+                if arg(0).trim_start_matches("minecraft:") == "lightning_bolt" {
+                    self.strike((pos.0.floor() as i32, pos.1.floor() as i32, pos.2.floor() as i32));
+                    return self.reply(sender, "Objet invoqué : lightning_bolt");
+                }
                 match self.summon_mob(arg(0), pos, baby, tamed) {
                     Ok(()) => self.reply(sender, &format!("Objet invoqué : {}", arg(0).trim_start_matches("minecraft:"))),
                     Err(e) => self.reply(sender, &format!("§c{}", e)),
@@ -3020,7 +3434,7 @@ impl Server {
                 _ => usage(self),
             },
             "stop" => {
-                self.broadcast(bedrock::ID_TEXT, &bedrock::text_raw("Arrêt du serveur…"), None);
+                self.broadcast_all(bedrock::ID_TEXT, &bedrock::text_raw("Arrêt du serveur…"));
                 info!("Arrêt du serveur demandé par {}", who);
                 self.running = false;
             }
@@ -3106,7 +3520,18 @@ impl Server {
 
     /// Demande aux plugins s'ils laissent faire une action sur un bloc. Faux si l'un d'eux
     /// répond `false`.
+    /// Un bruit que fait ce joueur, là où il se tient (pour les wardens).
+    fn vibrate(&mut self, addr: &SocketAddr, annoy: u32) {
+        if let Some(c) = self.clients.get(addr) {
+            if c.mode.takes_damage() {
+                self.vibrations.push(((c.pos.0, c.pos.1 - EYE, c.pos.2), Some(mobs::Prey::Player(*addr)), annoy));
+            }
+        }
+    }
+
     fn block_event(&mut self, event: &str, addr: &SocketAddr, pos: (i32, i32, i32)) -> bool {
+        // (un bloc cassé ou posé fait du bruit : les wardens l'entendent)
+        self.vibrations.push(((pos.0 as f32 + 0.5, pos.1 as f32, pos.2 as f32 + 0.5), Some(mobs::Prey::Player(*addr)), 35));
         if !self.plugins.available() || self.plugins.catalog().plugins.is_empty() {
             return true;
         }
@@ -3262,7 +3687,7 @@ impl Server {
 
     /// Envoie un paquet de jeu à un joueur (compressé si sa session le demande).
     fn send(&mut self, addr: &SocketAddr, id: u32, body: &[u8]) {
-        let compression = self.clients.get(addr).map(|c| c.compression).unwrap_or(false);
+        let compression = self.client_anywhere(addr).map(|c| c.compression).unwrap_or(false);
         if self.cfg.debug {
             if id != bedrock::ID_LEVEL_CHUNK {
                 info!("[paquets] -> {} : id {} ({} octets)", addr, id, body.len());
@@ -3285,7 +3710,45 @@ impl Server {
             };
             return self.net_send(addr, &packet);
         }
-        self.net_send(addr, &bedrock::encode_packet(id, body, compression));
+        self.queue_framed(addr, &bedrock::frame_packet(id, body), compression);
+    }
+
+    /// Met en attente des paquets déjà mis en forme (`frame_packet`) pour un joueur.
+    fn queue_framed(&mut self, addr: &SocketAddr, framed: &[u8], compression: bool) {
+        if self.outbox.get(addr).map(|e| e.1 != compression).unwrap_or(false) {
+            // (la compression vient de changer : ce qui attend part d'abord, tel quel)
+            self.flush_outbox(addr);
+        }
+        let entry = self.outbox.entry(*addr).or_insert_with(|| (Vec::new(), compression));
+        entry.0.extend_from_slice(framed);
+        if entry.0.len() >= OUTBOX_FLUSH_AT {
+            self.flush_outbox(addr);
+        }
+    }
+
+    /// Envoie en un lot les paquets en attente d'un joueur.
+    fn flush_outbox(&mut self, addr: &SocketAddr) {
+        if let Some((framed, compression)) = self.outbox.remove(addr) {
+            if framed.is_empty() {
+                return;
+            }
+            match self.nether.as_mut() {
+                // (mis en lot et compressé sur le fil NetherNet du joueur)
+                Some(n) if n.has(addr) => n.send_framed(addr, framed, compression),
+                _ => {
+                    let batch = bedrock::encode_batch_with(&[], &framed, compression);
+                    self.local.send(addr, &batch);
+                }
+            }
+        }
+    }
+
+    /// Envoie les paquets en attente de tous les joueurs.
+    fn flush_outboxes(&mut self) {
+        let addrs: Vec<SocketAddr> = self.outbox.keys().copied().collect();
+        for addr in addrs {
+            self.flush_outbox(&addr);
+        }
     }
 
     /// Expulse un joueur d'après son pseudo (sans effet s'il n'est pas en jeu).
@@ -3346,14 +3809,40 @@ impl Server {
 
     /// Envoie un paquet à tous les joueurs en jeu, sauf éventuellement un.
     fn broadcast(&mut self, id: u32, body: &[u8], except: Option<SocketAddr>) {
-        let targets: Vec<SocketAddr> = self
+        // Un bloc qui change ne concerne que ceux qui ont son chunk chargé, comme dans le jeu :
+        // le dire aux 500 joueurs du serveur coûtait plus de 10 ms par bloc cassé dans une foule
+        let chunk = if id == bedrock::ID_UPDATE_BLOCK {
+            let mut pos = 0;
+            match (bedrock::read_vari32(body, &mut pos), bedrock::read_varu32(body, &mut pos), bedrock::read_vari32(body, &mut pos)) {
+                (Some(x), Some(_), Some(z)) => Some((x >> 4, z >> 4)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let targets: Vec<(SocketAddr, bool)> = self
             .clients
             .iter()
             .filter(|(a, c)| c.stage == Stage::InGame && c.protocol >= crate::versions::MIN_PROTOCOL && Some(**a) != except)
-            .map(|(a, _)| *a)
+            .filter(|(_, c)| match chunk {
+                Some((cx, cz)) => {
+                    let me = ((c.pos.0.floor() as i32) >> 4, (c.pos.2.floor() as i32) >> 4);
+                    (cx - me.0).abs() <= c.radius + 2 && (cz - me.1).abs() <= c.radius + 2
+                }
+                None => true,
+            })
+            .map(|(a, c)| (*a, c.compression))
             .collect();
-        for addr in targets {
-            self.send(&addr, id, body);
+        if body.len() >= CACHE_FROM || self.cfg.debug {
+            for (addr, _) in targets {
+                self.send(&addr, id, body);
+            }
+            return;
+        }
+        // (mis en forme une seule fois pour tous)
+        let framed = bedrock::frame_packet(id, body);
+        for (addr, compression) in targets {
+            self.queue_framed(&addr, &framed, compression);
         }
     }
 
@@ -3408,7 +3897,7 @@ impl Server {
         // Envoyé comme un message du serveur, « <pseudo> message », et non comme un message de
         // joueur : le jeu applique aux messages de joueurs son filtre de grossièretés (mots
         // remplacés par des #), que le serveur ne veut pas.
-        self.broadcast(bedrock::ID_TEXT, &bedrock::text_raw(&format!("<{}§r> {}", shown, clean)), None);
+        self.broadcast_all(bedrock::ID_TEXT, &bedrock::text_raw(&format!("<{}§r> {}", shown, clean)));
     }
 
     /// Sous les pieds d'un joueur (position à hauteur des yeux) : sol, liquide ou vide.
@@ -3421,7 +3910,9 @@ impl Server {
         for (dx, dz) in [(-0.3, -0.3), (0.3, -0.3), (-0.3, 0.3), (0.3, 0.3)] {
             let (x, z) = ((eye.0 + dx).floor() as i32, (eye.2 + dz).floor() as i32);
             for (y, below) in [((feet + 0.01).floor() as i32, false), ((feet - 0.05).floor() as i32, true)] {
-                let state = self.world.get(x, y, z);
+                // (sans jamais générer de chunk ici : à 500 joueurs qui explorent, les
+                // générer pendant le traitement des mouvements figeait la boucle du jeu)
+                let Some(state) = self.world.get_loaded(x, y, z) else { return Footing::Unknown };
                 if state == air {
                     continue;
                 }
@@ -3484,6 +3975,18 @@ impl Server {
     }
 
     fn hurt(&mut self, addr: &SocketAddr, amount: f32, cause: Cause) {
+        // Mécaniques coupées dans vanilla.properties
+        let rules = &self.cfg.vanilla;
+        let off = match &cause {
+            Cause::Fall => !rules.fall_damage,
+            Cause::Fire => !rules.fire_damage,
+            Cause::Drown => !rules.drowning,
+            Cause::Player(_) => !rules.pvp,
+            _ => false,
+        };
+        if off {
+            return;
+        }
         let tick = self.tick;
         let unstoppable = matches!(cause, Cause::Void | Cause::Command);
         // Coup reçu pendant l'invulnérabilité : ce que le coup précédent avait déjà fait
@@ -3512,19 +4015,37 @@ impl Server {
         }
         // Écouteurs : annulation, dégâts modifiés
         let mut amount = amount;
-        if self.plugins.listens("EntityDamageEvent") {
-            let (label, damager) = match &cause {
-                Cause::Fall => ("FALL", None),
-                Cause::Void => ("VOID", None),
-                Cause::Player(by) => ("ENTITY_ATTACK", Some(by.clone())),
-                Cause::Command => ("SUICIDE", None),
-                Cause::Plugin => ("CUSTOM", None),
-                Cause::Mob(_) => ("ENTITY_ATTACK", None),
-                Cause::Hunger => ("STARVATION", None),
-                Cause::Poison | Cause::Magic => ("MAGIC", None),
-                Cause::Fire => ("FIRE_TICK", None),
-                Cause::Drown => ("DROWNING", None),
+        let (label, damager) = match &cause {
+            Cause::Fall => ("FALL", None),
+            Cause::Void => ("VOID", None),
+            Cause::Player(by) => ("ENTITY_ATTACK", Some(by.clone())),
+            Cause::Command => ("SUICIDE", None),
+            Cause::Plugin => ("CUSTOM", None),
+            Cause::Mob(_) => ("ENTITY_ATTACK", None),
+            Cause::Hunger => ("STARVATION", None),
+            Cause::Poison | Cause::Magic => ("MAGIC", None),
+            Cause::Fire => ("FIRE_TICK", None),
+            Cause::Drown => ("DROWNING", None),
+        };
+        // server.on("damage") : faux annule le coup, un nombre le remplace
+        if self.plugins.hears("damage") {
+            let victim = self.clients.get(addr).and_then(|c| c.name.clone()).unwrap_or_default();
+            let by = match (&cause, &damager) {
+                (_, Some(player)) => LVal::Player(player.clone()),
+                (Cause::Mob(what), _) => LVal::Str(what.to_string()),
+                _ => LVal::Nil,
             };
+            match self.emit("damage", &[LVal::Player(victim), LVal::Num(amount as f64), LVal::Str(label.to_lowercase()), by]).first() {
+                Some(LVal::Bool(false)) => return,
+                Some(LVal::Num(n)) if n.is_finite() => amount = n.clamp(0.0, 1.0e6) as f32,
+                Some(LVal::Int(n)) => amount = (*n as f32).clamp(0.0, 1.0e6),
+                _ => {}
+            }
+            if amount <= 0.0 {
+                return;
+            }
+        }
+        if self.plugins.listens("EntityDamageEvent") {
             let mut fields = vec![("entity", self.name_json(addr)), ("cause", Json::Str(label.into())), ("baseDamage", Json::Num(amount as f64))];
             if let Some(by) = damager {
                 fields.push(("damager", Json::Str(by)));
@@ -3552,11 +4073,14 @@ impl Server {
         }
         // Armure enchantée : chaque point de protection retire 4 % (80 % au plus). La
         // protection vaut un point par niveau contre tout ; la protection contre le feu deux
-        // contre le feu, la chute amortie trois contre les chutes.
+        // contre le feu, la chute amortie trois contre les chutes, les protections contre les
+        // projectiles et les explosions deux contre les leurs.
         if matches!(cause, Cause::Player(_) | Cause::Mob(_) | Cause::Fire | Cause::Fall) && amount > 0.0 {
-            use crate::item::enchant::{FEATHER_FALLING, FIRE_PROTECTION, PROTECTION};
+            use crate::item::enchant::{BLAST_PROTECTION, FEATHER_FALLING, FIRE_PROTECTION, PROJECTILE_PROTECTION, PROTECTION};
+            let by = self.hurt_by;
             let points: u32 = self.clients.get(addr).map(|c| c.inv.armor.slots.iter().filter(|s| !s.is_empty()).map(|s| {
                 s.ench.level(PROTECTION) as u32 + if matches!(cause, Cause::Fire) { 2 * s.ench.level(FIRE_PROTECTION) as u32 } else { 0 } + if matches!(cause, Cause::Fall) { 3 * s.ench.level(FEATHER_FALLING) as u32 } else { 0 }
+                    + if by == 1 { 2 * s.ench.level(PROJECTILE_PROTECTION) as u32 } else { 0 } + if by == 2 { 2 * s.ench.level(BLAST_PROTECTION) as u32 } else { 0 }
             }).sum()).unwrap_or(0);
             amount *= 1.0 - points.min(20) as f32 * 0.04;
         }
@@ -3640,6 +4164,13 @@ impl Server {
             vec![("player", self.name_json(addr)), ("deathMessage", Json::Str(message.clone())), ("keepInventory", Json::Bool(self.cfg.keep_inventory))],
         );
         let message = text_of(&out, "deathMessage", 512).unwrap_or(message);
+        // server.on("death") : un texte remplace le message de mort, faux le supprime
+        let player = self.clients.get(addr).and_then(|c| c.name.clone()).unwrap_or_default();
+        let message = match self.emit("death", &[LVal::Player(player), LVal::Str(message.clone())]).first() {
+            Some(LVal::Str(text)) => text.chars().filter(|c| !c.is_control()).take(512).collect(),
+            Some(LVal::Bool(false)) => String::new(),
+            _ => message,
+        };
         let keep = out.as_ref().and_then(|v| v.get("keepInventory")).and_then(|k| k.as_bool()).unwrap_or(self.cfg.keep_inventory);
         self.actor_event_around(addr, id, bedrock::EVENT_DEATH);
         // Son inventaire tombe au sol autour de lui, sauf avec keep-inventory=true. Si le jeu
@@ -3685,10 +4216,8 @@ impl Server {
         }
         if !message.is_empty() {
             info!("{}", crate::log::clean(&message, 128));
-            self.broadcast(bedrock::ID_TEXT, &bedrock::text_raw(&message), None);
+            self.broadcast_all(bedrock::ID_TEXT, &bedrock::text_raw(&message));
         }
-        let player = self.clients.get(addr).and_then(|c| c.name.clone()).unwrap_or_default();
-        self.emit("death", &[LVal::Player(player)]);
     }
 
     /// Choisit le terrain du monde (celui déjà enregistré, sinon `level-type` et `level-seed`),
@@ -3756,21 +4285,92 @@ impl Server {
         let tiles = std::mem::take(&mut self.world.tiles);
         self.world = crate::world::World::with_generator(generator);
         self.world.tiles = tiles;
+        // Le monde est rangé comme le fait le jeu : level.dat, et les chunks dans db/. Un monde
+        // venu du jeu (sans la marque de Basalt dans level.dat) est servi tel qu'il est.
+        let level = crate::world::mojang::read_level(&dir).ok().flatten();
+        let native = level.as_ref().map(|l| l.get("BasaltGenerator").is_some()).unwrap_or(true);
+        if let Some(data) = self.data.clone() {
+            match crate::world::mojang::Store::open(&dir, data.table.clone(), native) {
+                Ok(store) => self.world.attach_store(store),
+                Err(e) => error!("Base du monde illisible dans {} ({}) : le monde repart du terrain généré, sans ce qui y était enregistré", dir.join("db").display(), e),
+            }
+        }
+        if !native {
+            info!("Monde venu du jeu : ses chunks enregistrés sont repris tels quels (blocs, coffres, fours, panneaux, heure, météo et créatures du monde normal)");
+        }
         match self.world.load(&dir) {
             Ok(0) => {}
+            Ok(n) if self.world.db_store().is_some() => info!("Ancien format repris : {} blocs modifiés, convertis au format du jeu au prochain enregistrement", n),
             Ok(n) => info!("Monde rechargé : {} blocs modifiés", n),
             Err(e) => warn!("Monde non rechargé ({}) : le serveur repart d'un terrain neuf, l'ancien fichier sera remplacé au prochain enregistrement", e),
         }
         if created {
-            // Le type de terrain et la graine sont enregistrés tout de suite
-            self.world.dirty = true;
-            let _ = std::fs::create_dir_all(&dir);
-            let _ = self.world.save(&dir);
             info!("Nouveau monde : terrain {}, graine {}", stored, seed as i64);
         } else {
             info!("Terrain du monde : {}, graine {}", stored, seed as i64);
         }
         self.spawn = self.find_spawn();
+        // Le Nether est fermé par un plafond : on y arrive dans une salle dégagée au milieu de
+        // la caverne (creusée à la création du monde), pas sur le toit
+        if self.world.generator().kind == crate::world::generator::Kind::Nether {
+            let (x, _, z) = self.spawn;
+            if let (true, Some(floor)) = (created, self.data.as_ref().and_then(|d| d.state_from_spec("minecraft:netherrack"))) {
+                let air = self.world.air;
+                for dx in -3..=3 {
+                    for dz in -3..=3 {
+                        self.world.set(x + dx, 63, z + dz, floor);
+                        for y in 64..=67 {
+                            self.world.set(x + dx, y, z + dz, air);
+                        }
+                    }
+                }
+            }
+            self.spawn = (x, 64, z);
+            if !created {
+                // (monde déjà enregistré, ou Nether repris d'un monde du jeu : le point gardé dans
+                // level.dat, déplacé au besoin vers le sol dégagé le plus proche dans sa colonne)
+                let int = |key: &str| level.as_ref().and_then(|l| l.get(key)).and_then(|t| t.as_i64()).filter(|v| v.abs() < 30_000_000).map(|v| v as i32);
+                if let (Some(sx), Some(sz)) = (int("SpawnX"), int("SpawnZ")) {
+                    let free = |s: &Self, y: i32| !s.blocks_movement(s.world.get(sx, y, sz));
+                    let stand = |s: &Self, y: i32| s.blocks_movement(s.world.get(sx, y - 1, sz)) && free(s, y) && free(s, y + 1);
+                    let wanted = int("SpawnY").unwrap_or(64).clamp(32, 120);
+                    let y = (0..90).flat_map(|d| [wanted + d, wanted - d]).find(|y| (32..=120).contains(y) && stand(self, *y)).unwrap_or(wanted);
+                    self.spawn = (sx, y, sz);
+                }
+            }
+        }
+        // Un monde sans sol (void) : à sa création, une petite plateforme attend les joueurs
+        // au point d'apparition, sinon ils tomberaient dans le vide dès leur arrivée
+        if self.spawn.1 < crate::world::MIN_Y + 1 {
+            let (x, _, z) = self.spawn;
+            if let (true, Some(stone)) = (created, self.data.as_ref().and_then(|d| d.state_from_spec("minecraft:stone"))) {
+                for dx in -2..=2 {
+                    for dz in -2..=2 {
+                        self.world.set(x + dx, 63, z + dz, stone);
+                    }
+                }
+            }
+            self.spawn = (x, 64, z);
+        }
+        // Un monde venu du jeu garde son point d'apparition (la hauteur est recalculée si le
+        // jeu ne l'avait pas fixée)
+        if let (false, Some(level)) = (native, &level) {
+            let int = |key: &str| level.get(key).and_then(|t| t.as_i64()).filter(|v| v.abs() < 30_000_000).map(|v| v as i32);
+            if let (Some(x), Some(z)) = (int("SpawnX"), int("SpawnZ")) {
+                let top = self.world.highest(x, z, &|state| self.blocks_movement(state) && !self.is_leaves(state)) + 1;
+                let y = int("SpawnY").filter(|y| (crate::world::MIN_Y..=crate::world::MAX_Y).contains(y)).unwrap_or(top);
+                self.spawn = (x, if top > crate::world::MIN_Y { y } else { y.max(64) }, z);
+            }
+        }
+        if created {
+            // Le type de terrain, la graine et le point d'apparition sont enregistrés tout de suite
+            self.world.dirty = true;
+            let _ = std::fs::create_dir_all(&dir);
+            let info = self.level_info();
+            if let Err(e) = self.world.plan_save(info).write(&dir) {
+                warn!("Nouveau monde non enregistré dans {} : {}", dir.display(), e);
+            }
+        }
         self.liquids = self.data.as_deref().and_then(crate::world::liquid::Liquids::new);
     }
 
@@ -3783,6 +4383,9 @@ impl Server {
 
     /// Fait couler l'eau et la lave dont la mise à jour est arrivée à échéance.
     fn flow_liquids(&mut self) {
+        if !self.cfg.vanilla.liquid_flow {
+            return;
+        }
         let Some(mut liquids) = self.liquids.take() else { return };
         let changed = {
             let data = self.data.as_ref();
@@ -3908,7 +4511,12 @@ impl Server {
         if self.deflect(addr, target as i64) {
             return;
         }
-        let (from, eye, name, damage) = match self.clients.get(addr) {
+        // Un bateau frappé se casse
+        if self.hit_boat(addr, target as i64) {
+            return;
+        }
+        let prey = self.mobs.get(&(target as i64)).map(|m| m.species);
+        let (from, eye, name, damage, weapon) = match self.clients.get(addr) {
             Some(c) if c.joined && c.dead.is_none() => {
                 let held = c.inv.held();
                 let tool = match (held.is_empty(), self.data.as_ref().and_then(|d| d.item_by_id(held.id))) {
@@ -3916,8 +4524,15 @@ impl Server {
                     _ => VanillaItems::hand(),
                 };
                 // (tranchant : 1,25 de dégâts en plus par niveau)
-                let damage = tool.attack_damage().max(1.0) + 1.25 * held.ench.level(crate::item::enchant::SHARPNESS) as f32;
-                (c.id, c.pos, c.name.clone().unwrap_or_default(), damage)
+                // (châtiment contre les morts-vivants, fléau contre les arthropodes : 2,5 par niveau)
+                use crate::item::enchant::{BANE_OF_ARTHROPODS, SHARPNESS, SMITE};
+                let special = match prey {
+                    Some(s) if s.undead() => 2.5 * held.ench.level(SMITE) as f32,
+                    Some(s) if s.arthropod() => 2.5 * held.ench.level(BANE_OF_ARTHROPODS) as f32,
+                    _ => 0.0,
+                };
+                let damage = tool.attack_damage().max(1.0) + 1.25 * held.ench.level(SHARPNESS) as f32 + special;
+                (c.id, c.pos, c.name.clone().unwrap_or_default(), damage, held.ench)
             }
             _ => return,
         };
@@ -3930,12 +4545,20 @@ impl Server {
         if self.knot_clicked(target as i64) {
             return;
         }
+        // (butin : le niveau de l'arme compte si ce coup tue)
+        if let Some(m) = self.mobs.get_mut(&(target as i64)) {
+            m.looting = weapon.level(crate::item::enchant::LOOTING);
+        }
+        let knock = 0.5 * weapon.level(crate::item::enchant::KNOCKBACK) as f32;
+        // Aura de feu : la créature frappée brûle quatre secondes par niveau. Elle s'enflamme
+        // avant que le coup ne compte : tuée d'un seul coup, elle meurt en flammes, et sa
+        // viande tombe cuite.
+        let fiery = weapon.level(crate::item::enchant::FIRE_ASPECT);
+        if fiery > 0 {
+            self.set_mob_fire(target as i64, self.tick + 80 * fiery as u64);
+        }
         if self.hit_mob(target as i64, (eye.0, eye.1 - EYE, eye.2), damage, mobs::Attacker::Player(*addr)) {
-            // Aura de feu : la créature frappée brûle quatre secondes par niveau
-            let fiery = self.clients.get(addr).map(|c| c.inv.held().ench.level(crate::item::enchant::FIRE_ASPECT)).unwrap_or(0);
-            if fiery > 0 {
-                self.set_mob_fire(target as i64, self.tick + 80 * fiery as u64);
-            }
+            self.boost_knock(target as i64, knock);
             // Le coup use l'arme
             self.wear_held(addr, crate::item::Usage::Strike);
             return;
@@ -3953,10 +4576,21 @@ impl Server {
         let before = self.clients.get(&victim).map(|c| c.hurt_at).unwrap_or(0);
         self.hurt(&victim, damage, Cause::Player(name));
         let hit = self.clients.get(&victim).map(|c| c.hurt_at != before).unwrap_or(false);
+        // Armure à épines : l'agresseur se blesse
+        if hit {
+            if let Some(back) = self.thorns_roll(&victim) {
+                let wearer = self.clients.get(&victim).and_then(|c| c.name.clone()).unwrap_or_default();
+                self.hurt(addr, back, Cause::Player(wearer));
+            }
+            let fiery = weapon.level(crate::item::enchant::FIRE_ASPECT);
+            if fiery > 0 {
+                self.ignite(&victim, 80 * fiery as u64);
+            }
+        }
         // Recul : poussé dans le sens du coup, et un peu vers le haut
         let flat = (dx * dx + dz * dz).sqrt();
         if hit && flat > 0.01 && !self.refused_extras.contains(&bedrock::ID_SET_ACTOR_MOTION) {
-            let motion = (dx / flat * 0.4, 0.4, dz / flat * 0.4);
+            let motion = (dx / flat * (0.4 + knock), 0.4, dz / flat * (0.4 + knock));
             self.send(&victim, bedrock::ID_SET_ACTOR_MOTION, &bedrock::set_actor_motion(victim_id, motion));
         }
     }
@@ -3967,10 +4601,27 @@ impl Server {
             // Sous le monde, c'est le vide : un objet y tombe, puis disparaît un peu plus bas
             return if y < crate::world::MIN_Y - 8 { Cell::Deadly } else { Cell::Empty };
         }
-        let state = self.world.get(x, y, z);
+        // (chunk pas en mémoire : l'objet reste où il est, comme dans le jeu, plutôt que de
+        // faire générer le chunk sur place)
+        let Some(state) = self.world.get_loaded(x, y, z) else { return Cell::Solid(1.0) };
         if state == self.world.air {
             return Cell::Empty;
         }
+        // (ce qu'est un bloc pour un objet ne change pas : calculé une fois par état — la
+        // recherche par le nom coûtait l'essentiel de la physique des objets au sol)
+        if let Some(k) = self.cell_kinds.borrow().get(&state) {
+            return *k;
+        }
+        let k = self.cell_kind(state);
+        let mut kinds = self.cell_kinds.borrow_mut();
+        if kinds.len() < 100_000 {
+            kinds.insert(state, k);
+        }
+        k
+    }
+
+    /// Ce qu'est un état de bloc pour un objet au sol.
+    fn cell_kind(&self, state: u32) -> Cell {
         let d = match &self.data {
             Some(d) => d,
             None => return Cell::Solid(1.0),
@@ -4039,8 +4690,38 @@ impl Server {
         }
         let body = item_physics::Body { pos: at, vel, on_ground: false };
         self.ground.insert(id, GroundItem { item, meta: stack.meta, damage: stack.damage, ench: stack.ench, block, count, body, resting: false, sent: at, born: self.tick, age: 0, pickup_at: self.tick + delay });
-        self.show_ground_items();
+        // (seul ce nouvel objet est montré : refaire le tour de tous les objets au sol pour
+        // chaque joueur coûtait plus de 10 ms par bloc cassé à 500 joueurs)
+        self.show_ground_item(id);
         true
+    }
+
+    /// Montre un objet au sol à ceux qui sont assez près (et ont son chunk).
+    fn show_ground_item(&mut self, id: i64) {
+        let g = match self.ground.get(&id) {
+            Some(g) => g,
+            None => return,
+        };
+        let chunk = ((g.body.pos.0.floor() as i32) >> 4, (g.body.pos.2.floor() as i32) >> 4);
+        let mut packet: Option<Vec<u8>> = None;
+        let mut out: Vec<SocketAddr> = Vec::new();
+        for (addr, c) in self.clients.iter_mut() {
+            if !c.joined || c.stage != Stage::InGame {
+                continue;
+            }
+            let (dx, dz) = (g.body.pos.0 - c.pos.0, g.body.pos.2 - c.pos.2);
+            if dx * dx + dz * dz < 64.0 * 64.0 && c.delivered.contains(&chunk) && c.items_seen.insert(id) {
+                out.push(*addr);
+            }
+        }
+        if out.is_empty() {
+            return;
+        }
+        let p = packet.get_or_insert_with(|| bedrock::add_item_actor_kind(id, g.item, g.count, g.block, g.meta, g.damage, g.ench.0, g.body.pos, g.body.vel));
+        let p = p.clone();
+        for addr in out {
+            self.send(&addr, bedrock::ID_ADD_ITEM_ACTOR, &p);
+        }
     }
 
     /// Petit élan au hasard (butin d'un bloc, inventaire lâché à la mort), comme dans le jeu.
@@ -4072,21 +4753,42 @@ impl Server {
     /// Montre à chaque joueur les objets au sol proches de lui (64 blocs), retire les lointains.
     fn show_ground_items(&mut self) {
         let mut out: Vec<(SocketAddr, u32, Vec<u8>)> = Vec::new();
+        // Les objets rangés par chunk : chaque joueur ne regarde que ceux de son voisinage et
+        // ceux qu'il voit déjà (au lieu de tous les objets pour chaque joueur)
+        let mut grid: HashMap<(i32, i32), Vec<i64>> = HashMap::new();
+        for (id, g) in &self.ground {
+            grid.entry(((g.body.pos.0.floor() as i32) >> 4, (g.body.pos.2.floor() as i32) >> 4)).or_default().push(*id);
+        }
         for (addr, c) in self.clients.iter_mut() {
             if !c.joined || c.stage != Stage::InGame {
                 continue;
             }
-            for (id, g) in &self.ground {
+            let me = ((c.pos.0.floor() as i32) >> 4, (c.pos.2.floor() as i32) >> 4);
+            // Ceux qu'il voit : retirés s'ils sont partis loin (ou disparus de son terrain)
+            let seen: Vec<i64> = c.items_seen.iter().copied().collect();
+            for id in seen {
+                let Some(g) = self.ground.get(&id) else { continue };
                 let (dx, dz) = (g.body.pos.0 - c.pos.0, g.body.pos.2 - c.pos.2);
-                let far = dx * dx + dz * dz;
-                // Comme les créatures : montré seulement une fois son chunk arrivé chez le jeu
                 let has_chunk = c.delivered.contains(&((g.body.pos.0.floor() as i32) >> 4, (g.body.pos.2.floor() as i32) >> 4));
-                if far < 64.0 * 64.0 && has_chunk {
-                    if c.items_seen.insert(*id) {
-                        out.push((*addr, bedrock::ID_ADD_ITEM_ACTOR, bedrock::add_item_actor_kind(*id, g.item, g.count, g.block, g.meta, g.damage, g.ench.0, g.body.pos, g.body.vel)));
+                if (dx * dx + dz * dz > 80.0 * 80.0 || !has_chunk) && c.items_seen.remove(&id) {
+                    out.push((*addr, bedrock::ID_REMOVE_ACTOR, bedrock::remove_actor(bedrock::item_unique_id(id))));
+                }
+            }
+            // Ceux d'à côté (64 blocs : 4 chunks autour, et la case en cours)
+            for cx in me.0 - 4..=me.0 + 4 {
+                for cz in me.1 - 4..=me.1 + 4 {
+                    let Some(ids) = grid.get(&(cx, cz)) else { continue };
+                    // Comme les créatures : montré seulement une fois son chunk arrivé chez le jeu
+                    if !c.delivered.contains(&(cx, cz)) {
+                        continue;
                     }
-                } else if (far > 80.0 * 80.0 || !has_chunk) && c.items_seen.remove(id) {
-                    out.push((*addr, bedrock::ID_REMOVE_ACTOR, bedrock::remove_actor(bedrock::item_unique_id(*id))));
+                    for id in ids {
+                        let Some(g) = self.ground.get(id) else { continue };
+                        let (dx, dz) = (g.body.pos.0 - c.pos.0, g.body.pos.2 - c.pos.2);
+                        if dx * dx + dz * dz < 64.0 * 64.0 && c.items_seen.insert(*id) {
+                            out.push((*addr, bedrock::ID_ADD_ITEM_ACTOR, bedrock::add_item_actor_kind(*id, g.item, g.count, g.block, g.meta, g.damage, g.ench.0, g.body.pos, g.body.vel)));
+                        }
+                    }
                 }
             }
         }
@@ -4129,12 +4831,34 @@ impl Server {
                 self.send_near(at, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound("fizz", at, "", false, -1));
             }
         }
-        for (id, pos, on_ground) in moves {
-            let packet = bedrock::move_actor_absolute(id, pos, 0.0, 0.0, 0.0, on_ground);
-            let viewers: Vec<SocketAddr> = self.clients.iter().filter(|(_, c)| c.items_seen.contains(&id)).map(|(a, _)| *a).collect();
-            for v in viewers {
-                self.send(&v, bedrock::ID_MOVE_ACTOR_ABSOLUTE, &packet);
+        if moves.is_empty() {
+            return;
+        }
+        // Chaque déplacement mis en forme une fois ; chaque joueur reçoit ceux des objets qu'il
+        // voit (parcourir les joueurs pour chaque objet coûtait cher à 800 joueurs)
+        let framed: HashMap<i64, Vec<u8>> = moves.iter().map(|(id, pos, on_ground)| (*id, bedrock::frame_packet(bedrock::ID_MOVE_ACTOR_ABSOLUTE, &bedrock::move_actor_absolute(*id, *pos, 0.0, 0.0, 0.0, *on_ground)))).collect();
+        let mut out: Vec<(SocketAddr, Vec<u8>, bool)> = Vec::new();
+        for (addr, c) in self.clients.iter() {
+            let mut mine: Vec<u8> = Vec::new();
+            if c.items_seen.len() < framed.len() {
+                for id in &c.items_seen {
+                    if let Some(f) = framed.get(id) {
+                        mine.extend_from_slice(f);
+                    }
+                }
+            } else {
+                for (id, f) in &framed {
+                    if c.items_seen.contains(id) {
+                        mine.extend_from_slice(f);
+                    }
+                }
             }
+            if !mine.is_empty() {
+                out.push((*addr, mine, c.compression));
+            }
+        }
+        for (addr, mine, compression) in out {
+            self.queue_framed(&addr, &mine, compression);
         }
     }
 
@@ -4321,6 +5045,19 @@ impl Server {
                 self.time_base = time - (self.started.elapsed().as_millis() / 50) as i64;
             }
         }
+        // L'heure et les règles du monde sont dans level.dat, comme dans le jeu (time.txt, des
+        // versions précédentes, n'est relu que si level.dat n'a pas encore d'heure)
+        if let Ok(Some(level)) = crate::world::mojang::read_level(std::path::Path::new(&self.cfg.world_dir)) {
+            if let Some(time) = level.get("Time").and_then(|t| t.as_i64()).filter(|t| (0..i64::MAX / 4).contains(t)).filter(|_| !path.exists()) {
+                self.time_base = time - (self.started.elapsed().as_millis() / 50) as i64;
+            }
+            let rule = |key: &str| level.get(key).and_then(|t| t.as_i64()).map(|v| v != 0).unwrap_or(true);
+            self.do_weather = rule("doweathercycle");
+            self.time_frozen = None;
+            if !rule("dodaylightcycle") {
+                self.set_daylight_cycle(false);
+            }
+        }
     }
 
     /// Recharge les objets au sol enregistrés.
@@ -4405,6 +5142,7 @@ impl Server {
         }
         // En survie, les règles du bloc s'appliquent : incassable ou non, butin selon l'outil
         let survival = self.clients.get(addr).map(|c| c.mode == GameMode::Survival).unwrap_or(false);
+        let lucky = self.mob_rng.below(60_060);
         let loot: Option<Vec<(i16, u8)>> = match (&self.data, &self.blocks, self.items_level, survival) {
             (Some(d), Some(blocks), 2, true) => d.block_name(old).and_then(|name| blocks.get(name).map(|b| (name, b))).map(|(name, block)| {
                 if !block.is_breakable() {
@@ -4415,8 +5153,20 @@ impl Server {
                     Some(def) => VanillaItems::get(&def.name),
                     None => VanillaItems::hand(),
                 };
-                let found = block
-                    .drops(tool.as_ref())
+                let (ench, short) = (held.map(|s| s.ench).unwrap_or_default(), name.trim_start_matches("minecraft:"));
+                let usual = block.drops(tool.as_ref());
+                // Toucher de soie : le bloc lui-même
+                use crate::item::enchant::{fortune, silk_touch, Silk, FORTUNE, SILK_TOUCH};
+                let silk = if ench.level(SILK_TOUCH) > 0 { silk_touch(short) } else { Silk::No };
+                if silk == Silk::Always || (silk == Silk::Instead && !usual.is_empty()) {
+                    if let Some(id) = d.item_for_block_name(name).or_else(|| d.item(name).map(|i| i.id)) {
+                        return Some(vec![(id, 1)]);
+                    }
+                }
+                let found = usual
+                    .iter()
+                    .map(|drop| crate::block::Drop { item: drop.item.clone(), count: fortune(short, drop.count, ench.level(FORTUNE), lucky) })
+                    .collect::<Vec<_>>()
                     .iter()
                     .filter_map(|drop| {
                         // L'objet du même nom d'abord ; à défaut, celui que les données associent au bloc
@@ -4441,19 +5191,45 @@ impl Server {
         };
         // Culture : mûre, elle rend sa récolte (sauf si un plugin a fixé le butin de ce bloc)
         let fixed = self.data.as_ref().and_then(|d| d.block_name(old)).map(crate::block::overrides::has_drops).unwrap_or(false);
-        let loot = match (survival && !fixed, self.crop_loot(old)) {
+        let tool_ench = self.clients.get(addr).map(|c| c.inv.held()).filter(|s| !s.is_empty()).map(|s| s.ench).unwrap_or_default();
+        let (luck, silky) = (tool_ench.level(crate::item::enchant::FORTUNE), tool_ench.level(crate::item::enchant::SILK_TOUCH) > 0);
+        let loot = if self.cfg.vanilla.block_drops { loot } else { Vec::new() };
+        let loot = match (survival && self.cfg.vanilla.block_drops && !fixed, self.crop_loot(old, luck)) {
             (true, Some(harvest)) => harvest,
             _ => loot,
         };
+        // Gravier : parfois du silex à sa place. Feuilles cassées sans cisailles : parfois une
+        // pousse, des bâtons, une pomme. La fortune améliore ces chances.
+        let short = self.data.as_ref().and_then(|d| d.block_name(old)).map(|n| n.trim_start_matches("minecraft:").to_string()).unwrap_or_default();
+        let mut loot = loot;
+        if survival && self.cfg.vanilla.block_drops && !fixed && !silky && self.items_level == 2 {
+            use crate::item::enchant::{flint_odds, leaf_odds, sapling_of};
+            if short == "gravel" && !loot.is_empty() && self.mob_rng.below(flint_odds(luck)) == 0 {
+                if let Some(flint) = self.item_id("flint") {
+                    loot = vec![(flint, 1)];
+                }
+            } else if loot.is_empty() && (short.ends_with("_leaves") || short.ends_with("leaves_flowered")) {
+                let (sapling, sticks, apple) = leaf_odds(&short, luck);
+                if self.mob_rng.below(10_000) < sapling {
+                    loot.extend(sapling_of(&short).and_then(|name| self.item_id(&name)).map(|id| (id, 1)));
+                }
+                if self.mob_rng.below(10_000) < sticks {
+                    let n = 1 + self.mob_rng.below(2) as u8;
+                    loot.extend(self.item_id("stick").map(|id| (id, n)));
+                }
+                if self.mob_rng.below(10_000) < apple {
+                    loot.extend(self.item_id("apple").map(|id| (id, 1)));
+                }
+            }
+        }
         // Culture créée par un plugin : pas encore mûre, elle ne rend que de quoi la replanter
-        let loot = match crate::block::custom::variant_of(old) {
+        let mut loot = match crate::block::custom::variant_of(old) {
             Some((custom, stage)) if survival && matches!(custom.variants, crate::block::custom::Variants::Stages(_)) && stage + 1 < custom.variants.count() => {
                 self.item_id(&custom.name).map(|id| vec![(id, 1)]).unwrap_or_default()
             }
             _ => loot,
         };
         // Écouteurs : annulation, butin modifié
-        let mut loot = loot;
         if self.plugins.listens("BlockBreakEvent") {
             let drops = Json::Arr(loot.iter().map(|(id, n)| self.item_json(*id, *n)).collect());
             let fields = vec![("player", self.name_json(addr)), ("block", self.block_json(old, (x, y, z))), ("drops", drops)];
@@ -4500,6 +5276,7 @@ impl Server {
         }
         // Ce qui s'appuyait sur ce bloc se décroche, ce qui pesait dessus tombe
         self.support_check((x, y, z));
+        self.portal_broken((x, y, z));
         // Un tronc en moins : les feuilles qu'il nourrissait dépérissent
         if self.data.as_ref().and_then(|d| d.block_name(old)).map(|n| n.ends_with("_log") || n.ends_with("_wood")).unwrap_or(false) {
             self.leaves_after_log((x, y, z));
@@ -4565,6 +5342,7 @@ impl Server {
                 }
             }
         }
+        self.unpair_chest((x, y, z));
         if let Some(tile) = self.world.tiles.remove((x, y, z)) {
             if let Some(inv) = tile.inventory() {
                 loot.extend(inv.contents().into_iter().map(|(_, item)| (item.id, item.count)));
@@ -4727,6 +5505,7 @@ impl Server {
         if let Some(mob) = self.clients.get(addr).and_then(|c| c.inv.trade_mob) {
             self.send(addr, bedrock::ID_SET_ACTOR_DATA, &bedrock::set_actor_data(mob, &[(68, bedrock::Meta::Long(0))]));
         }
+        self.menu_closed(addr);
         let mut resend = false;
         if let Some(c) = self.clients.get_mut(addr) {
             c.inv.open_window = 0;
@@ -4769,7 +5548,7 @@ impl Server {
                 // Le jeu a déjà appliqué sa demande de son côté : on lui renvoie l'état réel
                 self.send_inventory(addr);
                 if self.load_block_view(addr) {
-                    let view = self.clients.get(addr).filter(|c| c.inv.block_pos.is_some() || c.inv.block_mob.is_some()).map(|c| c.inv.block.slots.clone());
+                    let view = self.clients.get(addr).filter(|c| c.inv.block_pos.is_some() || c.inv.block_mob.is_some() || c.inv.menu.is_some()).map(|c| c.inv.block.slots.clone());
                     if let Some(slots) = view {
                         self.send_block_content(addr, &slots);
                     }
@@ -4782,6 +5561,35 @@ impl Server {
             info!("{} : demande d'inventaire {:?} — {}", addr, requests, hex);
         }
         for request in requests {
+            // Inventaire d'un plugin : les clics lui sont rapportés, et rien n'en sort s'il est verrouillé
+            if self.menu_request(addr, &request) {
+                continue;
+            }
+            // Armure enfilée d'un clic droit : le serveur vient de faire l'échange. Si le jeu
+            // envoie en plus sa propre demande pour le même geste, l'appliquer déferait tout.
+            const ARMOR_CONTAINER: u8 = 6;
+            let debug = self.cfg.debug;
+            let on_armor = request.actions.iter().any(|a| match a {
+                bedrock::StackAction::Take { from, to, .. } | bedrock::StackAction::Place { from, to, .. } => from.container == ARMOR_CONTAINER || to.container == ARMOR_CONTAINER,
+                bedrock::StackAction::Swap { a, b } => a.container == ARMOR_CONTAINER || b.container == ARMOR_CONTAINER,
+                _ => false,
+            });
+            if on_armor {
+                let tick = self.tick;
+                let just_equipped = self.clients.get(addr).map(|c| tick.saturating_sub(c.armor_at) < 6).unwrap_or(false);
+                if debug {
+                    info!("demande d'inventaire sur l'armure{} : {:?}", if just_equipped { " (ignorée : pièce enfilée à l'instant d'un clic droit)" } else { "" }, request.actions);
+                }
+                if just_equipped {
+                    self.send(addr, bedrock::ID_ITEM_STACK_RESPONSE, &bedrock::item_stack_response(request.id, None));
+                    self.send_inventory_with(addr, true);
+                    continue;
+                }
+                if let Some(c) = self.clients.get_mut(addr) {
+                    c.armor_asked_at = tick;
+                    c.armor_before = [0, 1, 2, 3].map(|i| c.inv.armor.slots[i].id);
+                }
+            }
             // Menu créatif : l'objet demandé doit exister, et le serveur être en mode créatif
             let creative = self.clients.get(addr).map(|c| c.mode == GameMode::Creative).unwrap_or(false);
             let from_menu = request.actions.iter().any(|a| matches!(a, bedrock::StackAction::CraftCreative { .. }));
@@ -4849,7 +5657,7 @@ impl Server {
                 // (armure et seconde main comprises, même vides : sinon un objet que le jeu
                 // croyait y avoir mis y reste affiché)
                 self.send_inventory_with(addr, true);
-                let view = self.clients.get(addr).filter(|c| c.inv.block_pos.is_some() || c.inv.block_mob.is_some()).map(|c| c.inv.block.slots.clone());
+                let view = self.clients.get(addr).filter(|c| c.inv.block_pos.is_some() || c.inv.block_mob.is_some() || c.inv.menu.is_some()).map(|c| c.inv.block.slots.clone());
                 if let Some(slots) = view {
                     self.send_block_content(addr, &slots);
                 }
@@ -4876,6 +5684,8 @@ impl Server {
     /// Touche « lâcher » (Q) : l'objet doit être dans la case indiquée (ou en main), en
     /// quantité suffisante ; sinon le joueur retrouve l'inventaire exact du serveur.
     fn on_key_drop(&mut self, addr: &SocketAddr, d: bedrock::WorldDrop) {
+        // (un objet jeté : un bruit pour les wardens)
+        self.vibrate(addr, 35);
         let debug = self.cfg.debug;
         let taken = match self.clients.get_mut(addr) {
             Some(c) if c.stage == Stage::InGame && c.dead.is_none() && !c.mode.is_spectator() => {
@@ -5080,13 +5890,31 @@ impl Server {
         if self.use_lighter(addr, pos) {
             return true;
         }
+        // Œil de l'Ender sur un cadre de portail de l'End
+        if self.use_ender_eye(addr, pos) {
+            return true;
+        }
         // Buisson à baies mûres : la cueillette
         if self.pick_berries(addr, pos) {
+            return true;
+        }
+        // Bateau en main : il est posé
+        if self.place_boat(addr, pos) {
+            return true;
+        }
+        // Poudre d'os : la culture, la pousse ou l'herbe grandit
+        if self.use_bone_meal(addr, pos) {
             return true;
         }
         // Houe : la terre est labourée
         if self.till(addr, pos) {
             return true;
+        }
+        // Accroupi avec un objet en main : le bloc cliqué n'est pas utilisé (ni ouvert, ni
+        // actionné), l'objet est posé contre lui, comme dans le jeu
+        if self.clients.get(addr).map(|c| c.sneaking && !c.inv.held().is_empty()).unwrap_or(false) {
+            // (une pièce d'armure ne se pose pas : elle s'enfile)
+            return self.equip_held(addr);
         }
         // Lit : point de réapparition, et sommeil la nuit
         if self.data.as_ref().and_then(|d| d.block_name(state)) == Some("minecraft:bed") {
@@ -5100,7 +5928,10 @@ impl Server {
         }
         let (name, action, kind) = match self.block_at_state(state) {
             Some(b) if b.interaction() != Interaction::None => (b.short_name().to_string(), b.interaction(), b.tile()),
-            _ => return false,
+            // Clic droit en visant un bloc ordinaire, une pièce d'armure en main : elle s'enfile.
+            // (Le jeu le fait de son côté ; le serveur ne le faisait que pour un clic dans le
+            // vide, d'où une armure visible mais qui ne protégeait pas.)
+            _ => return self.equip_held(addr),
         };
         // Un bloc posé avant cette version n'a pas encore ses données : on les crée au premier clic
         if let Some(kind) = kind {
@@ -5144,6 +5975,8 @@ impl Server {
 
     /// Ouvre chez le joueur l'écran d'un bloc : coffre, tonneau, four, établi…
     fn open_container(&mut self, addr: &SocketAddr, pos: (i32, i32, i32), container: crate::block::ContainerType, name: &str) {
+        // (un coffre qu'on ouvre : un bruit pour les wardens)
+        self.vibrations.push(((pos.0 as f32 + 0.5, pos.1 as f32, pos.2 as f32 + 0.5), Some(mobs::Prey::Player(*addr)), 35));
         use crate::block::ContainerType as C;
         // Type d'écran du jeu ; None : écran pas encore géré par le serveur
         let (screen, furnace) = match container {
@@ -5173,6 +6006,13 @@ impl Server {
         }
         // Un seul joueur à la fois dans un même bloc, pour que personne ne voie un contenu périmé
         let has_inventory = container != C::CraftingTable;
+        // (deux coffres voisins arrivés sans être posés à la main s'unissent à la première ouverture)
+        if has_inventory {
+            self.pair_chest_at(pos);
+        }
+        // (un coffre double s'ouvre toujours par sa première moitié, quelle que soit celle cliquée)
+        let halves = if has_inventory { self.halves(pos) } else { vec![pos] };
+        let pos = halves[0];
         if has_inventory && self.clients.values().any(|c| c.inv.block_pos == Some(pos)) {
             self.send(addr, bedrock::ID_TEXT, &bedrock::text_raw("§7Quelqu'un d'autre utilise déjà ce bloc."));
             return;
@@ -5181,19 +6021,21 @@ impl Server {
         if has_inventory {
             // Numéros de pile propres au serveur : aucun risque de doublon avec ceux du joueur
             let next = &mut self.tile_net_id;
-            match self.world.tiles.get_mut(pos).and_then(|t| t.inventory_mut()) {
-                Some(inv) => {
-                    for i in 0..inv.slots().len() {
-                        let mut s = inv.slots()[i];
-                        if !s.is_empty() {
-                            *next = if *next >= i32::MAX - 1 { 1_000_000_000 } else { *next + 1 };
-                            s.net_id = *next;
-                            inv.set_item(i, s);
+            for half in &halves {
+                match self.world.tiles.get_mut(*half).and_then(|t| t.inventory_mut()) {
+                    Some(inv) => {
+                        for i in 0..inv.slots().len() {
+                            let mut s = inv.slots()[i];
+                            if !s.is_empty() {
+                                *next = if *next >= i32::MAX - 1 { 1_000_000_000 } else { *next + 1 };
+                                s.net_id = *next;
+                                inv.set_item(i, s);
+                            }
+                            slots.push(s);
                         }
-                        slots.push(s);
                     }
+                    None => return,
                 }
-                None => return,
             }
         }
         const WINDOW: u8 = 2;
@@ -5211,6 +6053,8 @@ impl Server {
         self.send(addr, bedrock::ID_CONTAINER_OPEN, &bedrock::container_open_block(WINDOW, screen, pos));
         if has_inventory {
             self.send_block_content(addr, &slots);
+            // Le couvercle s'ouvre, avec son bruit
+            self.lid(pos, true);
         }
     }
 
@@ -5257,6 +6101,10 @@ impl Server {
     /// Recopie le contenu réel du bloc ouvert dans la vue du joueur. Faux si le bloc a
     /// disparu : l'écran est alors fermé.
     fn load_block_view(&mut self, addr: &SocketAddr) -> bool {
+        // Inventaire d'un plugin : recopié depuis lui
+        if self.clients.get(addr).map(|c| c.inv.menu.is_some()).unwrap_or(false) {
+            return self.load_menu_view(addr);
+        }
         // Inventaire d'une monture : recopié depuis elle (fermé si elle a disparu)
         if let Some(mob) = self.clients.get(addr).and_then(|c| c.inv.block_mob) {
             return match self.mob_inventory_view(mob) {
@@ -5285,7 +6133,7 @@ impl Server {
             Some(p) => p,
             None => return true,
         };
-        let slots: Option<Vec<inventory::ItemStack>> = self.world.tiles.get(pos).and_then(|t| t.inventory()).map(|i| i.slots().to_vec());
+        let slots: Option<Vec<inventory::ItemStack>> = self.container_view(pos);
         match (slots, self.clients.get_mut(addr)) {
             (Some(slots), Some(c)) => {
                 c.inv.block.slots = slots;
@@ -5300,6 +6148,9 @@ impl Server {
 
     /// Recopie la vue du joueur dans le bloc, après une demande acceptée.
     fn store_block_view(&mut self, addr: &SocketAddr) {
+        if self.store_menu_view(addr) {
+            return;
+        }
         if let Some((mob, slots)) = self.clients.get(addr).and_then(|c| c.inv.block_mob.map(|m| (m, c.inv.block.slots.clone()))) {
             self.store_mob_inventory(addr, mob, &slots);
             return;
@@ -5311,17 +6162,12 @@ impl Server {
             },
             None => return,
         };
-        if let Some(inv) = self.world.tiles.get_mut(pos).and_then(|t| t.inventory_mut()) {
-            for (i, s) in slots.iter().enumerate() {
-                if inv.slots().get(i) != Some(s) {
-                    inv.set_item(i, *s);
-                }
-            }
-        }
+        self.container_store(pos, &slots);
     }
 
     /// Ferme d'autorité l'écran ouvert chez un joueur (bloc cassé, joueur trop loin).
     fn force_close(&mut self, addr: &SocketAddr) {
+        self.menu_closed(addr);
         let window = match self.clients.get_mut(addr) {
             Some(c) if c.inv.open_window != 0 => {
                 let w = c.inv.open_window;
@@ -5345,7 +6191,7 @@ impl Server {
             .collect();
         for (addr, pos, at, seen, furnace, window) in viewers {
             let (dx, dy, dz) = (at.0 - pos.0 as f32 - 0.5, at.1 - pos.1 as f32 - 0.5, at.2 - pos.2 as f32 - 0.5);
-            let state = self.world.tiles.get(pos).and_then(|t| t.inventory().map(|i| (i.slots().to_vec(), t.gauges())));
+            let state = self.container_view(pos).map(|slots| (slots, self.world.tiles.get(pos).and_then(|t| t.gauges())));
             let (now, gauges) = match state {
                 Some(s) if dx * dx + dy * dy + dz * dz <= 10.0 * 10.0 => s,
                 _ => {
@@ -5491,6 +6337,8 @@ impl Server {
             if let Some(new) = tile::create(kind) {
                 self.world.tiles.insert((x, y, z), new);
             }
+            // Coffre : il s'unit à son voisin
+            self.pair_chest(addr, (x, y, z));
             // Lit : il prend la couleur de l'objet posé
             if kind == crate::block::TileType::Bed {
                 self.set_bed_color((x, y, z), item.meta.min(15) as u8);
@@ -5560,12 +6408,35 @@ impl Server {
             return;
         }
         let mut changed = Vec::new();
+        let mut equipped: Vec<((f32, f32, f32), i16)> = Vec::new();
         for c in self.clients.values_mut().filter(|c| c.joined && c.stage == Stage::InGame) {
             let now = Self::worn(c);
             if now != c.shown_armor {
+                // Une pièce vient d'être enfilée (clic droit, inventaire, plugin) : son bruit,
+                // sauf à l'arrivée du joueur, qui porte déjà son armure
+                if self.tick > c.resync_at {
+                    if let Some(piece) = (0..4).find(|i| now[*i].1 > 0 && now[*i].0 != c.shown_armor[*i].0) {
+                        equipped.push((c.pos, now[piece].0));
+                    }
+                }
                 c.shown_armor = now;
                 changed.push((c.id, now));
             }
+        }
+        for (pos, item) in equipped {
+            let name = self.data.as_ref().and_then(|d| d.item_by_id(item)).map(|i| i.name.trim_start_matches("minecraft:").to_string()).unwrap_or_default();
+            let sound = match name.split('_').next().unwrap_or("") {
+                "leather" => "armor.equip_leather",
+                "chainmail" => "armor.equip_chain",
+                "iron" => "armor.equip_iron",
+                "golden" => "armor.equip_gold",
+                "diamond" => "armor.equip_diamond",
+                "netherite" => "armor.equip_netherite",
+                "copper" => "armor.equip_copper",
+                "elytra" => "armor.equip_elytra",
+                _ => "armor.equip_generic",
+            };
+            self.send_near(pos, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound(sound, pos, "", false, -1));
         }
         for (id, armor) in changed {
             let packet = bedrock::player_armor(id, armor);
@@ -5602,6 +6473,15 @@ impl Server {
     }
 
     /// Indicateurs d'un joueur vu par les autres, selon sa posture.
+    /// Allure d'un joueur, à joindre aux indicateurs que le serveur lui renvoie : sans elle,
+    /// chaque mise à jour (l'air sous l'eau, cinq fois par seconde) annulait son sprint et sa nage.
+    fn posture_flags(c: &Client) -> i64 {
+        // (4 : il se sert d'un objet — il mange, boit ou bande son arc ; sans lui, manger sous
+        // l'eau était interrompu à chaque mise à jour de l'air)
+        let using = c.eating.is_some() || c.drawing.map(|t| t != u64::MAX).unwrap_or(false);
+        (if c.sneaking { bedrock::FLAG_SNEAKING } else { 0 }) | (if c.sprinting { bedrock::FLAG_SPRINTING } else { 0 }) | (if c.swimming { bedrock::FLAG_SWIMMING } else { 0 }) | (if using { 1 << 4 } else { 0 })
+    }
+
     fn remote_flags(sneaking: bool, sprinting: bool) -> i64 {
         bedrock::REMOTE_PLAYER_FLAGS | if sneaking { bedrock::FLAG_SNEAKING } else { 0 } | if sprinting { bedrock::FLAG_SPRINTING } else { 0 }
     }
@@ -5725,7 +6605,8 @@ impl Server {
         };
         let filled = match name.as_str() {
             "bucket" => None,
-            "water_bucket" => Some(Fluid::Water),
+            // (un seau de poisson, d'axolotl ou de têtard verse son eau, et la créature avec)
+            "water_bucket" | "cod_bucket" | "salmon_bucket" | "tropical_fish_bucket" | "pufferfish_bucket" | "axolotl_bucket" | "tadpole_bucket" => Some(Fluid::Water),
             "lava_bucket" => Some(Fluid::Lava),
             _ => return false,
         };
@@ -5791,6 +6672,9 @@ impl Server {
             self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block_layer(pos.0, pos.1, pos.2, layer, 1), None);
         }
         self.liquid_neighbours(pos);
+        if name != "water_bucket" && filled == Some(Fluid::Water) {
+            self.bucket_release(&name, pos);
+        }
         // En survie, le seau change ; en créatif, il reste tel quel
         if !creative {
             if let Some(id) = self.item_id(give) {
@@ -5882,6 +6766,7 @@ impl Server {
             self.broadcast(bedrock::ID_UPDATE_BLOCK, &bedrock::update_block(pos.0, pos.1, pos.2, state), None);
             if state == self.world.air {
                 self.support_check(pos);
+                self.portal_broken(pos);
             }
         }
     }
@@ -5934,6 +6819,8 @@ impl Server {
 
     /// Porte, trappe, portillon, levier ou bouton actionné par un clic.
     fn toggle_block(&mut self, addr: &SocketAddr, pos: (i32, i32, i32)) {
+        // (porte, trappe, levier : un bruit pour les wardens)
+        self.vibrations.push(((pos.0 as f32 + 0.5, pos.1 as f32, pos.2 as f32 + 0.5), Some(mobs::Prey::Player(*addr)), 35));
         // Le jeu répète le clic tant que le bouton de la souris est tenu : un seul changement
         let now = self.tick;
         match self.clients.get_mut(addr) {
@@ -5972,6 +6859,7 @@ impl Server {
             None => return,
         };
         self.change_block(pos, next);
+        self.toggled_sound(pos, next);
         if let Some((p, n)) = other_half {
             self.change_block(p, n);
         }
@@ -5995,6 +6883,7 @@ impl Server {
             let same = self.data.as_ref().map(|d| d.block_name(current) == d.block_name(rest)).unwrap_or(false);
             if same {
                 self.change_block(pos, rest);
+                self.toggled_sound(pos, rest);
             }
         }
     }
@@ -6143,6 +7032,7 @@ impl Server {
     fn poll_logins(&mut self) {
         while let Ok((addr, outcome)) = self.logins.results.try_recv() {
             self.logins.pending = self.logins.pending.saturating_sub(1);
+            self.enter_home(&addr);
             let waiting = self.clients.get(&addr).map(|c| c.stage == Stage::Authenticating).unwrap_or(false);
             if !waiting {
                 continue; // le client est parti entre-temps
@@ -6198,6 +7088,7 @@ impl Server {
                 if now.duration_since(c.window) >= Duration::from_secs(1) {
                     c.window = now;
                     c.batches = 0;
+                    c.bad_batches = 0;
                     c.bytes = 0;
                 }
                 c.batches += 1;
@@ -6217,8 +7108,22 @@ impl Server {
         let batch: &[u8] = &data[1..];
         let packets = match bedrock::decode_batch(batch, compression, max) {
             Ok(p) => p,
-            Err(_) => {
-                self.violation(&addr, "paquet illisible ou trop volumineux");
+            Err(why) => {
+                // Un lot isolé illisible est ignoré (le déchiffrement est déjà fait, la suite
+                // reste lisible) : un client qui rame peut en produire un. Plusieurs dans la même
+                // seconde, c'est un client défaillant ou malveillant ; un lot trop gros (bombe de
+                // décompression) déconnecte tout de suite.
+                let bad = self.clients.get_mut(&addr).map(|c| {
+                    c.bad_batches += 1;
+                    c.bad_batches
+                });
+                let who = self.clients.get(&addr).and_then(|c| c.name.clone()).unwrap_or_else(|| addr.to_string());
+                if bad.unwrap_or(0) > MAX_BAD_BATCHES_PER_SEC || why.contains("volumineu") {
+                    warn!("{who} : lot illisible ({why}, {} octets reçus)", batch.len());
+                    self.violation(&addr, "paquet illisible ou trop volumineux");
+                } else {
+                    warn!("{who} : lot illisible ignoré ({why}, {} octets reçus)", batch.len());
+                }
                 return;
             }
         };
@@ -6522,6 +7427,7 @@ impl Server {
                         game_version: &self.cfg.game_version.clone(),
                         seed: self.world.generator().seed,
                         flat: self.world.generator().kind == crate::world::generator::Kind::Flat,
+                        dimension: self.world.generator().kind.dimension(),
                         spawn: self.spawn,
                         features,
                         custom_blocks: &self.custom_blocks.clone(),
@@ -6611,6 +7517,9 @@ impl Server {
                         // Autour de l'endroit où le joueur apparaît
                         let at = self.clients.get(&addr).map(|c| c.pos).unwrap_or((0.5, 0.0, 0.5));
                         let center = ((at.0.floor() as i32) >> 4, (at.2.floor() as i32) >> 4);
+                        if let Some(c) = self.clients.get_mut(&addr) {
+                            c.zone = (at.0.floor() as i32, at.1.floor() as i32, at.2.floor() as i32);
+                        }
                         self.send(
                             &addr,
                             bedrock::ID_CHUNK_PUBLISHER_UPDATE,
@@ -6642,9 +7551,28 @@ impl Server {
                     let parsed = bedrock::read_input(&body);
                     // Accroupi (8) et en course (20) : état annoncé par le jeu à chaque mouvement
                     let moves = bedrock::input_flags(&body);
-                    let posture = (moves.contains(&8), moves.contains(&20));
+                    let mut posture = (moves.contains(&8), moves.contains(&20));
                     let mut changed_posture = None;
                     if let Some(c) = self.clients.get_mut(&addr) {
+                        // La course se lit à ses débuts (25) et à ses fins (26), comme la nage :
+                        // la touche relâchée, le joueur court encore tant qu'il avance. La suivre
+                        // à la touche faisait croire au serveur qu'il marchait, et sa vitesse
+                        // était alors ramenée à celle de la marche.
+                        posture.1 = if moves.contains(&26) { false } else { posture.1 || moves.contains(&25) || c.sprinting };
+                        // Affamé (6 de faim ou moins), on ne court pas : le jeu arrête la course
+                        // de lui-même sans toujours le dire, et la garder ici la lui imposait
+                        // (vitesse de course renvoyée) même touche relâchée
+                        if c.mode.takes_damage() && c.data.as_ref().map(|d| d.food <= 6.0).unwrap_or(false) {
+                            posture.1 = false;
+                        }
+                        // (29 et 30 : le jeu commence à nager, cesse de nager)
+                        if moves.contains(&29) {
+                            c.swimming = true;
+                        }
+                        // (lâcher la touche de sprint ne fait pas cesser de nager : seul le jeu le dit)
+                        if moves.contains(&30) {
+                            c.swimming = false;
+                        }
                         if (c.sneaking, c.sprinting) != posture && c.stage == Stage::InGame {
                             c.sneaking = posture.0;
                             c.sprinting = posture.1;
@@ -6654,6 +7582,11 @@ impl Server {
                     // S'accroupir en selle : on descend
                     if changed_posture.is_some() && posture.0 && self.clients.get(&addr).map(|c| c.riding.is_some()).unwrap_or(false) {
                         self.dismount(&addr);
+                    }
+                    // Un jeu qui a déjà reçu sa vitesse du serveur (effet de rapidité ou de
+                    // lenteur) l'attend à chaque changement d'allure, sprint compris
+                    if changed_posture.is_some() && self.clients.get(&addr).map(|c| c.speed_managed).unwrap_or(false) {
+                        self.sync_speed(&addr);
                     }
                     if let Some(id) = changed_posture {
                         // Les joueurs qui le voient reçoivent sa nouvelle posture
@@ -6686,6 +7619,7 @@ impl Server {
                         }
                     }
                     if let Some(input) = parsed {
+                        let _t = timings::scope("Mouvement — déplacement (contrôle, chute)");
                         self.on_move(&addr, input);
                     }
                     if self.cfg.debug {
@@ -6719,8 +7653,12 @@ impl Server {
                             }
                         }
                     }
-                    self.on_mining(&addr, &body);
+                    {
+                        let _t = timings::scope("Mouvement — minage");
+                        self.on_mining(&addr, &body);
+                    }
                     if bedrock::input_has_interaction(&body) {
+                        let _t = timings::scope("Mouvement — clic sur un bloc");
                         // Lecture directe, puis recherche du geste par la position du joueur qu'il
                         // contient : avec un outil en main, le début du geste varie.
                         let player = self.clients.get(&addr).map(|c| c.pos).unwrap_or((0.0, 0.0, 0.0));
@@ -6797,7 +7735,7 @@ impl Server {
                         } else if action == 0 {
                             // Clic droit sur une entité : nourrir, tondre, traire un animal,
                             // détacher les laisses d'un nœud
-                            if !self.knot_clicked(target as i64) {
+                            if !self.knot_clicked(target as i64) && !self.mount_boat(&addr, target as i64) {
                                 self.interact_mob(&addr, target as i64);
                             }
                         }
@@ -6835,6 +7773,8 @@ impl Server {
                                 self.send_inventory(&addr);
                             } else if self.equip_held(&addr) {
                                 // (l'armure tenue en main est enfilée)
+                            } else if self.use_rod(&addr) {
+                                // (la canne lance son bouchon, ou le relève)
                             } else if self.throw_potion(&addr) {
                                 // (la potion est partie)
                             } else if self.draw_bow(&addr) {
@@ -6963,13 +7903,13 @@ impl Server {
                     }
                     let shown = self.clients.get(&addr).and_then(|c| c.data.as_ref()).map(|d| d.display_name.clone()).unwrap_or_else(|| name.clone());
                     info!("{} a rejoint la partie", name);
-                    let mut message = format!("§e{} a rejoint la partie", shown);
+                    let mut message = format!("§8[§a+§8] §f{} §7a rejoint la partie", shown);
                     let out = self.fire("PlayerJoinEvent", vec![("player", Json::Str(name.clone())), ("joinMessage", Json::Str(message.clone()))]);
                     if let Some(m) = text_of(&out, "joinMessage", 512) {
                         message = m;
                     }
                     if !message.is_empty() {
-                        self.broadcast(bedrock::ID_TEXT, &bedrock::text_raw(&message), None);
+                        self.broadcast_all(bedrock::ID_TEXT, &bedrock::text_raw(&message));
                     }
                     self.send_commands(&addr);
                     // Le jeu s'inscrit lui-même dans sa liste des joueurs (« Vous ») : lui envoyer sa
@@ -7004,6 +7944,7 @@ impl Server {
                         connected_at: Instant::now(),
                         window: Instant::now(),
                         batches: 0,
+                        bad_batches: 0,
                         bytes: 0,
                         id: self.next_id,
                         pack_responses: 0,
@@ -7012,6 +7953,7 @@ impl Server {
                         joined: false,
                         pos: self.spawn_point(),
                         center: (0, 0),
+                        zone: (i32::MIN, 0, 0),
                         radius: 0,
                         loaded: HashSet::new(),
                         delivered: HashSet::new(),
@@ -7032,6 +7974,7 @@ impl Server {
                         last_interact: 0,
                         sneaking: false,
                         sprinting: false,
+                        swimming: false,
                         skin: None,
                         last_swing: 0,
                         shown_held: None,
@@ -7043,6 +7986,10 @@ impl Server {
                         resync_at: 0,
                         air: 300,
                         threw_at: 0,
+                        armor_at: 0,
+                        armor_asked_at: 0,
+                        armor_before: [0; 4],
+                        speed_managed: false,
                         told_off_at: 0,
                         rested_at: self.world_time(),
                         hurt_amount: 0.0,
@@ -7053,6 +8000,8 @@ impl Server {
                         gesture_logged: 0,
                         last_input: Instant::now(),
                         spawn_pending: false,
+                        spawn_quick: 0,
+                        in_portal: 0,
                         chunk_next: 0,
                         chunk_sent: 0,
                         chunk_ready: std::collections::BTreeMap::new(),
@@ -7064,6 +8013,8 @@ impl Server {
                         food_timer: 0,
                         eating: None,
                         beds_seen: HashSet::new(),
+                        pairs_seen: HashSet::new(),
+                        pairs_stale: HashSet::new(),
                         sleeping: None,
                         slept_at: 0,
                         mining: None,
@@ -7089,6 +8040,7 @@ impl Server {
             NetEvent::Packet(addr, data) => self.on_packet(addr, data),
             NetEvent::Disconnected(addr, fault) => {
                 let _t = timings::scope("Départ d'un joueur (sauvegarde, annonce)");
+                self.homes.remove(&addr);
                 if let Some(c) = self.clients.remove(&addr) {
                     if c.joined {
                         *self.leaves.entry(fault.unwrap_or("parti de lui-même (liaison fermée par le joueur)")).or_insert(0) += 1;
@@ -7145,7 +8097,7 @@ impl Server {
                         self.store_player(&c);
                         let shown = c.data.as_ref().map(|d| d.display_name.clone()).unwrap_or_else(|| n.clone());
                         info!("{} a quitté la partie", n);
-                        let mut message = format!("§e{} a quitté la partie", shown);
+                        let mut message = format!("§8[§c-§8] §f{} §7a quitté la partie", shown);
                         let reason = fault.map(|f| f.to_string()).unwrap_or_else(|| "Déconnexion".into());
                         let out = self.fire(
                             "PlayerQuitEvent",
@@ -7155,7 +8107,7 @@ impl Server {
                             message = m;
                         }
                         if !message.is_empty() {
-                            self.broadcast(bedrock::ID_TEXT, &bedrock::text_raw(&message), None);
+                            self.broadcast_all(bedrock::ID_TEXT, &bedrock::text_raw(&message));
                         }
                     }
                     let name = c.name.map(LVal::Str).unwrap_or(LVal::Nil);
@@ -7187,6 +8139,9 @@ impl Server {
                 info!("Arrêt du serveur…");
                 self.running = false;
             }
+            // Pour essayer le rapport de plantage (crashdumps/) : arrête le serveur sur une
+            // erreur interne volontaire, après l'enregistrement de secours
+            "debug-crash" => panic!("plantage demandé depuis la console (debug-crash)"),
             // Essai : renvoie tel quel l'objet au sol relevé auprès du serveur officiel (un bloc de
             // terre en 0,8 -59,3 0,8). Sert à savoir si le jeu l'affiche venant de Basalt.
             "testitem" => {
@@ -7393,14 +8348,22 @@ impl Server {
                     n.key_fingerprint()
                 );
                 // La liaison WebRTC tourne sur son propre fil (voir nethernet_thread)
-                self.nether = Some(crate::network::nethernet_thread::NetherNetHandle::start(n, c.nethernet_threads));
+                self.nether = Some(crate::network::nethernet_thread::NetherNetHandle::start(n, crate::config::nethernet_threads_for(c.nethernet_threads, c.max_players as usize, std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2))));
             }
             Err(e) => error!("Transport NetherNet indisponible : {}", e),
         }
     }
 
-    /// Envoi par NetherNet, ou par le transport de test.
+    /// Envoi d'un lot, après les paquets qui attendaient (l'ordre est gardé).
     fn net_send(&mut self, addr: &SocketAddr, packet: &[u8]) {
+        if self.outbox.contains_key(addr) {
+            self.flush_outbox(addr);
+        }
+        self.net_send_now(addr, packet);
+    }
+
+    /// Envoi par NetherNet, ou par le transport de test.
+    fn net_send_now(&mut self, addr: &SocketAddr, packet: &[u8]) {
         match self.nether.as_mut() {
             // NetherNet transporte les lots sans leur octet 0xfe de tête
             Some(n) if n.has(addr) => n.send(addr, &packet[1..]),
@@ -7410,6 +8373,8 @@ impl Server {
 
     /// Fermeture, coupure et limites de jeu : même chose, sur le bon réseau.
     fn net_close(&mut self, addr: &SocketAddr, delay: Duration) {
+        // (le message de départ et ce qui le précède partent avant la fermeture)
+        self.flush_outbox(addr);
         match self.nether.as_mut() {
             Some(n) if n.has(addr) => n.close(addr, delay),
             _ => self.local.close(addr, delay),
@@ -7417,6 +8382,7 @@ impl Server {
     }
 
     fn net_abort(&mut self, addr: &SocketAddr, reason: &'static str) {
+        self.outbox.remove(addr);
         match self.nether.as_mut() {
             Some(n) if n.has(addr) => n.abort(addr, reason),
             _ => self.local.abort(addr, reason),
@@ -7557,20 +8523,41 @@ impl Server {
             None => return req.respond(503, "text/plain", b"no local address"),
         };
         let clean = sdp_without_identity(&offer);
+        // La session est désignée par l'adresse de la demande (TCP). Le système réutilise ces
+        // numéros de port : une nouvelle demande peut arriver de l'adresse d'un joueur déjà en
+        // jeu — elle prenait alors sa place et le coupait (« retry », 86 départs à 800 bots).
+        // Elle reçoit dans ce cas un autre numéro, libre, à la même adresse IP.
+        let key = self.free_session_key(req.addr);
         let result = match self.nether.as_mut() {
-            Some(n) => n.accept(req.addr, local_ip, &clean, cpk, now),
+            Some(n) => n.accept(key, local_ip, &clean, cpk, now),
             None => Err((503, "NetherNet transport not available")),
         };
         match result {
             // La session se prépare sur un fil à part : la réponse partira de `answer_joins`
             Ok(()) => {
-                self.join_waiting.insert(req.addr, req);
+                self.join_waiting.insert(key, req);
             }
             Err((status, why)) => {
                 warn!("{} : demande de connexion NetherNet refusée ({})", req.addr, why);
                 req.respond(status, "text/plain", why.as_bytes());
             }
         }
+    }
+
+    /// Adresse libre pour désigner une nouvelle session (voir `on_join_request`).
+    fn free_session_key(&self, asked: SocketAddr) -> SocketAddr {
+        let taken = |s: &Self, a: &SocketAddr| s.client_anywhere(a).is_some() || s.join_waiting.contains_key(a) || s.nether.as_ref().map(|n| n.in_use(a)).unwrap_or(false);
+        if !taken(self, &asked) {
+            return asked;
+        }
+        // (des numéros qu'aucun système n'attribue aux connexions sortantes : sous 1024)
+        for port in 1..1024u16 {
+            let key = SocketAddr::new(asked.ip(), port);
+            if !taken(self, &key) {
+                return key;
+            }
+        }
+        asked
     }
 
     /// Répond aux demandes d'entrée dont la session WebRTC est prête.
@@ -7785,8 +8772,9 @@ impl Server {
                 }
             });
         }
-        // Heure du monde (jours écoulés compris)
-        {
+        // Heure du monde (jours écoulés compris) : dans level.dat, comme la météo ; ce fichier
+        // ne sert plus qu'aux mondes sans base (données du jeu absentes)
+        if self.world.db_store().is_none() {
             let (path, time) = (dir.join("time.txt"), self.world_time());
             crate::background::DISK.run(move || {
                 let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
@@ -7798,7 +8786,20 @@ impl Server {
         }
         // Animaux : les régions changées (toutes à l'arrêt)
         let last = !self.running;
-        self.save_mobs(last);
+        {
+            let _t = timings::scope("Sauvegarde — créatures et entités");
+            self.save_mobs(last);
+            self.save_boats();
+        }
+        if self.world.db_store().is_none() {
+            self.save_weather();
+        }
+        // Coffres, fours, panneaux : dans la base du monde, comme le jeu ; sans base, tiles.nbt
+        let mut tile_chunks = None;
+        if let (true, Some(d), true) = (self.world.tiles.dirty, &self.data, self.world.db_store().is_some()) {
+            let ctx = ItemCatalog { data: d, next: &mut self.tile_net_id };
+            tile_chunks = Some(self.world.tiles.snapshot_chunks(&ctx));
+        }
         if let (true, Some(d)) = (self.world.tiles.dirty, &self.data) {
             let ctx = ItemCatalog { data: d, next: &mut self.tile_net_id };
             let doc = self.world.tiles.snapshot(&ctx);
@@ -7809,21 +8810,322 @@ impl Server {
                 }
             });
         }
-        if !self.world.dirty {
+        if !self.world.dirty && self.world.db_store().is_none() {
             return;
         }
         // Un enregistrement précédent encore en cours (disque très lent) : on attend le suivant
         // plutôt que d'empiler des copies du monde en mémoire
         if self.running && crate::background::DISK.pending() > 4 {
+            // (les coffres préparés plus haut seront repris au prochain enregistrement)
+            self.world.tiles.dirty |= tile_chunks.is_some();
             return;
         }
-        let doc = self.world.snapshot();
-        let (count, announce) = (self.world.edit_count(), self.cfg.debug || !self.running);
-        crate::background::DISK.run(move || match crate::world::World::write_snapshot(&dir, &doc) {
-            Ok(()) if announce => info!("Monde enregistré ({} blocs modifiés)", count),
+        let info = self.level_info();
+        let _t = timings::scope("Sauvegarde — préparation des chunks");
+        let mut plan = self.world.plan_save(info);
+        if let Some(chunks) = tile_chunks {
+            self.world.plan_tiles(chunks, &mut plan);
+        }
+        let (count, chunks, announce, name) = (self.world.edit_count(), plan.chunks(), self.cfg.debug || !self.running, self.realm.clone());
+        let in_db = self.world.db_store().is_some();
+        crate::background::DISK.run(move || match plan.write(&dir).map(|()| {
+            if in_db {
+                // (l'heure et la météo sont désormais dans level.dat)
+                let _ = std::fs::remove_file(dir.join("time.txt"));
+                let _ = std::fs::remove_file(dir.join("weather.txt"));
+            }
+        }) {
+            Ok(()) if announce && chunks > 0 => info!("Monde « {} » enregistré ({} chunks écrits)", name, chunks),
+            Ok(()) if announce && count > 0 && chunks == 0 => info!("Monde « {} » enregistré", name),
             Ok(()) => {}
             Err(e) => warn!("Enregistrement du monde impossible dans {} : {}", dir.display(), e),
         });
+        if let Some((names, overflow)) = self.world.db_store().map(|s| s.losses()).filter(|(n, o)| n.len() + o != self.losses_told) {
+            self.losses_told = names.len() + overflow;
+            if !names.is_empty() {
+                warn!("Monde « {} » : blocs inconnus de cette version, remplacés par de l'air : {}", self.realm, names.join(", "));
+            }
+            if overflow > 0 {
+                warn!("Monde « {} » : {} sous-chunks comptent plus de 256 blocs différents, quelques blocs y sont confondus", self.realm, overflow);
+            }
+        }
+    }
+
+    /// Après une erreur interne : enregistre ce qui peut l'être (joueurs, mondes) et prévient
+    /// les joueurs. Le serveur ne reprend pas après cela.
+    pub fn emergency_save(&mut self) {
+        self.running = false;
+        let addrs: Vec<SocketAddr> = self.everyone().into_iter().map(|(_, a, _)| *a).collect();
+        for a in addrs {
+            self.send(&a, bedrock::ID_DISCONNECT, &bedrock::disconnect("Le serveur a rencontré une erreur interne et redémarre."));
+        }
+        self.each_world(|s| {
+            s.save_players();
+            s.melt_frost();
+            s.save_world();
+        });
+        crate::background::DISK.flush_all(|_| {});
+        self.local.flush();
+    }
+
+    /// Ce que le serveur sait du monde, pour `level.dat`.
+    fn level_info(&self) -> crate::world::mojang::LevelInfo {
+        crate::world::mojang::LevelInfo {
+            name: self.realm.clone(),
+            spawn: self.spawn,
+            time: self.world_time(),
+            raining: self.weather.sky.rains(),
+            thundering: self.weather.sky == weather::Sky::Thunder,
+            weather_time: self.weather.until.saturating_sub(self.tick).min(i32::MAX as u64) as i32,
+            daylight_cycle: self.time_frozen.is_none(),
+            weather_cycle: self.do_weather,
+            protocol: self.cfg.protocol,
+            game_version: self.cfg.game_version.clone(),
+            ..Default::default()
+        }
+    }
+
+    /// Monde venu du jeu, ouvert pour la première fois : son Nether et son End, rangés dans la
+    /// même base, deviennent deux mondes à part (`<nom>_nether`, `<nom>_the_end`), ouverts au
+    /// prochain démarrage ou par `/world load`. La base d'origine n'est pas modifiée.
+    fn import_dimensions(&mut self) {
+        if self.world.db_store().map(|s| s.native).unwrap_or(true) {
+            return;
+        }
+        let dir = std::path::PathBuf::from(&self.cfg.world_dir);
+        let mark = dir.join("dimensions-reprises.txt");
+        if mark.exists() {
+            return;
+        }
+        let seed = self.world.generator().seed;
+        for (dimension, suffix, kind) in [(1, "_nether", "nether"), (2, "_the_end", "end")] {
+            let name = format!("{}{}", self.realm, suffix);
+            let Some(target) = dir.parent().map(|p| p.join(&name)) else { continue };
+            if !realms::valid_name(&name) || target.exists() {
+                continue;
+            }
+            match crate::world::mojang::split_dimension(&dir, dimension, &target) {
+                Ok((0, _)) | Ok((_, None)) => {}
+                Ok((chunks, Some((cx, cz)))) => {
+                    let info = crate::world::mojang::LevelInfo {
+                        name: name.clone(),
+                        generator: kind.to_string(),
+                        seed,
+                        spawn: (cx * 16 + 8, 64, cz * 16 + 8),
+                        daylight_cycle: true,
+                        weather_cycle: false,
+                        protocol: self.cfg.protocol,
+                        game_version: self.cfg.game_version.clone(),
+                        ..Default::default()
+                    };
+                    match crate::world::mojang::write_level(&target, &info) {
+                        Ok(()) => info!("Monde venu du jeu : {} chunks de sa dimension « {} » repris dans le monde « {} » (ouvert au prochain démarrage, ou par /world load {})", chunks, kind, name, name),
+                        Err(e) => warn!("Monde « {} » non créé : {}", name, e),
+                    }
+                }
+                Err(e) => warn!("Dimension « {} » de ce monde non reprise : {}", kind, e),
+            }
+        }
+        let _ = std::fs::write(&mark, "Le Nether et l'End du monde d'origine ont été repris une fois.\n");
+    }
+
+    /// Ouvre le monde du dossier `world-dir` : terrain, coffres, objets au sol, heure, créatures…
+    fn load_world_files(&mut self) {
+        self.open_world();
+        if let Some(d) = &self.data {
+            let mut ctx = ItemCatalog { data: d, next: &mut self.tile_net_id };
+            match self.world.tiles.load(std::path::Path::new(&self.cfg.world_dir), &mut ctx) {
+                Ok(0) => {}
+                Ok(n) => {
+                    info!("Coffres, fours et panneaux rechargés : {}", n);
+                    // (ancien fichier : il passe dans la base au prochain enregistrement)
+                    self.world.tiles.dirty = self.world.db_store().is_some();
+                }
+                Err(e) => warn!("Contenu des coffres et des fours non rechargé : {}", e),
+            }
+            // Ceux de la base du monde (format du jeu), tant qu'un ancien tiles.nbt ne les remplace pas
+            let legacy = std::path::Path::new(&self.cfg.world_dir).join("tiles.nbt").exists();
+            if let Some(store) = self.world.db_store().cloned() {
+                let mut ctx = ItemCatalog { data: d, next: &mut self.tile_net_id };
+                let (mut read, mut skipped) = (0, 0);
+                for (chunk, entries) in store.block_entities() {
+                    self.world.note_tile_chunk(chunk);
+                    for entry in entries.iter().filter(|_| !legacy) {
+                        if self.world.tiles.restore(entry, &mut ctx) {
+                            read += 1;
+                        } else {
+                            skipped += 1;
+                            self.world.keep_foreign_tile(chunk, entry);
+                        }
+                    }
+                }
+                if read + skipped > 0 {
+                    info!("Coffres, fours et panneaux lus dans la base du monde : {} ({} d'une sorte que Basalt ne gère pas encore, gardés tels quels)", read, skipped);
+                }
+                if !legacy {
+                    self.world.tiles.dirty = false;
+                }
+            }
+        }
+        // Couleur des lits posés, retrouvée dans les données des blocs
+        for pos in self.world.tiles.positions() {
+            if let Some(tile) = self.world.tiles.get(pos).filter(|t| t.tile_type() == crate::block::TileType::Bed) {
+                let colour = tile.save_extra().into_iter().find(|(k, _)| *k == "color").and_then(|(_, v)| v.as_i64()).unwrap_or(14);
+                self.bed_colors.insert(pos, colour.clamp(0, 15) as u8);
+            }
+        }
+        self.load_ground_items();
+        self.load_world_time();
+        self.load_mobs();
+        self.import_actors();
+        self.import_dimensions();
+        self.load_boats();
+        self.load_pairs();
+        self.load_weather();
+    }
+
+    /// Le travail d'un tick dans le monde où le serveur se trouve (voir `realms.rs`).
+    fn world_tick(&mut self) {
+        if let Some(d) = &self.data {
+            // Les fours cuisent, qu'un joueur les regarde ou non
+            let _t = timings::scope("Tick — blocs à données (fours…)");
+            let mut ctx = ItemCatalog { data: d, next: &mut self.tile_net_id };
+            self.world.tiles.tick(&mut ctx);
+        }
+        self.portals_tick();
+        if !self.ground.is_empty() {
+            let _t = timings::scope("Tick — objets au sol (physique)");
+            self.move_ground_items();
+        }
+        if self.tick % 2 == 0 {
+            let _t = timings::scope("Tick — objets au sol (ramassage, fusion)");
+            self.update_ground_items();
+        }
+        if self.tick % 10 == 0 && !self.ground.is_empty() {
+            let _t = timings::scope("Tick — objets au sol (affichage)");
+            self.show_ground_items();
+        }
+        {
+            let _t = timings::scope("Tick — faim et sommeil");
+            self.hunger_tick();
+            if self.tick % 20 == 0 {
+                self.sleep_tick();
+            }
+            self.shots_tick();
+            if self.tick % 2 == 0 {
+                self.orb_tick();
+                self.fall_tick();
+            }
+            if self.tick % 5 == 0 {
+                self.decay_tick();
+            }
+            if self.tick % 10 == 0 {
+                self.sync_beds();
+            }
+        }
+        {
+            let _t = timings::scope("Tick — croissance (ticks aléatoires)");
+            self.random_ticks();
+        }
+        {
+            let _t = timings::scope("Tick — eau et lave");
+            self.flow_liquids();
+        }
+        if !self.npcs.is_empty() {
+            let _t = timings::scope("Tick — PNJ des plugins");
+            self.move_npcs();
+        }
+        {
+            let _t = timings::scope("Tick — animaux");
+            if self.tick % 20 == 0 {
+                // Chunks vus par les joueurs : le cache de terrain en garde au moins autant
+                let wanted: usize = self.clients.values().filter(|c| c.joined).map(|c| ((2 * c.radius + 3) * (2 * c.radius + 3)) as usize).sum();
+                self.world.keep_chunks(wanted);
+            }
+            if self.tick % 20 == 7 {
+                self.stream_mobs();
+                self.populate_chunks();
+            }
+            if self.tick % 20 == 13 {
+                self.monsters_tick();
+            }
+            if !self.mobs.is_empty() {
+                self.move_mobs();
+            }
+            if !self.spits.is_empty() {
+                self.move_spits();
+            }
+            if self.tick % 10 == 3 {
+                self.show_mobs();
+            }
+        }
+        if self.tick % 4 == 0 {
+            let _t = timings::scope("Tick — écrans ouverts (coffres, fours)");
+            self.watch_containers();
+            self.lids_tick();
+            self.sync_pairs();
+            self.menus_tick();
+        }
+        self.release_buttons();
+        if self.tick % 5 == 2 {
+            self.show_armor();
+        }
+        {
+            let _t = timings::scope("Tick — effets des joueurs");
+            self.effects_tick();
+            if self.tick % 20 == 9 {
+                self.fire_tick();
+            }
+        }
+        {
+            let _t = timings::scope("Tick — TNT et explosions");
+            self.tnt_tick();
+            self.fangs_tick();
+            self.vibrations_tick();
+        }
+        {
+            let _t = timings::scope("Tick — feu (flammes)");
+            self.fires_tick(self.tick % 10);
+        }
+        if self.tick % 10 == 4 {
+            let _t = timings::scope("Tick — feu (brûlures)");
+            self.burn_tick();
+        }
+        if self.tick % 5 == 1 {
+            self.air_tick();
+        }
+        if self.tick % 2 == 0 {
+            self.frost_tick();
+        }
+        self.boats_tick();
+        self.fishing_tick();
+        self.crossbows_tick();
+        if self.tick % 20 == 7 {
+            let _t = timings::scope("Tick — météo et noyade des créatures");
+            self.weather_tick();
+            self.mob_air_tick();
+        }
+        // Le jour et la nuit : l'heure avance chez tous les joueurs (le jeu ne la fait
+        // pas avancer seul), une fois par seconde
+        if self.tick % 20 == 0 {
+            self.broadcast(bedrock::ID_SET_TIME, &bedrock::set_time(self.world_time().rem_euclid(i32::MAX as i64) as i32), None);
+        }
+        {
+            let _t = timings::scope("Tick — envoi du terrain (chunks)");
+            self.send_queued_chunks();
+        }
+        {
+            let _t = timings::scope("Tick — surveillance des connexions");
+            self.watch_freezes();
+            self.run_probes();
+        }
+        {
+            let _t = timings::scope("Tick — joueurs vus par les autres");
+            self.broadcast_players();
+        }
+        if self.tick % 20 == 0 {
+            self.check_deadlines();
+        }
     }
 
     /// Fait tourner le serveur jusqu'à `stop`, la commande `stop` ou un plugin.
@@ -7955,25 +9257,8 @@ impl Server {
         self.load_captured(std::path::Path::new("data"));
         (self.packs, self.force_packs) = crate::utils::packs::load_dir(std::path::Path::new("resource_packs"));
         self.load_ops();
-        self.open_world();
-        if let Some(d) = &self.data {
-            let mut ctx = ItemCatalog { data: d, next: &mut self.tile_net_id };
-            match self.world.tiles.load(std::path::Path::new(&self.cfg.world_dir), &mut ctx) {
-                Ok(0) => {}
-                Ok(n) => info!("Coffres, fours et panneaux rechargés : {}", n),
-                Err(e) => warn!("Contenu des coffres et des fours non rechargé : {}", e),
-            }
-        }
-        // Couleur des lits posés, retrouvée dans les données des blocs
-        for pos in self.world.tiles.positions() {
-            if let Some(tile) = self.world.tiles.get(pos).filter(|t| t.tile_type() == crate::block::TileType::Bed) {
-                let colour = tile.save_extra().into_iter().find(|(k, _)| *k == "color").and_then(|(_, v)| v.as_i64()).unwrap_or(14);
-                self.bed_colors.insert(pos, colour.clamp(0, 15) as u8);
-            }
-        }
-        self.load_ground_items();
-        self.load_world_time();
-        self.load_mobs();
+        self.load_world_files();
+        self.autoload_realms();
         self.start_signaling();
         let mut events = Vec::new();
         let mut next_tick = Instant::now() + TICK;
@@ -7994,13 +9279,15 @@ impl Server {
                 let addr = match &ev {
                     NetEvent::Connected(a) | NetEvent::Packet(a, _) | NetEvent::Disconnected(a, _) => *a,
                 };
+                self.enter_home(&addr);
                 // Filet de sécurité : un bug déclenché par un paquet ne ferme que ce joueur.
-                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.on_event(ev)));
+                let res = crate::utils::crash::guarded(|| self.on_event(ev));
                 if res.is_err() {
                     error!("Erreur interne en traitant un paquet de {} : joueur déconnecté", addr);
                     self.violation(&addr, "erreur interne");
                 }
             }
+            self.enter_main();
             drop(_received);
             {
                 let _t = timings::scope("Logins — vérification");
@@ -8009,6 +9296,7 @@ impl Server {
             while let Ok(line) = console.try_recv() {
                 let _t = timings::scope("Console");
                 self.command(&line);
+                self.enter_main();
             }
             let now = Instant::now();
             if now >= next_tick {
@@ -8020,8 +9308,8 @@ impl Server {
                 if now.duration_since(self.last_save) > Duration::from_secs(60) {
                     let _t = timings::scope("Tick — sauvegarde du monde et des joueurs");
                     self.last_save = now;
-                    self.save_world();
-                    self.save_players();
+                    self.save_worlds();
+                    self.each_world(|s| s.save_players());
                 }
                 // Retard de quelques ticks (pause du système, pic de travail) : les ticks manqués
                 // sont rattrapés aussitôt, l'un après l'autre, comme dans le jeu. Au-delà d'une
@@ -8031,114 +9319,18 @@ impl Server {
                 }
                 let info = self.info();
                 self.plugins.set_info(&info, self.tick);
-                if let Some(d) = &self.data {
-                    // Les fours cuisent, qu'un joueur les regarde ou non
-                    let _t = timings::scope("Tick — blocs à données (fours…)");
-                    let mut ctx = ItemCatalog { data: d, next: &mut self.tile_net_id };
-                    self.world.tiles.tick(&mut ctx);
-                }
-                if !self.ground.is_empty() {
-                    let _t = timings::scope("Tick — objets au sol (physique)");
-                    self.move_ground_items();
-                }
-                if self.tick % 2 == 0 {
-                    let _t = timings::scope("Tick — objets au sol (ramassage, fusion)");
-                    self.update_ground_items();
-                }
-                if self.tick % 10 == 0 && !self.ground.is_empty() {
-                    let _t = timings::scope("Tick — objets au sol (affichage)");
-                    self.show_ground_items();
-                }
-                {
-                    let _t = timings::scope("Tick — faim et sommeil");
-                    self.hunger_tick();
-                    if self.tick % 20 == 0 {
-                        self.sleep_tick();
-                    }
-                    self.shots_tick();
-                    if self.tick % 2 == 0 {
-                        self.orb_tick();
-                        self.fall_tick();
-                    }
-                    if self.tick % 5 == 0 {
-                        self.decay_tick();
-                    }
-                    if self.tick % 10 == 0 {
-                        self.sync_beds();
-                    }
-                }
-                {
-                    let _t = timings::scope("Tick — croissance (ticks aléatoires)");
-                    self.random_ticks();
-                }
-                {
-                    let _t = timings::scope("Tick — eau et lave");
-                    self.flow_liquids();
-                }
-                if !self.npcs.is_empty() {
-                    let _t = timings::scope("Tick — PNJ des plugins");
-                    self.move_npcs();
-                }
-                {
-                    let _t = timings::scope("Tick — animaux");
-                    if self.tick % 20 == 7 {
-                        self.stream_mobs();
-                        self.populate_chunks();
-                    }
-                    if self.tick % 20 == 13 {
-                        self.monsters_tick();
-                    }
-                    if !self.mobs.is_empty() {
-                        self.move_mobs();
-                    }
-                    if !self.spits.is_empty() {
-                        self.move_spits();
-                    }
-                    if self.tick % 10 == 3 {
-                        self.show_mobs();
-                    }
-                }
+                self.collect_chunks();
+                self.each_world(|s| s.world_tick());
                 {
                     let _t = timings::scope("Tick — API de gestion");
                     self.api_tick();
+                    self.enter_main();
                 }
                 // Résultats des recherches /locate
                 while let Ok((to, message)) = self.locate_rx.try_recv() {
-                    if to.map(|a| self.clients.contains_key(&a)).unwrap_or(true) {
+                    if to.map(|a| self.client_anywhere(&a).is_some()).unwrap_or(true) {
                         self.reply(to, &message);
                     }
-                }
-                if self.tick % 4 == 0 {
-                    let _t = timings::scope("Tick — écrans ouverts (coffres, fours)");
-                    self.watch_containers();
-                }
-                self.release_buttons();
-                if self.tick % 5 == 2 {
-                    self.show_armor();
-                }
-                {
-                    let _t = timings::scope("Tick — effets des joueurs");
-                    self.effects_tick();
-                    if self.tick % 20 == 9 {
-                        self.fire_tick();
-                    }
-                }
-                {
-                    let _t = timings::scope("Tick — TNT et explosions");
-                    self.tnt_tick();
-                }
-                if self.tick % 10 == 4 {
-                    let _t = timings::scope("Tick — feu (flammes, brûlures)");
-                    self.fires_tick();
-                    self.burn_tick();
-                }
-                if self.tick % 5 == 1 {
-                    self.air_tick();
-                }
-                // Le jour et la nuit : l'heure avance chez tous les joueurs (le jeu ne la fait
-                // pas avancer seul), une fois par seconde
-                if self.tick % 20 == 0 {
-                    self.broadcast(bedrock::ID_SET_TIME, &bedrock::set_time(self.world_time().rem_euclid(i32::MAX as i64) as i32), None);
                 }
                 {
                     let _t = timings::scope("Tick — minuteries des plugins");
@@ -8149,31 +9341,23 @@ impl Server {
                     self.apply_actions();
                 }
                 {
-                    let _t = timings::scope("Tick — envoi du terrain (chunks)");
-                    self.send_queued_chunks();
-                }
-                {
-                    let _t = timings::scope("Tick — surveillance des connexions");
-                    self.watch_freezes();
-                    self.run_probes();
-                }
-                {
-                    let _t = timings::scope("Tick — joueurs vus par les autres");
-                    self.broadcast_players();
-                }
-                {
                     let _t = timings::scope("Tick — signalisation NetherNet");
                     self.poll_signaling();
                     self.answer_joins();
                 }
                 if self.tick % 20 == 0 {
+                    let players: Vec<String> = self.everyone().into_iter().filter(|(_, _, c)| c.joined).map(|(w, _, c)| format!("{} ({})", c.name.clone().unwrap_or_default(), w)).take(40).collect();
+                    let plugins: Vec<String> = self.plugins.catalog().plugins.iter().map(|(m, _)| format!("{} {}", m.name, m.version)).collect();
+                    crate::utils::crash::set_context(format!("Tick : {}\nMondes ouverts : {}\nJoueurs ({}) : {}\nPlugins ({}) : {}\nProtocole : {} ({})", self.tick, self.world_names().join(", "), players.len(), players.join(", "), plugins.len(), plugins.join(", "), self.cfg.protocol, self.cfg.game_version));
+                }
+                if self.tick % 20 == 0 {
                     let _t = timings::scope("Tick — clés Xbox et délais de connexion");
                     self.poll_auth();
-                    self.check_deadlines();
                 }
             }
             {
                 let _t = timings::scope("Réseau — envoi");
+                self.flush_outboxes();
                 self.local.flush();
                 if let Some(n) = self.nether.as_mut() {
                     n.flush(&mut events);
@@ -8191,7 +9375,7 @@ impl Server {
         // sont enregistrées, les plugins désactivés (et attendus), puis le monde écrit.
         self.running = false;
         info!("Enregistrement des joueurs…");
-        self.save_players();
+        self.each_world(|s| s.save_players());
         // Les plugins finissent ce qu'ils faisaient et reçoivent leur événement disable ; ce
         // qu'ils demandent à ce moment-là (messages, données des joueurs) est encore appliqué
         let count = self.plugins.catalog().plugins.len();
@@ -8204,19 +9388,22 @@ impl Server {
             }
             self.apply_actions();
             // Un plugin a pu modifier un joueur en se désactivant : dernière écriture
-            let names: Vec<String> = self.clients.values().filter(|c| c.joined && c.data.is_some()).filter_map(|c| c.name.clone()).collect();
-            for name in names {
-                if let Some(c) = self.addr_of(&name).and_then(|a| self.clients.get(&a)) {
-                    self.store_player(c);
+            self.each_world(|s| {
+                for c in s.clients.values().filter(|c| c.joined && c.data.is_some()) {
+                    s.store_player(c);
                 }
-            }
+            });
         }
-        let addrs: Vec<SocketAddr> = self.clients.keys().copied().collect();
+        let addrs: Vec<SocketAddr> = self.everyone().into_iter().map(|(_, a, _)| *a).collect();
         for a in addrs {
             self.send(&a, bedrock::ID_DISCONNECT, &bedrock::disconnect("Serveur arrêté."));
         }
         info!("Enregistrement du monde…");
-        self.save_world();
+        // (la glace des semelles givrantes ne doit pas rester dans le monde enregistré)
+        self.each_world(|s| {
+            s.melt_frost();
+            s.save_world();
+        });
         // Tout ce qui attend d'être écrit sur le disque l'est avant de s'arrêter, sans limite
         // de temps : rien ne doit rester à moitié enregistré
         crate::background::DISK.flush_all(|secs| info!("Écriture sur le disque en cours ({} s)…", secs));

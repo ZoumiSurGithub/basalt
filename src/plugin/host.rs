@@ -294,6 +294,7 @@ impl PluginHost {
     fn job_info(&mut self) -> Info {
         let info = self.info.clone();
         self.info.world = None;
+        self.info.others.clear();
         info
     }
 
@@ -362,7 +363,7 @@ impl PluginHost {
         if !self.hears(event) {
             return Vec::new();
         }
-        let wait = if matches!(event, "login" | "block_break" | "block_click") { WAIT_ANSWER } else { WAIT };
+        let wait = if matches!(event, "login" | "block_break" | "block_click" | "damage" | "death") { WAIT_ANSWER } else { WAIT };
         let info = self.job_info();
         self.call(Job::Event(event.to_string(), args.to_vec(), info, self.tick), wait).unwrap_or_default()
     }

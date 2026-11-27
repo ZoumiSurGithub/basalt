@@ -71,6 +71,9 @@ impl Server {
 
     /// Feuilles dont l'heure est venue : elles disparaissent, avec leurs miettes et leur butin.
     pub(super) fn decay_tick(&mut self) {
+        if !self.cfg.vanilla.leaf_decay {
+            self.decaying.clear();
+        }
         if self.decaying.is_empty() {
             return;
         }
@@ -478,6 +481,10 @@ impl Server {
             }
         }
         for ((cx, cz), py) in chunks {
+            // (chunk pas encore là : rien n'y pousse, plutôt que de le générer sur place)
+            if !self.world.is_ready(cx, cz) {
+                continue;
+            }
             for _ in 0..RANDOM_TICKS {
                 let x = cx * 16 + self.mob_rng.below(16) as i32;
                 let z = cz * 16 + self.mob_rng.below(16) as i32;
@@ -491,6 +498,9 @@ impl Server {
 
     /// L'herbe gagne la terre voisine, et meurt sous un bloc opaque ou sous l'eau.
     fn grass_tick(&mut self, (x, y, z): (i32, i32, i32)) {
+        if !self.cfg.vanilla.grass_spread {
+            return;
+        }
         let Some(d) = self.data.clone() else { return };
         let water = self.world.generator().blocks.water;
         let covered = |s: &Self, p: (i32, i32, i32)| {
@@ -512,54 +522,108 @@ impl Server {
         }
     }
 
-    /// Une pousse devient un arbre, s'il a la place de pousser : un tronc de quelques blocs
-    /// et sa couronne de feuilles (un cône pour l'épicéa).
-    fn sapling_tick(&mut self, wood: String, (x, y, z): (i32, i32, i32)) {
-        if self.mob_rng.below(14) != 0 {
-            return;
+    /// Poudre d'os utilisée sur un bloc : une culture gagne de deux à cinq stades, une pousse
+    /// a 45 % de chances de devenir un arbre, l'herbe se couvre d'herbes hautes et de fleurs.
+    /// Vrai si la poudre a servi (elle est alors consommée, hors créatif).
+    pub(super) fn use_bone_meal(&mut self, addr: &SocketAddr, (x, y, z): (i32, i32, i32)) -> bool {
+        let Some(c) = self.clients.get(addr) else { return false };
+        if self.held_name(c) != "bone_meal" || !self.cfg.vanilla.bone_meal {
+            return false;
         }
-        let Some(d) = self.data.clone() else { return };
-        let (Some(log), Some(leaves)) = (d.default_state(&format!("minecraft:{}_log", wood)), d.default_state(&format!("minecraft:{}_leaves", wood))) else { return };
+        let survival = c.mode.takes_damage();
+        let Some(d) = self.data.clone() else { return false };
+        let state = self.world.get(x, y, z);
+        let Some(name) = d.block_name(state).map(|n| n.trim_start_matches("minecraft:").to_string()) else { return false };
         let air = self.world.air;
-        let spruce = wood == "spruce";
-        let height = match wood.as_str() {
-            "birch" => 5 + self.mob_rng.below(3) as i32,
-            "spruce" => 6 + self.mob_rng.below(3) as i32,
-            _ => 4 + self.mob_rng.below(3) as i32,
-        };
-        let soft = |s: &Self, p: (i32, i32, i32)| {
-            let state = s.world.get(p.0, p.1, p.2);
-            state == air || d.block_name(state).map(|n| n.contains("leaves") || n.contains("sapling")).unwrap_or(false)
-        };
-        if y + height + 2 > crate::world::MAX_Y || !(1..=height + 1).all(|dy| soft(self, (x, y + dy, z))) {
-            return;
-        }
-        // (un plugin peut s'y opposer : c'est le tronc qui remplace la pousse)
-        if !self.grow_to((x, y, z), log) {
-            return;
-        }
-        let mut list: Vec<(i32, i32, i32, u32)> = (1..height).map(|dy| (x, y + dy, z, log)).collect();
-        // Rayon de la couronne à chaque étage, du bas vers le haut
-        let crown: Vec<(i32, i32)> = if spruce {
-            (2..=height + 1).map(|dy| (dy, if dy >= height { (height + 1 - dy).min(1) } else if (height - dy) % 2 == 0 { 1 } else { 2 })).collect()
-        } else {
-            vec![(height - 2, 2), (height - 1, 2), (height, 1), (height + 1, 1)]
-        };
-        for (dy, radius) in crown {
-            for dx in -radius..=radius {
-                for dz in -radius..=radius {
-                    let corner = dx.abs() == radius && dz.abs() == radius && radius > 0;
-                    // (les coins sont rognés : toujours en haut, une fois sur deux ailleurs)
-                    if (dx == 0 && dz == 0 && dy < height) || (corner && (dy > height || spruce || self.mob_rng.below(2) == 0)) {
-                        continue;
-                    }
-                    let p = (x + dx, y + dy, z + dz);
-                    if self.world.is_ready(p.0 >> 4, p.2 >> 4) && self.world.get(p.0, p.1, p.2) == air {
-                        list.push((p.0, p.1, p.2, leaves));
+        let used = if is_crop(&name) || name == "melon_stem" || name == "pumpkin_stem" {
+            let growth = int_of(&d, state, "growth").unwrap_or(7);
+            if growth >= 7 {
+                false
+            } else {
+                let next = (growth + 2 + self.mob_rng.below(4) as i32).min(7);
+                if let Some(grown) = d.with_props(state, &[("growth", Prop::Int(next))]) {
+                    self.grow_to((x, y, z), grown);
+                }
+                true
+            }
+        } else if name.ends_with("_sapling") && !name.contains("bamboo") {
+            if self.mob_rng.below(100) < 45 {
+                self.sapling_tick(name.trim_end_matches("_sapling").to_string(), (x, y, z), true);
+            }
+            true
+        } else if name == "grass_block" && crate::world::World::in_bounds(y + 1) {
+            // (herbes et fleurs sur l'herbe libre autour, dans un rayon de trois blocs)
+            let tall = d.default_state("minecraft:short_grass").or_else(|| d.default_state("minecraft:tallgrass"));
+            let flowers = [d.default_state("minecraft:dandelion").or_else(|| d.default_state("minecraft:yellow_flower")), d.default_state("minecraft:poppy").or_else(|| d.default_state("minecraft:red_flower"))];
+            for _ in 0..24 {
+                let (px, pz) = (x + self.mob_rng.below(7) as i32 - 3, z + self.mob_rng.below(7) as i32 - 3);
+                let plant = if self.mob_rng.below(8) == 0 { flowers[self.mob_rng.below(2) as usize] } else { tall };
+                if let Some(plant) = plant {
+                    if self.world.is_ready(px >> 4, pz >> 4) && self.world.get(px, y, pz) == state && self.world.get(px, y + 1, pz) == air && self.mob_rng.below(3) != 0 {
+                        self.grow_to((px, y + 1, pz), plant);
                     }
                 }
             }
+            true
+        } else {
+            false
+        };
+        if !used {
+            return false;
         }
+        // (les étincelles vertes de la poudre d'os)
+        self.send_near((x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5), bedrock::ID_LEVEL_EVENT, &bedrock::level_event(bedrock::LEVEL_EVENT_PARTICLE_BONE_MEAL, (x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5), 0));
+        if survival {
+            if let Some(c) = self.clients.get_mut(addr) {
+                c.inv.consume_held();
+                c.inv_touched = true;
+            }
+            self.send_inventory(addr);
+            self.show_held(addr);
+        }
+        true
+    }
+
+    /// Une pousse devient un arbre, s'il a la place de pousser : le même arbre que ceux du
+    /// terrain (chêne, grand chêne, bouleau, sapin, acacia, cerisier, arbre de la jungle), et
+    /// les grands arbres quand quatre pousses forment un carré (grand sapin, grand arbre de la
+    /// jungle, chêne noir, chêne pâle).
+    fn sapling_tick(&mut self, wood: String, (x, y, z): (i32, i32, i32), forced: bool) {
+        if !forced && (!self.cfg.vanilla.tree_growth || self.mob_rng.below(14) != 0) {
+            return;
+        }
+        let Some(d) = self.data.clone() else { return };
+        let air = self.world.air;
+        let sapling = self.world.get(x, y, z);
+        // Quatre pousses de la même essence en carré : le coin nord-ouest du carré
+        let same = |s: &Self, dx: i32, dz: i32| d.block_name(s.world.get(x + dx, y, z + dz)) == d.block_name(sapling);
+        let square = [(0, 0), (-1, 0), (0, -1), (-1, -1)].into_iter().find(|(ox, oz)| [(0, 0), (1, 0), (0, 1), (1, 1)].iter().all(|(dx, dz)| same(self, ox + dx, oz + dz)));
+        let (wide, corner) = match square {
+            Some((ox, oz)) if matches!(wood.as_str(), "spruce" | "jungle" | "dark_oak" | "pale_oak") => (true, (x + ox, y, z + oz)),
+            _ => (false, (x, y, z)),
+        };
+        // Ce que l'arbre peut remplacer : de l'air, des feuilles, des pousses, des herbes
+        let soft = |s: &Self, p: (i32, i32, i32)| {
+            let state = s.world.get(p.0, p.1, p.2);
+            state == air || s.replaceable(state) || d.block_name(state).map(|n| n.contains("leaves") || n.contains("sapling")).unwrap_or(false)
+        };
+        // Il lui faut de la place au-dessus (six blocs libres), et un chunk chargé autour
+        if y + 8 > crate::world::MAX_Y || !(1..=6).all(|dy| soft(self, (corner.0, y + dy, corner.2))) {
+            return;
+        }
+        let seed = self.mob_rng.below(u32::MAX) as u64;
+        let tree = {
+            let world = &self.world;
+            crate::world::vanilla::grow_tree(&world.generator().blocks, &wood, wide, corner, seed, &|bx, by, bz| if world.is_ready(bx >> 4, bz >> 4) { world.get(bx, by, bz) } else { u32::MAX })
+        };
+        let Some(tree) = tree else { return };
+        // (un plugin peut s'y opposer : c'est le tronc qui remplace la pousse)
+        let Some(trunk) = tree.iter().find(|b| (b.0, b.1, b.2) == corner).map(|b| b.3) else { return };
+        if !self.grow_to(corner, trunk) {
+            return;
+        }
+        // L'arbre ne casse rien : il ne pousse que là où il y a de la place
+        let list: Vec<(i32, i32, i32, u32)> = tree.into_iter().filter(|b| (b.0, b.1, b.2) != corner && self.world.is_ready(b.0 >> 4, b.2 >> 4) && soft(self, (b.0, b.1, b.2))).collect();
         self.set_blocks_from_plugin(list);
     }
 
@@ -593,6 +657,44 @@ impl Server {
         false
     }
 
+    /// Œuf de tortue posé sur le sable : il se fêle peu à peu (la nuit, ou une fois sur 500 le
+    /// jour, comme dans le jeu), puis éclot : autant de bébés tortues que d'œufs.
+    fn turtle_egg_tick(&mut self, d: &crate::data::GameData, state: u32, (x, y, z): (i32, i32, i32)) {
+        let on_sand = d.block_name(self.world.get(x, y - 1, z)).map(|n| n.contains("sand")).unwrap_or(false);
+        let time = self.world_time().rem_euclid(24000);
+        let night = (13000..23000).contains(&time);
+        if !on_sand || !(night || self.mob_rng.below(500) == 0) {
+            return;
+        }
+        let text = |key: &str| match d.prop(state, key) {
+            Some(Prop::Str(v)) => v,
+            _ => String::new(),
+        };
+        let next = match text("cracked_state").as_str() {
+            "no_cracks" => Some("cracked"),
+            "cracked" => Some("max_cracked"),
+            _ => None,
+        };
+        let at = (x as f32 + 0.5, y as f32, z as f32 + 0.5);
+        self.send_near(at, bedrock::ID_LEVEL_SOUND_EVENT, &bedrock::level_sound(if next.is_some() { "turtle_egg_crack" } else { "turtle_egg_drop" }, at, "", false, -1));
+        if let Some(next) = next {
+            if let Some(s) = d.with_props(state, &[("cracked_state", Prop::Str(next.to_string()))]) {
+                self.change_block((x, y, z), s);
+            }
+            return;
+        }
+        let count = match text("turtle_egg_count").as_str() {
+            "four_egg" => 4,
+            "three_egg" => 3,
+            "two_egg" => 2,
+            _ => 1,
+        };
+        self.change_block((x, y, z), self.world.air);
+        for _ in 0..count {
+            self.hatch_turtle(at);
+        }
+    }
+
     fn random_tick_at(&mut self, d: &crate::data::GameData, (x, y, z): (i32, i32, i32)) {
         let air = self.world.air;
         let state = self.world.get(x, y, z);
@@ -612,8 +714,11 @@ impl Server {
             if name == "minecraft:grass_block" {
                 return self.grass_tick((x, y, z));
             }
+            if name == "minecraft:turtle_egg" {
+                return self.turtle_egg_tick(d, state, (x, y, z));
+            }
             if name.ends_with("_sapling") && !name.contains("bamboo") {
-                return self.sapling_tick(name.trim_start_matches("minecraft:").trim_end_matches("_sapling").to_string(), (x, y, z));
+                return self.sapling_tick(name.trim_start_matches("minecraft:").trim_end_matches("_sapling").to_string(), (x, y, z), false);
             }
         }
         // Culture créée par un plugin : un stade de plus de temps en temps, jusqu'à maturité
@@ -633,7 +738,7 @@ impl Server {
             // Cultures : huit stades ; plus vite sur une terre arrosée
             n if is_crop(n) || n == "melon_stem" || n == "pumpkin_stem" => {
                 let growth = int("growth").unwrap_or(7);
-                if growth < 7 {
+                if growth < 7 && self.cfg.vanilla.crop_growth {
                     let wet = int_of(d, self.world.get(x, y - 1, z), "moisturized_amount").unwrap_or(0) > 0;
                     if self.mob_rng.below(if wet { 3 } else { 8 }) == 0 {
                         if let Some(next) = d.with_props(state, &[("growth", Prop::Int(growth + 1))]) {
@@ -687,7 +792,7 @@ impl Server {
             // Terre labourée : arrosée près de l'eau, sinon elle sèche puis redevient de la terre
             "farmland" => {
                 let moist = int("moisturized_amount").unwrap_or(0);
-                if self.water_near(d, (x, y, z)) {
+                if self.water_near(d, (x, y, z)) || self.rained_on((x, y + 1, z)) {
                     if moist < 7 {
                         if let Some(next) = d.with_props(state, &[("moisturized_amount", Prop::Int(7))]) {
                             self.grow_to((x, y, z), next);
@@ -721,14 +826,15 @@ impl Server {
 
     /// Récolte d'une culture cassée à la main : mûre, elle rend sa récolte et de quoi replanter ;
     /// sinon seulement la graine. None : ce n'est pas une culture.
-    pub(super) fn crop_loot(&mut self, state: u32) -> Option<Vec<(i16, u8)>> {
+    pub(super) fn crop_loot(&mut self, state: u32, fortune: u8) -> Option<Vec<(i16, u8)>> {
         let d = self.data.clone()?;
         let name = d.block_name(state)?.trim_start_matches("minecraft:").to_string();
         if !is_crop(&name) {
             return None;
         }
         let ripe = d.prop(state, "growth") == Some(Prop::Int(7));
-        let extra = |s: &mut Server, lo: u32, hi: u32| (lo + s.mob_rng.below(hi - lo + 1)) as u8;
+        // (fortune : jusqu'à niveau graines ou légumes de plus)
+        let extra = |s: &mut Server, lo: u32, hi: u32| (lo + s.mob_rng.below(hi + fortune as u32 - lo + 1)) as u8;
         let list: Vec<(&str, u8)> = match (name.as_str(), ripe) {
             ("wheat", true) => vec![("wheat", 1), ("wheat_seeds", extra(self, 0, 3))],
             ("wheat", false) => vec![("wheat_seeds", 1)],

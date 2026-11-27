@@ -27,7 +27,9 @@ opt-level = 3
 # plusieurs fois plus rapide à compiler. Pour un binaire de production poussé au
 # maximum : cargo build --profile production
 lto = "thin"
-strip = true
+# Les noms des fonctions restent dans le binaire (quelques Mo) : la pile d'appels d'un
+# rapport de plantage (crashdumps/) est alors lisible. Seules les infos de débogage sont retirées.
+strip = "debuginfo"
 
 [profile.production]
 inherits = "release"

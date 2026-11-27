@@ -178,10 +178,37 @@ pub struct Scope {
     name: Option<(std::borrow::Cow<'static, str>, Instant)>,
 }
 
+thread_local! {
+    /// Étapes ouvertes sur ce fil, de la plus large à la plus fine
+    static OPEN: std::cell::RefCell<Vec<Cow<'static, str>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn opened(name: &Cow<'static, str>) {
+    let _ = OPEN.try_with(|o| {
+        if let Ok(mut o) = o.try_borrow_mut() {
+            if o.len() < 64 {
+                o.push(name.clone());
+            }
+        }
+    });
+}
+
+/// L'étape la plus fine ouverte sur ce fil (pour savoir qui a déclenché une étape commune).
+pub fn current() -> Option<String> {
+    OPEN.try_with(|o| o.try_borrow().ok().and_then(|o| o.last().map(|n| n.to_string()))).ok().flatten()
+}
+
 impl Drop for Scope {
     /// Fin de la mesure : le temps passé est ajouté à l'étape.
     fn drop(&mut self) {
         if let Some((name, start)) = self.name.take() {
+            let _ = OPEN.try_with(|o| {
+                if let Ok(mut o) = o.try_borrow_mut() {
+                    if let Some(at) = o.iter().rposition(|n| *n == name) {
+                        o.remove(at);
+                    }
+                }
+            });
             record(name, start);
         }
     }
@@ -192,7 +219,9 @@ pub fn scope(name: &'static str) -> Scope {
     if !ENABLED.load(Ordering::Relaxed) {
         return Scope { name: None };
     }
-    Scope { name: Some((std::borrow::Cow::Borrowed(name), Instant::now())) }
+    let name = std::borrow::Cow::Borrowed(name);
+    opened(&name);
+    Scope { name: Some((name, Instant::now())) }
 }
 
 /// Idem avec un nom construit à la demande (il n'est construit que si les mesures sont allumées).
@@ -200,7 +229,9 @@ pub fn scope_with(name: impl FnOnce() -> String) -> Scope {
     if !ENABLED.load(Ordering::Relaxed) {
         return Scope { name: None };
     }
-    Scope { name: Some((std::borrow::Cow::Owned(name()), Instant::now())) }
+    let name: Cow<'static, str> = std::borrow::Cow::Owned(name());
+    opened(&name);
+    Scope { name: Some((name, Instant::now())) }
 }
 
 /// Ajoute à l'étape `name` le temps écoulé depuis `start`.

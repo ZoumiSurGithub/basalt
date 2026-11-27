@@ -153,6 +153,8 @@ pub struct StartGame<'a> {
     /// Graine, et terrain plat ou non (seulement annoncés au jeu)
     pub seed: u64,
     pub flat: bool,
+    /// Dimension du monde où le joueur entre (0 surface, 1 Nether, 2 End)
+    pub dimension: i32,
     /// Point d'apparition du monde (bloc où se tiennent les pieds)
     pub spawn: (i32, i32, i32),
     pub features: crate::versions::Features,
@@ -178,7 +180,7 @@ pub fn start_game(s: &StartGame) -> Vec<u8> {
     w.u64(s.seed); // graine
     w.i16(0); // biome d'apparition : par défaut
     w.string("plains");
-    w.vari32(0); // dimension : surface
+    w.vari32(s.dimension); // dimension : surface, Nether ou End
     w.vari32(if s.flat { 2 } else { 1 }); // générateur : plat ou normal
     w.vari32(s.gamemode); // mode de jeu du monde
     w.bool(false); // hardcore
@@ -308,6 +310,61 @@ pub fn chunk_publisher_update(x: i32, y: i32, z: i32, radius_blocks: u32) -> Vec
     w.varu32(radius_blocks);
     w.u32(0); // chunks enregistrés
     w.0
+}
+
+/// ChangeDimension : le joueur passe dans une autre dimension, à cette position. Format relevé
+/// auprès du serveur officiel (protocole 2225) : dimension, position, « réapparition » (faux),
+/// puis le numéro de l'écran de chargement (présent, sur quatre octets).
+pub fn change_dimension(dimension: i32, pos: (f32, f32, f32), screen: u32) -> Vec<u8> {
+    let mut w = W::default();
+    w.vari32(dimension);
+    w.f32(pos.0);
+    w.f32(pos.1);
+    w.f32(pos.2);
+    w.bool(false);
+    w.bool(true);
+    w.u32(screen);
+    w.0
+}
+
+#[cfg(test)]
+mod dimension_tests {
+    /// Les deux paquets relevés : vers le Nether puis vers l'End, en (0.5, 80, 0.5).
+    #[test]
+    fn a_dimension_change_is_written_like_the_official_server_does() {
+        let hex = |b: Vec<u8>| b.iter().map(|x| format!("{:02x}", x)).collect::<String>();
+        assert_eq!(hex(super::change_dimension(1, (0.5, 80.0, 0.5), 0)), "020000003f0000a0420000003f000100000000");
+        assert_eq!(hex(super::change_dimension(2, (0.5, 80.0, 0.5), 1)), "040000003f0000a0420000003f000101000000");
+    }
+}
+
+/// La même annonce, avec la liste des chunks qui viennent d'être envoyés : le serveur
+/// officiel la joint après chaque vague de chunks (nombre sur quatre octets, puis x et z de
+/// chacun), et répète l'annonce à chaque tick avec la position exacte du joueur.
+pub fn chunk_publisher_update_with(x: i32, y: i32, z: i32, radius_blocks: u32, sent: &[(i32, i32)]) -> Vec<u8> {
+    let mut w = W::default();
+    w.vari32(x);
+    w.vari32(y);
+    w.vari32(z);
+    w.varu32(radius_blocks);
+    w.u32(sent.len() as u32);
+    for (cx, cz) in sent {
+        w.vari32(*cx);
+        w.vari32(*cz);
+    }
+    w.0
+}
+
+#[cfg(test)]
+mod publisher_tests {
+    /// Octets relevés auprès du serveur officiel : joueur en (400, -58, 400), 128 blocs, sans
+    /// chunk nouveau ; puis en (6, -58, 6) avec des chunks (les trois premiers du relevé).
+    #[test]
+    fn the_served_zone_is_announced_like_the_official_server_does() {
+        let hex = |b: Vec<u8>| b.iter().map(|x| format!("{:02x}", x)).collect::<String>();
+        assert_eq!(hex(super::chunk_publisher_update_with(400, -58, 400, 128, &[])), "a00673a006800100000000");
+        assert_eq!(hex(super::chunk_publisher_update_with(6, -58, 6, 128, &[(-3, 2), (3, -2), (0, 0)])), "0c730c800103000000050406030000");
+    }
 }
 
 #[cfg(test)]

@@ -28,6 +28,9 @@ impl NetherNet {
     pub fn is_empty(&self) -> bool {
         true
     }
+    pub fn health(&self) -> (usize, usize, usize, u128, usize, usize) {
+        (0, 0, 0, 0, 0, 0)
+    }
     pub fn accept(&mut self, _key: SocketAddr, _local_ip: IpAddr, _offer: &str, _cpk: Option<String>, _now: u64) -> Result<(), (u16, &'static str)> {
         Err((503, "NetherNet transport not available"))
     }

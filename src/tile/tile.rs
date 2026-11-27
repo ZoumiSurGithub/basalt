@@ -48,6 +48,20 @@ pub trait Tile {
 
     /// Relit une clé enregistrée par `save_extra`.
     fn load_extra(&mut self, _key: &str, _value: &Tag) {}
+
+    /// L'autre moitié d'un coffre double : ses coordonnées x et z (même hauteur).
+    fn pair(&self) -> Option<(i32, i32)> {
+        None
+    }
+
+    /// Unit ce coffre à un voisin, ou le sépare (None).
+    fn set_pair(&mut self, _pair: Option<(i32, i32)>) {}
+
+    /// Coffre posé en étant accroupi : il reste simple, même contre un autre coffre.
+    fn alone(&self) -> bool {
+        false
+    }
+    fn set_alone(&mut self, _alone: bool) {}
 }
 
 /// Coffre, tonneau, boîte de Shulker, entonnoir, distributeur, dropper, alambic : un
@@ -55,6 +69,10 @@ pub trait Tile {
 pub struct ContainerTile {
     kind: TileType,
     inventory: BaseInventory,
+    /// L'autre moitié d'un coffre double (x, z), et ce qui a été relu du fichier
+    pair: Option<(i32, i32)>,
+    read: (Option<i32>, Option<i32>),
+    alone: bool,
 }
 
 impl ContainerTile {
@@ -69,7 +87,7 @@ impl ContainerTile {
             TileType::ShulkerBox => ("boîte de Shulker", 27),
             _ => ("coffre", 27),
         };
-        ContainerTile { kind, inventory: BaseInventory::new(label, size) }
+        ContainerTile { kind, inventory: BaseInventory::new(label, size), pair: None, read: (None, None), alone: false }
     }
 }
 
@@ -94,6 +112,40 @@ impl Tile for ContainerTile {
     }
     fn inventory_mut(&mut self) -> Option<&mut dyn Inventory> {
         Some(&mut self.inventory)
+    }
+    fn pair(&self) -> Option<(i32, i32)> {
+        self.pair
+    }
+    fn set_pair(&mut self, pair: Option<(i32, i32)>) {
+        self.pair = pair;
+    }
+    fn alone(&self) -> bool {
+        self.alone
+    }
+    fn set_alone(&mut self, alone: bool) {
+        self.alone = alone;
+    }
+    fn save_extra(&self) -> Vec<(&'static str, Tag)> {
+        match self.pair {
+            Some((x, z)) => vec![("pairx", Tag::Int(x)), ("pairz", Tag::Int(z))],
+            None if self.alone => vec![("alone", Tag::Byte(1))],
+            None => Vec::new(),
+        }
+    }
+    fn load_extra(&mut self, key: &str, value: &Tag) {
+        if key == "alone" {
+            self.alone = matches!(value, Tag::Byte(1));
+        }
+        if let Tag::Int(v) = value {
+            match key {
+                "pairx" => self.read.0 = Some(*v),
+                "pairz" => self.read.1 = Some(*v),
+                _ => {}
+            }
+            if let (Some(x), Some(z)) = self.read {
+                self.pair = Some((x, z));
+            }
+        }
     }
 }
 

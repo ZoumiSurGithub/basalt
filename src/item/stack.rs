@@ -11,6 +11,18 @@ pub struct Ench(pub u64);
 impl Ench {
     /// Enchantements portés au plus par un objet
     pub const MAX: usize = 5;
+    /// Bit libre au-dessus des cinq enchantements : l'arbalète est chargée d'une flèche.
+    pub const CHARGED: u64 = 1 << 63;
+
+    /// L'arbalète est-elle chargée ?
+    pub fn charged(self) -> bool {
+        self.0 & Self::CHARGED != 0
+    }
+
+    /// Le même objet, chargé ou déchargé.
+    pub fn with_charged(self, charged: bool) -> Ench {
+        Ench(if charged { self.0 | Self::CHARGED } else { self.0 & !Self::CHARGED })
+    }
 
     /// Les enchantements présents : (identifiant du jeu, niveau).
     pub fn list(self) -> Vec<(u8, u8)> {
@@ -29,11 +41,11 @@ impl Ench {
         if level > 0 && list.len() < Self::MAX && id < 126 {
             list.push((id, level.min(31)));
         }
-        Ench(list.iter().enumerate().fold(0, |all, (i, (id, level))| all | ((((*id as u64 + 1) << 5) | *level as u64) << (i * 12))))
+        Ench(list.iter().enumerate().fold(self.0 & Self::CHARGED, |all, (i, (id, level))| all | ((((*id as u64 + 1) << 5) | *level as u64) << (i * 12))))
     }
 
     pub fn is_empty(self) -> bool {
-        self.0 == 0
+        self.0 & !Self::CHARGED == 0
     }
 }
 

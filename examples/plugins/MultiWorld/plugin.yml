@@ -1,0 +1,26 @@
+# Plusieurs mondes sur un même serveur. Pour l'utiliser, copiez le dossier
+# « MultiWorld » dans le dossier « plugins » du serveur.
+name: MultiWorld
+version: 1.0.0
+main: main.lua
+api: 1
+description: Créer, ouvrir, fermer des mondes et s'y téléporter
+author: Basalt
+
+commands:
+  mw:
+    description: Gère les mondes du serveur
+    usage: "/mw <liste|creer|ouvrir|fermer|tp|ici> [monde] [type] [graine]"
+    permission: multiworld.gerer
+  monde:
+    description: Va dans un monde ouvert aux joueurs
+    usage: "/monde [nom]"
+    permission: multiworld.aller
+
+permissions:
+  multiworld.gerer:
+    description: Créer, ouvrir et fermer des mondes, y envoyer un joueur
+    default: op
+  multiworld.aller:
+    description: Aller dans les mondes ouverts aux joueurs (config.lua)
+    default: true

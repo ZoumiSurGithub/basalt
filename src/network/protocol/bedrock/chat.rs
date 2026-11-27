@@ -133,7 +133,8 @@ fn command_args(usage: &str) -> Overload {
                     .split('|')
                     .map(|w| w.trim().chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-' || *c == ':' || *c == '.').take(48).collect::<String>())
                     .filter(|w| !w.is_empty())
-                    .take(64)
+                    // (assez pour toutes les créatures de /summon)
+                    .take(256)
                     .collect();
                 if words.is_empty() {
                     ArgKind::String

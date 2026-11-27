@@ -184,6 +184,88 @@ pub fn mob_metadata(width: f32, height: f32, variant: i32, color: u8, flags: i64
     list
 }
 
+/// Flottaison d'un bateau, telle que le serveur officiel l'annonce : c'est elle qui le fait
+/// tenir sur l'eau dans le jeu de celui qui rame.
+const BOAT_BUOYANCY: &str = "{\"apply_gravity\":true,\"base_buoyancy\":1.0,\"big_wave_probability\":0.02999999932944775,\"big_wave_speed\":10.0,\"can_auto_step_from_liquid\":false,\"drag_down_on_buoyancy_removed\":0.0,\"liquid_blocks\":[\"minecraft:water\",\"minecraft:flowing_water\"],\"movement_type\":\"waves\"}\n";
+
+/// Données d'entité d'un bateau, relevées auprès du serveur officiel (protocole 2225) : il
+/// se heurte aux blocs (48), tombe (49), porte des passagers (37) et flotte (119, 121).
+/// Seule la variante (le bois) change d'un bateau à l'autre.
+#[allow(clippy::excessive_precision)]
+pub fn boat_metadata(wood: i32) -> Vec<(u32, Meta)> {
+    vec![
+        (0, Meta::Long((1 << 37) | (1 << 48) | (1 << 49))),
+        (1, Meta::Int(40)),
+        (2, Meta::Int(wood)),
+        (3, Meta::Byte(0)),
+        (4, Meta::Text("".into())),
+        (5, Meta::Long(-1)),
+        (7, Meta::Short(300)),
+        (11, Meta::Int(0)),
+        (12, Meta::Int(1)),
+        (13, Meta::Float(0.0)),
+        (14, Meta::Float(0.0)),
+        (22, Meta::Byte(0)),
+        (37, Meta::Long(0)),
+        (38, Meta::Float(1.0)),
+        (39, Meta::Byte(0)),
+        (42, Meta::Short(300)),
+        (43, Meta::Int(0)),
+        (44, Meta::Byte(0)),
+        (45, Meta::Int(0)),
+        (46, Meta::Int(0)),
+        (53, Meta::Float(1.399999976158142)),
+        (54, Meta::Float(0.45500001311302185)),
+        (55, Meta::Int(-1)),
+        (56, Meta::Vec3(0.0, 0.0, 0.0)),
+        (57, Meta::Byte(0)),
+        (58, Meta::Float(0.0)),
+        (59, Meta::Byte(0)),
+        (60, Meta::Float(0.0)),
+        (70, Meta::Byte(0)),
+        (71, Meta::Text("".into())),
+        (72, Meta::Text("".into())),
+        (73, Meta::Byte(1)),
+        (74, Meta::Byte(0)),
+        (75, Meta::Int(0)),
+        (76, Meta::Int(0)),
+        (77, Meta::Int(0)),
+        (78, Meta::Int(-1)),
+        (81, Meta::Byte(255)),
+        (82, Meta::Byte(0)),
+        (92, Meta::Long(1 << 57)),
+        (101, Meta::Int(0)),
+        (102, Meta::Int(0)),
+        (103, Meta::Int(0)),
+        (104, Meta::Int(0)),
+        (106, Meta::Int(3)),
+        (107, Meta::Byte(1)),
+        (108, Meta::Float(8.0)),
+        (109, Meta::Float(16.0)),
+        (110, Meta::Text("ambient".into())),
+        (111, Meta::Float(1.0)),
+        (114, Meta::Int(0)),
+        (115, Meta::Int(0)),
+        (116, Meta::Int(0)),
+        (117, Meta::Int(0)),
+        (118, Meta::EmptyNbt),
+        (119, Meta::Byte(1)),
+        (120, Meta::Float(0.0)),
+        (121, Meta::Text(BOAT_BUOYANCY.into())),
+        (124, Meta::Float(1.0)),
+        (125, Meta::Int(20)),
+        (126, Meta::Int(615)),
+        (132, Meta::Text("".into())),
+        (134, Meta::Float(0.0)),
+        (135, Meta::Float(0.0)),
+        (136, Meta::Int(-1)),
+        (137, Meta::Int(-1)),
+        (138, Meta::Int(-1)),
+        (139, Meta::Long(0)),
+        (140, Meta::Float(64.0)),
+    ]
+}
+
 /// Indicateurs (numéros du jeu) : bébé, amoureux, tondu.
 pub const FLAG_BABY: i64 = 1 << 11;
 pub const FLAG_IN_LOVE: i64 = 1 << 7;
@@ -337,6 +419,19 @@ pub fn level_event(event: i32, pos: (f32, f32, f32), data: i32) -> Vec<u8> {
 }
 /// BlockActorData : les données d'un bloc changent (ici une cloche qui se met à sonner).
 pub const ID_BLOCK_ACTOR_DATA: u32 = 56;
+
+/// BlockEvent : un bloc s'anime chez le joueur. Pour un coffre : sorte 1, donnée 1 (le
+/// couvercle s'ouvre) ou 0 (il se referme).
+pub const ID_BLOCK_EVENT: u32 = 26;
+pub fn block_event(pos: (i32, i32, i32), kind: i32, data: i32) -> Vec<u8> {
+    let mut w = W::default();
+    w.vari32(pos.0);
+    w.vari32(pos.1);
+    w.vari32(pos.2);
+    w.vari32(kind);
+    w.vari32(data);
+    w.0
+}
 pub fn block_actor_data(pos: (i32, i32, i32), tag: &crate::nbt::Tag) -> Vec<u8> {
     let mut w = W::default();
     w.vari32(pos.0);
@@ -402,6 +497,8 @@ pub const LEVEL_EVENT_PARTICLE_SPLASH: i32 = 2002;
 pub const LEVEL_EVENT_PARTICLE_EXPLOSION: i32 = 0x4000 | 17;
 /// Sifflement d'une mèche de TNT qui s'allume
 pub const LEVEL_EVENT_SOUND_FUSE: i32 = 1005;
+/// Les étincelles vertes de la poudre d'os
+pub const LEVEL_EVENT_PARTICLE_BONE_MEAL: i32 = 2005;
 /// Bruit de la boule de feu du ghast
 pub const LEVEL_EVENT_SOUND_GHAST_FIREBALL: i32 = 1008;
 /// Tintement d'une orbe d'expérience ramassée
@@ -422,6 +519,21 @@ pub fn level_sound_with(sound: &str, pos: (f32, f32, f32), data: i32, entity: &s
     w.bool(false); // volume relatif
     w.0.extend_from_slice(&unique_id.to_le_bytes());
     w.u8(0);
+    w.0
+}
+
+/// SpawnParticleEffect : la particule `name` (« minecraft:sonic_explosion ») à cet endroit,
+/// dans cette dimension, attachée à aucune entité, sans variables Molang. Disposition d'après
+/// les serveurs existants (gophertunnel), pas relevée auprès du serveur officiel.
+pub fn spawn_particle_effect(dimension: u8, pos: (f32, f32, f32), name: &str) -> Vec<u8> {
+    let mut w = W::default();
+    w.u8(dimension);
+    w.vari64(-1);
+    w.f32(pos.0);
+    w.f32(pos.1);
+    w.f32(pos.2);
+    w.string(name);
+    w.bool(false);
     w.0
 }
 
@@ -512,3 +624,23 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod boat_tests {
+    use super::*;
+
+    /// Les données d'un bateau sont, à l'octet près, celles que le serveur officiel a envoyées
+    /// (début et fin du relevé : indicateurs, vie, puis les dernières clés).
+    #[test]
+    fn a_boat_is_announced_like_the_official_server_does() {
+        let mut w = W::default();
+        write_metadata(&mut w, &boat_metadata(0));
+        let hex: String = w.0.iter().map(|b| format!("{:02x}", b)).collect();
+        assert!(hex.starts_with("45000707808080808088800301020250020202000300000004040400050707010701012c010b0202000c0202020d0303000000000e030300000000160000002507070026"), "{}", hex);
+        assert!(hex.contains("510000ff520000005c0707808080808080808004"), "{}", hex);
+        assert!(hex.contains("7700000178030300000000790404880 27b226170706c795f67726176697479".replace(' ', "").as_str()), "{}", hex);
+        assert!(hex.ends_with("8b010707008c01030300008042"), "{}", hex);
+        // (paquet relevé : 700 octets, dont 63 avant ces données et 4 après)
+        assert_eq!(w.0.len(), 700 - 63 - 4);
+    }
+}

@@ -44,6 +44,7 @@ pub struct Config {
     pub http_signaling: bool,
     pub nethernet_udp_port: u16,
     /// Fils entre lesquels les liaisons NetherNet sont réparties (1 à 16)
+    /// 0 : « auto » (d'après max-players et les cœurs, voir `nethernet_threads_for`)
     pub nethernet_threads: usize,
     pub public_ip: String,
     pub identity_domain: String,
@@ -64,12 +65,18 @@ pub struct Config {
     pub mob_griefing: bool,
     /// Le feu brûle les blocs et gagne du terrain (`fire-spreads`)
     pub fire_spreads: bool,
+    /// Les mécaniques du jeu, coupées une à une dans `vanilla.properties`
+    pub vanilla: crate::utils::vanilla::Vanilla,
+    /// La pluie et l'orage viennent et repartent d'eux-mêmes (`weather-cycle`)
+    pub weather_cycle: bool,
     pub player_view: i32,
     pub max_visible: usize,
     pub auth_keys_file: String,
     pub plugins_dir: String,
     /// Dossier où le monde est enregistré
     pub world_dir: String,
+    /// Nom du monde principal : son dossier est `worlds/<level-name>` (comme le serveur du jeu)
+    pub level_name: String,
     /// Bac à sable des plugins
     pub plugin_sandbox: bool,
     /// Annoncer les commandes des plugins au jeu (« / » avec autocomplétion)
@@ -115,7 +122,7 @@ impl Default for Config {
             file: None,
             http_signaling: true,
             nethernet_udp_port: 19140,
-            nethernet_threads: 1,
+            nethernet_threads: 0,
             public_ip: String::new(),
             identity_domain: "basalt.local".into(),
             identity_cpk_jwk: true,
@@ -128,11 +135,14 @@ impl Default for Config {
             api_test: false,
             mob_griefing: true,
             fire_spreads: true,
+            vanilla: crate::utils::vanilla::Vanilla::default(),
+            weather_cycle: true,
             player_view: 4,
             max_visible: usize::MAX,
             auth_keys_file: String::new(),
             plugins_dir: "plugins".into(),
-            world_dir: "world".into(),
+            world_dir: "worlds/world".into(),
+            level_name: "world".into(),
             plugin_sandbox: true,
             commands_in_game: true,
             plugin_trusted: String::new(),
@@ -157,10 +167,9 @@ nethernet-signaling=true
 # Port UDP de la liaison WebRTC (transport NetherNet). À ouvrir dans le pare-feu.
 nethernet-udp-port=19140
 # Fils entre lesquels les liaisons des joueurs sont réparties (chiffrement, lecture,
-# envoi), de 1 à 16. Un seul suffit jusqu'à quelques centaines de joueurs ; au-delà,
-# comptez un fil pour 400 joueurs environ, sans dépasser le nombre de cœurs. Le port
-# reste le même.
-nethernet-threads=1
+# envoi), de 1 à 16, ou auto : un fil pour 150 places (max-players), sans dépasser la
+# moitié des cœurs. Mesuré : un fil sature vers 250 joueurs actifs. Le port reste le même.
+nethernet-threads=auto
 # Adresse IP publique du serveur, à renseigner s'il est derrière une box ou un NAT
 # (laisser vide sinon : l'adresse sur laquelle le joueur s'est connecté est utilisée)
 public-ip=
@@ -183,10 +192,13 @@ keep-inventory=false
 network-compression=true
 # Terrain d'un nouveau monde : vanilla (comme le jeu : biomes, montagnes, grottes), flat (plat),
 # ou plugin:<nom> pour le générateur d'un plugin (plugins/<plugin>/generators/<nom>.lua).
-# Un monde déjà créé garde son terrain : pour en changer, utilisez un autre world-dir.
+# Un monde déjà créé garde son terrain : pour en changer, utilisez un autre level-name.
 level-type=vanilla
 # Graine d'un nouveau monde : un nombre ou un texte. Vide : au hasard.
 level-seed=
+# Nom du monde principal : son dossier est worlds/<level-name>, à côté des autres mondes.
+# Pour ouvrir un monde du jeu, déposez son dossier (ou son .mcworld) dans worlds/.
+level-name=world
 world-name=Monde
 # Rayon (en chunks) du terrain envoyé autour du point d'apparition
 view-distance=6
@@ -264,6 +276,29 @@ impl Config {
             }
         };
         let mut c = Config::parse(&text);
+        // Les mécaniques du jeu ont leur propre fichier, à côté ; les réglages qui vivaient ici
+        // y figurent aussi, et c'est lui qui l'emporte
+        let beside = path.parent().map(|d| d.join("vanilla.properties")).unwrap_or_else(|| std::path::PathBuf::from("vanilla.properties"));
+        let now = c.clone();
+        let (vanilla, moved) = crate::utils::vanilla::load(&beside, &|key| match key {
+            "spawn-animals" => now.spawn_animals,
+            "spawn-monsters" => now.spawn_monsters,
+            "mob-griefing" => now.mob_griefing,
+            "fire-spreads" => now.fire_spreads,
+            "weather-cycle" => now.weather_cycle,
+            _ => now.keep_inventory,
+        });
+        c.vanilla = vanilla;
+        for (key, on) in moved {
+            match key.as_str() {
+                "spawn-animals" => c.spawn_animals = on,
+                "spawn-monsters" => c.spawn_monsters = on,
+                "mob-griefing" => c.mob_griefing = on,
+                "fire-spreads" => c.fire_spreads = on,
+                "weather-cycle" => c.weather_cycle = on,
+                _ => c.keep_inventory = on,
+            }
+        }
         // Fichier d'une version précédente : la nouvelle option y est ajoutée, avec son explication
         if !text.is_empty() && !text.lines().any(|l| l.trim_start().starts_with("level-type")) {
             let mut more = text.clone();
@@ -284,6 +319,30 @@ impl Config {
         }
         c.root = path.parent().filter(|p| !p.as_os_str().is_empty()).map(|p| p.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."));
         c.file = Some(path.to_path_buf());
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let explicit = text.lines().any(|l| l.trim_start().starts_with("world-dir") && l.split_once('=').map(|(_, v)| !v.trim().is_empty()).unwrap_or(false));
+        if !explicit {
+            // Tous les mondes sont rangés au même endroit : worlds/<nom>. Le dossier `world`
+            // des versions précédentes y est déplacé, une fois.
+            let target = c.root.join("worlds").join(&c.level_name);
+            let old = c.root.join("world");
+            if old.is_dir() && !target.exists() {
+                let moved = std::fs::create_dir_all(c.root.join("worlds")).and_then(|_| std::fs::rename(&old, &target));
+                match moved {
+                    Ok(()) => info!("Le monde a été déplacé de {} vers {} : tous les mondes sont désormais rangés dans worlds/", old.display(), target.display()),
+                    Err(e) => warn!("Le dossier {} n'a pas pu être déplacé vers {} ({}) : déplacez-le à la main, serveur arrêté", old.display(), target.display(), e),
+                }
+            }
+            c.world_dir = target.to_string_lossy().into_owned();
+            if !text.is_empty() && !text.lines().any(|l| l.trim_start().starts_with("level-name")) {
+                let mut more = text.clone();
+                if !more.ends_with('\n') {
+                    more.push('\n');
+                }
+                more.push_str("# Nom du monde principal : son dossier est worlds/<level-name>, à côté des autres mondes.\n# Pour ouvrir un monde du jeu, déposez son dossier (ou son .mcworld) dans worlds/.\nlevel-name=world\n");
+                let _ = std::fs::write(path, more);
+            }
+        }
         c
     }
 
@@ -344,6 +403,7 @@ impl Config {
         c.spawn_monsters = map.get("spawn-monsters").map(|v| v != "false").unwrap_or(true);
         c.mob_griefing = map.get("mob-griefing").map(|v| v != "false").unwrap_or(true);
         c.fire_spreads = map.get("fire-spreads").map(|v| v != "false").unwrap_or(true);
+        c.weather_cycle = map.get("weather-cycle").map(|v| v != "false").unwrap_or(true);
         c.http_signaling = map.get("nethernet-signaling").map(|v| v != "false").unwrap_or(true);
         c.xbox_auth = map.get("xbox-auth").map(|v| v != "false").unwrap_or(true);
         c.local_bots = map.get("local-bots").map(|v| v == "true" || v == "on").unwrap_or(false);
@@ -356,7 +416,14 @@ impl Config {
         c.debug = map.get("debug-packets").map(|v| v == "true").unwrap_or(false);
         c.probes = map.get("debug-probes").map(|v| v == "true").unwrap_or(false);
         c.plugins_dir = text_of("plugins-dir", &c.plugins_dir);
-        c.world_dir = text_of("world-dir", &c.world_dir);
+        // Le monde principal est rangé avec les autres, dans worlds/<level-name>. (Un ancien
+        // réglage `world-dir` reste respecté tel quel.)
+        let name: String = text_of("level-name", "world").chars().filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '-').take(32).collect();
+        c.level_name = if name.is_empty() { "world".to_string() } else { name };
+        c.world_dir = match map.get("world-dir") {
+            Some(dir) if !dir.trim().is_empty() => dir.trim().to_string(),
+            _ => format!("worlds/{}", c.level_name),
+        };
         c.commands_in_game = map.get("commands-in-game").map(|v| v != "false").unwrap_or(true);
         c.plugin_sandbox = map.get("plugin-sandbox").map(|v| v != "false").unwrap_or(true);
         c.plugin_trusted = text_of("plugin-trusted", "");
@@ -373,8 +440,12 @@ impl Config {
         }
         num!("server-port", port);
         num!("nethernet-udp-port", nethernet_udp_port);
-        num!("nethernet-threads", nethernet_threads);
-        c.nethernet_threads = c.nethernet_threads.clamp(1, 16);
+        if map.get("nethernet-threads").map(|v| v.trim().eq_ignore_ascii_case("auto")).unwrap_or(false) {
+            c.nethernet_threads = 0;
+        } else {
+            num!("nethernet-threads", nethernet_threads);
+            c.nethernet_threads = c.nethernet_threads.min(16);
+        }
         c.public_ip = text_of("public-ip", "");
         c.identity_domain = text_of("identity-domain", &c.identity_domain);
         c.identity_cpk_jwk = map.get("identity-cpk-format").map(|v| v != "spki").unwrap_or(true);
@@ -424,5 +495,29 @@ mod tests {
         assert!(!Config::parse("keep-inventory=false").keep_inventory);
         assert!(Config::parse("keep-inventory=true").keep_inventory);
         assert!(TEMPLATE.contains("keep-inventory=false"));
+    }
+}
+
+/// Nombre de fils NetherNet : celui demandé, ou en « auto » (0) un pour 150 places, sans
+/// dépasser la moitié des cœurs de la machine (le reste pour la boucle du jeu et le système).
+pub fn nethernet_threads_for(asked: usize, max_players: usize, cores: usize) -> usize {
+    if asked > 0 {
+        return asked.clamp(1, 16);
+    }
+    let wanted = max_players.div_ceil(150).max(1);
+    wanted.min((cores / 2).max(1)).clamp(1, 16)
+}
+
+#[cfg(test)]
+mod nethernet_threads_tests {
+    use super::nethernet_threads_for;
+
+    #[test]
+    fn auto_follows_places_and_cores() {
+        assert_eq!(nethernet_threads_for(0, 20, 8), 1);
+        assert_eq!(nethernet_threads_for(0, 520, 24), 4);
+        assert_eq!(nethernet_threads_for(0, 520, 4), 2);
+        assert_eq!(nethernet_threads_for(3, 20, 2), 3);
+        assert_eq!(nethernet_threads_for(40, 20, 64), 16);
     }
 }

@@ -25,7 +25,7 @@ pub struct VanillaCommands;
 impl VanillaCommands {
     /// Commandes intégrées, telles qu'annoncées au jeu (description traduite par le client).
     pub fn all() -> &'static [CommandDef] {
-        static ALL: [CommandDef; 29] = [
+        static ALL: [CommandDef; 32] = [
             def("help", "commands.help.description", "/help", false),
             def("list", "commands.list.description", "/list", false),
             def("me", "commands.me.description", "/me <message:text>", false),
@@ -40,6 +40,9 @@ impl VanillaCommands {
             def("effect", "commands.effect.description", "/effect <player:player> <effect:speed|slowness|haste|mining_fatigue|strength|instant_health|instant_damage|jump_boost|nausea|regeneration|resistance|fire_resistance|water_breathing|invisibility|blindness|night_vision|hunger|weakness|poison|wither|health_boost|absorption|saturation|levitation|fatal_poison|conduit_power|slow_falling|bad_omen|village_hero|darkness> [seconds:int] [amplifier:int] [hideParticles:true|false] | /effect <player:player> <mode:clear> [effect:speed|slowness|haste|mining_fatigue|strength|instant_health|instant_damage|jump_boost|nausea|regeneration|resistance|fire_resistance|water_breathing|invisibility|blindness|night_vision|hunger|weakness|poison|wither|health_boost|absorption|saturation|levitation|fatal_poison|conduit_power|slow_falling|bad_omen|village_hero|darkness]", true),
             def("setblock", "commands.setblock.description", "/setblock <position:pos> <tileName:block>", true),
             def("fill", "commands.fill.description", "/fill <from:pos> <to:pos> <tileName:block>", true),
+            def("world", "Mondes ouverts : liste, ouverture, fermeture, téléportation", "/world <action:list> | /world <action:load|unload> <name:text> | /world <action:tp> <name:text> [player:player]", true),
+            def("gamerule", "commands.gamerule.description", "/gamerule | /gamerule <rule:dodaylightcycle|doweathercycle> [value:true|false]", true),
+            def("weather", "commands.weather.description", "/weather <type:clear|rain|thunder> [duration:int] | /weather <type:query>", true),
             def("time", "commands.time.description", "/time <mode:set> <time:day|night|noon|midnight|sunrise|sunset> | /time <mode:set|add> <amount:int> | /time <mode:query>", true),
             def("tp", "commands.tp.description", "/tp <destination:pos> | /tp <destination:player> | /tp <victim:player> <destination:pos>", true),
             def("teleport", "commands.tp.description", "/teleport <destination:pos> | /teleport <destination:player> | /teleport <victim:player> <destination:pos>", true),
@@ -53,7 +56,7 @@ impl VanillaCommands {
             def(
                 "summon",
                 "commands.summon.description",
-                "/summon <entityType:cow|pig|sheep|chicken|rabbit|mooshroom|goat|llama|horse|donkey|mule> [spawnPos:pos] [spawnEvent:minecraft:entity_born|entity_born|minecraft:on_tame|on_tame]",
+                "/summon <entityType:cow|pig|sheep|chicken|rabbit|mooshroom|goat|llama|horse|donkey|mule|wolf|cat|villager_v2|iron_golem|zombie|spider|skeleton|stray|creeper|husk|drowned|zombie_villager_v2|cave_spider|silverfish|wither_skeleton|vindicator|pillager|enderman|slime|witch|blaze|ghast|phantom|fox|ocelot|panda|polar_bear|turtle|frog|camel|sniffer|armadillo|strider|snow_golem|skeleton_horse|zombie_horse|trader_llama|wandering_trader|bat|bee|parrot|allay|cod|salmon|tropicalfish|pufferfish|squid|glow_squid|dolphin|axolotl|tadpole|piglin|piglin_brute|zombie_pigman|hoglin|zoglin|magma_cube|endermite|ravager|evocation_illager|bogged|warden> [spawnPos:pos] [spawnEvent:minecraft:entity_born|entity_born|minecraft:on_tame|on_tame]",
                 true,
             ),
             def("kick", "commands.kick.description", "/kick <name:player> [reason:text]", true),

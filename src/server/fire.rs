@@ -27,6 +27,11 @@ const TNT_CENTRE: f32 = 0.49;
 /// Mèche d'une TNT allumée à la main, en ticks (quatre secondes)
 const FUSE: u32 = 80;
 
+/// Le dixième des flammes auquel appartient une position (toujours le même pour une flamme)
+fn fire_slice((x, y, z): (i32, i32, i32)) -> u64 {
+    (x.wrapping_mul(31).wrapping_add(y.wrapping_mul(17)).wrapping_add(z.wrapping_mul(7))).rem_euclid(10) as u64
+}
+
 const AROUND: [(i32, i32, i32); 6] = [(0, 1, 0), (0, -1, 0), (1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)];
 
 impl Server {
@@ -91,7 +96,16 @@ impl Server {
             });
             // (d'abord là où le feu a un sol : le jeu ne dessine pas les flammes d'un feu en l'air)
             let grounded: Vec<(i32, i32, i32)> = spots.iter().copied().filter(|p| self.blocks_movement(self.world.get(p.0, p.1 - 1, p.2))).collect();
-            grounded.into_iter().chain(spots).any(|p| self.light_fire(p))
+            let mut lit = false;
+            for p in grounded.into_iter().chain(spots) {
+                if self.light_fire(p) {
+                    // (dans un cadre d'obsidienne : le portail du Nether s'allume)
+                    self.try_nether_portal(p);
+                    lit = true;
+                    break;
+                }
+            }
+            lit
         };
         if lit {
             let at = (pos.0 as f32 + 0.5, pos.1 as f32 + 0.5, pos.2 as f32 + 0.5);
@@ -112,14 +126,16 @@ impl Server {
         true
     }
 
-    /// Deux fois par seconde : chaque flamme brûle, gagne du terrain ou s'éteint.
-    pub(super) fn fires_tick(&mut self) {
+    /// Deux fois par seconde : chaque flamme brûle, gagne du terrain ou s'éteint. Appelé à
+    /// chaque tick, sur un dixième des flammes à la fois (`slice`, de 0 à 9) : une forêt en
+    /// feu ne fige plus un tick sur dix.
+    pub(super) fn fires_tick(&mut self, slice: u64) {
         if self.fires.is_empty() {
             return;
         }
         let air = self.world.air;
         let spreads = self.cfg.fire_spreads;
-        let list: Vec<(i32, i32, i32)> = self.fires.iter().copied().collect();
+        let list: Vec<(i32, i32, i32)> = self.fires.iter().copied().filter(|p| fire_slice(*p) == slice).collect();
         for (x, y, z) in list {
             if !self.world.is_ready(x >> 4, z >> 4) {
                 continue;
@@ -189,7 +205,7 @@ impl Server {
     /// Amorce la TNT de cette position : le bloc devient une entité qui clignote, tombe et
     /// explose à la fin de sa mèche. Vrai si elle est partie.
     pub(super) fn prime_tnt(&mut self, pos: (i32, i32, i32), fuse: u32) -> bool {
-        if self.tnt.len() >= MAX_TNT || !self.block_is(self.world.get(pos.0, pos.1, pos.2), &["tnt"]) {
+        if !self.cfg.vanilla.tnt || self.tnt.len() >= MAX_TNT || !self.block_is(self.world.get(pos.0, pos.1, pos.2), &["tnt"]) {
             return false;
         }
         self.change_block(pos, self.world.air);
@@ -274,6 +290,7 @@ impl Server {
     /// éteint. Le blaze, le ghast et le wither squelette n'y sont pas sensibles.
     pub(super) fn burn_tick(&mut self) {
         let tick = self.tick;
+        self.thorns_tick();
         let players: Vec<(SocketAddr, (f32, f32, f32))> =
             self.clients.iter().filter(|(_, c)| c.joined && c.stage == Stage::InGame && c.dead.is_none() && c.mode.takes_damage()).map(|(a, c)| (*a, (c.pos.0, c.pos.1 - EYE, c.pos.2))).collect();
         for (addr, feet) in players {
@@ -285,8 +302,10 @@ impl Server {
             let mut cells: Vec<u32> = Vec::with_capacity(8);
             for (dx, dz) in [(-0.3, -0.3), (0.3, -0.3), (-0.3, 0.3), (0.3, 0.3)] {
                 let (x, z) = ((feet.0 + dx).floor() as i32, (feet.2 + dz).floor() as i32);
-                cells.push(self.world.get(x, y, z));
-                cells.push(self.world.get(x, y + 1, z));
+                // (un coin dans un chunk pas encore là : ignoré plutôt que généré sur place)
+                let air = self.world.air;
+                cells.push(self.world.get_loaded(x, y, z).unwrap_or(air));
+                cells.push(self.world.get_loaded(x, y + 1, z).unwrap_or(air));
             }
             cells.dedup();
             let (in_lava, in_fire) = (cells.iter().any(|s| self.is_lava(*s)), cells.iter().any(|s| self.is_fire(*s)));
@@ -352,7 +371,7 @@ impl Server {
                 c.air = (c.air + 25).min(300);
             }
             if c.air != before {
-                changed.push((*addr, c.id, c.air.max(0), under, (c.burn_until > 0) as i64 | if c.riding.is_some() { bedrock::FLAG_RIDING } else { 0 }));
+                changed.push((*addr, c.id, c.air.max(0), under, (c.burn_until > 0) as i64 | Self::posture_flags(c) | if c.riding.is_some() { bedrock::FLAG_RIDING } else { 0 }));
             }
         }
         for (addr, id, air, under, extra) in changed {
@@ -377,5 +396,24 @@ impl Server {
         if was != m.burning {
             self.mob_changed(id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fire_slice;
+
+    #[test]
+    fn fires_are_spread_over_ten_ticks() {
+        let mut count = [0usize; 10];
+        for x in -20..20 {
+            for y in -5..5 {
+                for z in -20..20 {
+                    count[fire_slice((x, y, z)) as usize] += 1;
+                }
+            }
+        }
+        // (chaque dixième reçoit à peu près sa part : 16 000 / 10)
+        assert!(count.iter().all(|&c| (1400..=1800).contains(&c)), "{count:?}");
     }
 }

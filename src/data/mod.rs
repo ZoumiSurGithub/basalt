@@ -65,6 +65,8 @@ pub struct GameData {
     props: HashMap<String, crate::block::BlockProps>,
     /// Liste des entités, prête à être envoyée (NBT réseau)
     pub entity_identifiers: Option<Vec<u8>>,
+    /// Description de chaque bloc dans un monde enregistré (voir `world/mojang.rs`)
+    pub table: std::sync::Arc<crate::world::mojang::BlockTable>,
 }
 
 /// Décompresse un fichier gzip (les fichiers .nbt du jeu de données le sont).
@@ -226,6 +228,7 @@ impl GameData {
             hardness,
             props: block_props,
             entity_identifiers,
+            table: std::sync::Arc::new(crate::world::mojang::BlockTable::from_palette(list)),
         })
     }
 

@@ -11,4 +11,5 @@ pub mod nethernet_thread;
 pub mod nethernet;
 pub mod transport;
 pub mod signaling;
+pub mod sockbuf;
 pub mod protocol;

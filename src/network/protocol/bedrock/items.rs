@@ -1061,11 +1061,31 @@ pub fn item_stack_full(w: &mut W, id: i16, count: u8, net_id: i32, block: u32, m
 /// identifiant et son niveau. C'est elle qui fait briller l'objet et remplit son infobulle.
 pub fn item_extra(damage: u16, ench: u64) -> Vec<u8> {
     let enchants = crate::item::Ench(ench).list();
-    if damage == 0 && enchants.is_empty() {
+    let charged = crate::item::Ench(ench).charged();
+    if damage == 0 && enchants.is_empty() && !charged {
         return Vec::new();
     }
     let mut out = vec![0xff, 0xff, 0x01];
     out.extend_from_slice(&[0x0a, 0x00, 0x00]); // document sans nom
+    if charged {
+        // L'arbalète chargée porte sa flèche : le jeu la dessine tendue
+        let named = |out: &mut Vec<u8>, kind: u8, name: &[u8]| {
+            out.push(kind);
+            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            out.extend_from_slice(name);
+        };
+        named(&mut out, 0x0a, b"chargedItem");
+        named(&mut out, 0x01, b"Count");
+        out.push(1);
+        named(&mut out, 0x02, b"Damage");
+        out.extend_from_slice(&0i16.to_le_bytes());
+        named(&mut out, 0x08, b"Name");
+        out.extend_from_slice(&15u16.to_le_bytes());
+        out.extend_from_slice(b"minecraft:arrow");
+        named(&mut out, 0x01, b"WasPickedUp");
+        out.push(0);
+        out.push(0x00);
+    }
     if damage != 0 {
         out.push(0x03); // entier
         out.extend_from_slice(&6u16.to_le_bytes());

@@ -12,6 +12,8 @@
 //! est encore utilisée ; le terrain généré est partagé tel quel.
 
 pub mod generator;
+pub mod leveldb;
+pub mod mojang;
 pub mod light;
 pub mod liquid;
 pub mod structures;
@@ -34,9 +36,10 @@ pub const MIN_Y: i32 = -64;
 pub const MAX_Y: i32 = 319;
 /// Blocs modifiés tolérés au total : au-delà, les nouvelles modifications sont refusées.
 const MAX_EDITS: usize = 2_000_000;
-/// Chunks générés gardés en mémoire (environ 40 Ko chacun). Au-delà, les moins récemment
-/// utilisés sont oubliés : les régénérer ne prend qu'une milliseconde environ.
-const CACHE_CHUNKS: usize = 2048;
+/// Chunks générés gardés en mémoire (environ 40 Ko chacun : 320 Mo au plus). Au-delà, les
+/// moins récemment utilisés sont oubliés et seront régénérés au besoin. (2 048 ne suffisait
+/// pas à 500 joueurs dispersés : les chunks sortaient puis revenaient sans cesse.)
+const CACHE_CHUNKS: usize = 8192;
 
 /// Blocs modifiés d'un chunk : (x local, y, z local) -> identifiant réseau du bloc.
 type ChunkEdits = HashMap<(u8, i16, u8), u32>;
@@ -51,6 +54,11 @@ struct Terrain {
     /// Chunks demandés aux fils de génération et pas encore prêts
     pending: Mutex<HashSet<(i32, i32)>>,
     jobs: Mutex<Option<Sender<(i32, i32)>>>,
+    /// Base du monde : un chunk qui y est enregistré est servi tel quel, au lieu d'être généré
+    store: std::sync::OnceLock<Arc<mojang::Store>>,
+    /// Chunks à garder en mémoire : au moins `CACHE_CHUNKS`, davantage quand les joueurs en
+    /// voient plus (voir `World::keep_chunks`)
+    limit: std::sync::atomic::AtomicUsize,
 }
 
 impl Terrain {
@@ -61,6 +69,8 @@ impl Terrain {
             clock: AtomicU64::new(0),
             pending: Mutex::new(HashSet::new()),
             jobs: Mutex::new(None),
+            store: std::sync::OnceLock::new(),
+            limit: std::sync::atomic::AtomicUsize::new(CACHE_CHUNKS),
         })
     }
 
@@ -77,7 +87,7 @@ impl Terrain {
         let stamp = self.clock.fetch_add(1, Ordering::Relaxed);
         let mut chunks = self.chunks.lock().unwrap_or_else(|e| e.into_inner());
         chunks.insert(key, (column, stamp));
-        if chunks.len() > CACHE_CHUNKS {
+        if chunks.len() > self.limit.load(Ordering::Relaxed).max(CACHE_CHUNKS) {
             // Les moins récemment utilisés sortent (ils seront régénérés au besoin)
             let mut stamps: Vec<u64> = chunks.values().map(|(_, s)| *s).collect();
             stamps.sort_unstable();
@@ -86,12 +96,39 @@ impl Terrain {
         }
     }
 
+    /// Fabrique un chunk : celui de la base s'il y est enregistré, sinon celui du générateur.
+    /// Dans un monde créé par Basalt, un chunk enregistré garde ce que le générateur sait de
+    /// lui (coffres et lits des structures) ; dans un monde venu du jeu, il est pris tel quel.
+    fn produce(&self, key: (i32, i32)) -> Column {
+        let Some(store) = self.store.get() else { return self.generator.generate(key.0, key.1) };
+        match store.load(key.0, key.1) {
+            Some(stored) => {
+                let air = self.generator.blocks.air;
+                let mut column = if store.native {
+                    self.generator.generate(key.0, key.1)
+                } else {
+                    Column::from_blocks(&vec![air; 256 * (MAX_Y - MIN_Y + 1) as usize], air, generator::Biome::Plains)
+                };
+                stored.apply(&mut column, air);
+                column
+            }
+            None => self.generator.generate(key.0, key.1),
+        }
+    }
+
     /// Chunk généré (calculé sur place s'il n'est pas prêt).
     fn column(&self, key: (i32, i32)) -> Arc<Column> {
         if let Some(c) = self.cached(key) {
             return c;
         }
-        let column = Arc::new(self.generator.generate(key.0, key.1));
+        let column = {
+            // (avec l'étape qui l'a demandé : c'est elle qu'il faut corriger)
+            let _t = crate::timings::scope_with(|| match crate::timings::current() {
+                Some(by) => format!("Chunk sur place ← {}", by),
+                None => format!("Chunk sur place ← fil {}", std::thread::current().name().unwrap_or("sans nom")),
+            });
+            Arc::new(self.produce(key))
+        };
         self.insert(key, column.clone());
         column
     }
@@ -131,7 +168,7 @@ impl Terrain {
                         Err(_) => return,
                     };
                     if !terrain.ready(key) {
-                        let column = Arc::new(terrain.generator.generate(key.0, key.1));
+                        let column = Arc::new(terrain.produce(key));
                         terrain.insert(key, column);
                     }
                     terrain.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
@@ -227,6 +264,87 @@ impl WorldView {
     }
 }
 
+/// Un enregistrement préparé par `World::plan_save`, à écrire (sur un autre fil si l'on veut).
+pub enum SavePlan {
+    /// Ancien format : tout le monde dans `level.nbt`
+    Legacy(crate::nbt::Tag),
+    /// Format du jeu : les chunks modifiés dans `db/`, et `level.dat`
+    Db { store: Arc<mojang::Store>, batch: mojang::Batch, info: mojang::LevelInfo, legacy: bool, chunks: usize, pending: Vec<SaveChunk>, palette: Palette },
+}
+
+/// Un chunk à encoder pour la base du monde, au moment de l'écrire (sur le fil des écritures,
+/// pas pendant le tick : un joueur qui court fait naître des centaines de chunks à
+/// enregistrer, et les encoder figeait le serveur une seconde et plus).
+pub struct SaveChunk {
+    key: (i32, i32),
+    column: Arc<Column>,
+    edits: Option<Arc<ChunkEdits>>,
+    wet: Option<Arc<HashSet<(u8, i16, u8)>>>,
+}
+
+impl SaveChunk {
+    fn encode(&self, store: &mojang::Store, p: &Palette, out: &mut mojang::Batch) {
+        let (column, edits, wet) = (&self.column, self.edits.as_deref(), self.wet.as_deref());
+        let block = |x: usize, y: i32, z: usize| edits.and_then(|e| e.get(&(x as u8, y as i16, z as u8))).copied().unwrap_or_else(|| column.get(x, y, z));
+        let holds_water = |x: usize, y: i32, z: usize| {
+            let key = (x as u8, y as i16, z as u8);
+            if wet.map(|w| w.contains(&key)).unwrap_or(false) || (column.wet.contains(&key) && !edits.map(|e| e.contains_key(&key)).unwrap_or(false)) {
+                return true;
+            }
+            // Plantes aquatiques : toujours dans l'eau ; coraux : s'ils touchent de l'eau
+            let b = block(x, y, z);
+            p.aquatic.contains(&b)
+                || (p.soaked.contains(&b)
+                    && [(1i32, 0i32, 0i32), (-1, 0, 0), (0, 0, 1), (0, 0, -1), (0, 1, 0), (0, -1, 0)].iter().any(|(dx, dy, dz)| {
+                        let (nx, ny, nz) = (x as i32 + dx, y + dy, z as i32 + dz);
+                        (0..16).contains(&nx) && (0..16).contains(&nz) && World::in_bounds(ny) && {
+                            let n = block(nx as usize, ny, nz as usize);
+                            n == p.water || p.aquatic.contains(&n)
+                        }
+                    }))
+        };
+        let biome = |s: usize, x: usize, y: usize, z: usize| match &column.biome_ids {
+            Some(ids) => ids.get(s * 64 + (x / 4) * 16 + (z / 4) * 4 + y / 4).copied().unwrap_or(1) as u32,
+            None => column.biome.id(),
+        };
+        store.encode(self.key.0, self.key.1, &block, &holds_water, &biome, out);
+    }
+}
+
+impl SavePlan {
+    /// Nombre de chunks que cet enregistrement écrit (0 pour l'ancien format).
+    pub fn chunks(&self) -> usize {
+        match self {
+            SavePlan::Legacy(_) => 0,
+            SavePlan::Db { chunks, .. } => *chunks,
+        }
+    }
+
+    pub fn write(self, dir: &std::path::Path) -> std::io::Result<()> {
+        match self {
+            SavePlan::Legacy(doc) => World::write_snapshot(dir, &doc),
+            SavePlan::Db { store, mut batch, info, legacy, pending, palette, .. } => {
+                for chunk in &pending {
+                    chunk.encode(&store, &palette, &mut batch);
+                }
+                if !batch.is_empty() {
+                    store.write(batch)?;
+                }
+                mojang::write_level(dir, &info)?;
+                if legacy {
+                    // L'ancien fichier est gardé de côté, au cas où
+                    let _ = std::fs::rename(dir.join("level.nbt"), dir.join("level.nbt.ancien"));
+                }
+                // (les coffres, fours et panneaux sont dans la base eux aussi)
+                if dir.join("tiles.nbt").exists() {
+                    let _ = std::fs::rename(dir.join("tiles.nbt"), dir.join("tiles.nbt.ancien"));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Le monde (comme `World` dans PocketMine).
 pub struct World {
     /// (chunk x, chunk z) -> (x local, y, z local) -> identifiant réseau du bloc
@@ -239,6 +357,17 @@ pub struct World {
     versions: HashMap<(i32, i32), u64>,
     /// Modifié depuis le dernier enregistrement
     pub dirty: bool,
+    /// Base du monde au format du jeu (absente sans les données du jeu : ancien `level.nbt`)
+    store: Option<Arc<mojang::Store>>,
+    /// Chunks modifiés depuis le dernier enregistrement dans la base
+    unsaved: HashSet<(i32, i32)>,
+    /// Un ancien `level.nbt` vient d'être relu : il sera retiré une fois la base écrite
+    legacy: bool,
+    /// Chunks qui ont des blocs à données dans la base, et l'empreinte de ce qui y est écrit
+    tile_chunks: HashMap<(i32, i32), u32>,
+    /// Blocs à données du jeu que Basalt ne gère pas (bannières, têtes, générateurs…) : gardés
+    /// tels quels, pour être réécrits avec les autres
+    foreign_tiles: HashMap<(i32, i32), Vec<u8>>,
     /// Données attachées aux blocs : contenu des coffres, état des fours, texte des panneaux
     pub tiles: crate::tile::TileMap,
     pub air: u32,
@@ -269,6 +398,11 @@ impl World {
             terrain: Terrain::new(generator),
             versions: HashMap::new(),
             dirty: false,
+            store: None,
+            unsaved: HashSet::new(),
+            legacy: false,
+            tile_chunks: HashMap::new(),
+            foreign_tiles: HashMap::new(),
             tiles: crate::tile::TileMap::new(),
             air,
             #[cfg(test)]
@@ -387,7 +521,9 @@ impl World {
         }
         let chunk = (x >> 4, z >> 4);
         let key = ((x & 15) as u8, y as i16, (z & 15) as u8);
-        if block == self.base(x, y, z) {
+        // (avec une base, le terrain d'un chunk enregistré contient déjà les modifications : une
+        // modification n'est alors jamais retirée, elle remplace ce qui est enregistré)
+        if self.store.is_none() && block == self.base(x, y, z) {
             // retour à l'état d'origine : rien à garder
             if self.edits.get(&chunk).map(|c| c.contains_key(&key)).unwrap_or(false) {
                 let all = Arc::make_mut(&mut self.edits);
@@ -452,17 +588,99 @@ impl World {
         self.terrain.cached((cx, cz)).map(|c| c.beds.iter().map(|&(x, y, z, _)| (cx * 16 + x as i32, y as i32, cz * 16 + z as i32)).collect()).unwrap_or_default()
     }
 
+    /// Le bloc, seulement si son chunk est déjà en mémoire : jamais de génération sur place.
+    /// Pour les vérifications faites à chaque mouvement d'un joueur, qui ne doivent pas
+    /// figer la boucle du jeu le temps de générer un chunk.
+    pub fn get_loaded(&self, x: i32, y: i32, z: i32) -> Option<u32> {
+        if !World::in_bounds(y) {
+            return Some(self.air);
+        }
+        let key = ((x & 15) as u8, y as i16, (z & 15) as u8);
+        if let Some(b) = self.edits.get(&(x >> 4, z >> 4)).and_then(|c| c.get(&key)) {
+            return Some(*b);
+        }
+        self.terrain.cached((x >> 4, z >> 4)).map(|c| c.get((x & 15) as usize, y, (z & 15) as usize))
+    }
+
+    /// Chunks que les joueurs ont autour d'eux : le cache en garde au moins autant (plus une
+    /// marge), jusqu'à 65 536 (2,5 Go environ). Avec 500 joueurs dispersés, 8 192 chunks ne
+    /// suffisaient pas : ceux qu'un joueur voyait sortaient du cache et étaient régénérés sur
+    /// place (70 ms chacun) dès qu'un objet, une créature ou une pousse les touchait.
+    pub fn keep_chunks(&self, wanted: usize) {
+        self.terrain.limit.store((wanted + wanted / 4).clamp(CACHE_CHUNKS, 65_536), Ordering::Relaxed);
+    }
+
     /// Le chunk est-il généré (prêt à être envoyé sans attendre) ?
     pub fn is_ready(&self, cx: i32, cz: i32) -> bool {
         self.terrain.ready((cx, cz))
     }
 
-    /// Enregistre les blocs modifiés dans `level.nbt`. Chaque bloc occupe quatre entiers
-    /// (x, y, z, identifiant) ; l'identifiant est stable (dérivé du nom et de l'état), donc
-    /// valable d'une version du jeu à l'autre.
+    /// Rattache le monde à sa base (`db/`, au format du jeu). À faire avant de s'en servir.
+    pub fn attach_store(&mut self, store: Arc<mojang::Store>) {
+        let _ = self.terrain.store.set(store.clone());
+        self.store = Some(store);
+    }
+
+    /// Note qu'un chunk a des blocs à données dans la base (lus à l'ouverture du monde).
+    pub fn note_tile_chunk(&mut self, chunk: (i32, i32)) {
+        self.tile_chunks.entry(chunk).or_insert(0);
+    }
+
+    /// Garde tel quel un bloc à données du jeu que Basalt ne sait pas gérer.
+    pub fn keep_foreign_tile(&mut self, chunk: (i32, i32), entry: &crate::nbt::Tag) {
+        self.foreign_tiles.entry(chunk).or_default().extend_from_slice(&crate::nbt::write_le(entry));
+    }
+
+    /// Ajoute à un enregistrement les blocs à données (coffres, fours, panneaux…) : seuls les
+    /// chunks dont le contenu a changé sont réécrits, et ceux qui n'en ont plus sont effacés.
+    pub fn plan_tiles(&mut self, mut chunks: HashMap<(i32, i32), Vec<u8>>, plan: &mut SavePlan) {
+        let SavePlan::Db { batch, .. } = plan else { return };
+        for (chunk, raw) in &self.foreign_tiles {
+            chunks.entry(*chunk).or_default().extend_from_slice(raw);
+        }
+        let gone: Vec<(i32, i32)> = self.tile_chunks.keys().filter(|c| !chunks.contains_key(c)).copied().collect();
+        for chunk in gone {
+            self.tile_chunks.remove(&chunk);
+            mojang::Store::encode_block_entities(chunk.0, chunk.1, None, batch);
+        }
+        for (chunk, data) in chunks {
+            // (zéro est réservé à « lu dans la base, contenu pas encore comparé »)
+            let print = mojang::fnv1a(&data).max(1);
+            if self.tile_chunks.insert(chunk, print) != Some(print) {
+                mojang::Store::encode_block_entities(chunk.0, chunk.1, Some(data), batch);
+            }
+        }
+    }
+
+    /// La base du monde, si elle est ouverte.
+    pub fn db_store(&self) -> Option<&Arc<mojang::Store>> {
+        self.store.as_ref()
+    }
+
+    /// Enregistre le monde tout de suite (création d'un monde, tests). Le serveur, lui,
+    /// prépare l'enregistrement avec `plan_save` et l'écrit sur un autre fil.
     pub fn save(&mut self, dir: &std::path::Path) -> std::io::Result<()> {
-        let doc = self.snapshot();
-        Self::write_snapshot(dir, &doc)
+        let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.plan_save(mojang::LevelInfo { name, ..Default::default() }).write(dir)
+    }
+
+    /// Prépare l'enregistrement (la partie rapide, faite dans la boucle principale) ; le monde
+    /// est ensuite considéré comme enregistré. Avec une base : les chunks modifiés depuis la
+    /// dernière fois, entiers, et `level.dat`. Sans : l'ancien `level.nbt`.
+    pub fn plan_save(&mut self, mut info: mojang::LevelInfo) -> SavePlan {
+        let Some(store) = self.store.clone() else { return SavePlan::Legacy(self.snapshot()) };
+        self.dirty = false;
+        info.generator = self.generator().stored_name();
+        info.seed = self.generator().seed;
+        let batch = mojang::Batch::new();
+        let unsaved = std::mem::take(&mut self.unsaved);
+        let pending: Vec<SaveChunk> = unsaved
+            .into_iter()
+            .map(|chunk| SaveChunk { key: chunk, column: self.terrain.column(chunk), edits: self.edits.get(&chunk).cloned(), wet: self.wet.get(&chunk).cloned() })
+            .collect();
+        let chunks = pending.len();
+        let palette = self.terrain.generator.blocks.clone();
+        SavePlan::Db { store, batch, info, legacy: std::mem::take(&mut self.legacy), chunks, pending, palette }
     }
 
     /// Document à enregistrer (la partie rapide de l'enregistrement, faite dans la boucle
@@ -504,6 +722,10 @@ impl World {
     /// Type de terrain et graine d'un monde déjà créé, s'il y en a un dans ce dossier. Un
     /// monde enregistré avant la génération de terrain est plat.
     pub fn stored_generator(dir: &std::path::Path) -> Result<Option<(Kind, u64)>, String> {
+        if let Some(level) = mojang::read_level(dir)? {
+            let (kind, seed, _) = mojang::level_generator(&level);
+            return Ok(Some((kind, seed)));
+        }
         match crate::nbt::load_file(&dir.join("level.nbt"))? {
             Some(doc) => {
                 let kind = doc.get("Generator").and_then(|t| t.as_str()).map(Kind::parse).unwrap_or(Kind::Flat);
@@ -518,20 +740,26 @@ impl World {
     /// Vrai si ce monde a été créé avec l'ancien terrain propre à Basalt, retiré depuis : il
     /// est repris avec le terrain du jeu.
     pub fn stored_was_legacy(dir: &std::path::Path) -> bool {
-        matches!(crate::nbt::load_file(&dir.join("level.nbt")), Ok(Some(doc)) if doc.get("Generator").and_then(|t| t.as_str()).map(Kind::was_legacy).unwrap_or(false))
+        !dir.join("level.dat").exists() && matches!(crate::nbt::load_file(&dir.join("level.nbt")), Ok(Some(doc)) if doc.get("Generator").and_then(|t| t.as_str()).map(Kind::was_legacy).unwrap_or(false))
     }
 
     /// Nom du générateur d'un plugin enregistré pour ce monde (`plugin:<nom>`), s'il y en a un.
     pub fn stored_plugin(dir: &std::path::Path) -> Option<String> {
+        if let Ok(Some(level)) = mojang::read_level(dir) {
+            return mojang::level_generator(&level).2;
+        }
         let doc = crate::nbt::load_file(&dir.join("level.nbt")).ok()??;
         let text = doc.get("Generator")?.as_str()?.to_string();
         text.strip_prefix("plugin:").map(|s| s.to_string())
     }
 
-    /// Recharge les blocs enregistrés. Renvoie leur nombre (0 si aucun fichier).
+    /// Recharge les blocs enregistrés. Renvoie leur nombre (0 si aucun fichier). Avec une
+    /// base, il n'y a rien à recharger : les chunks enregistrés sont lus à la demande ; seul
+    /// un ancien `level.nbt` est repris, pour passer dans la base au prochain enregistrement.
     pub fn load(&mut self, dir: &std::path::Path) -> Result<usize, String> {
         match crate::nbt::load_file(&dir.join("level.nbt"))? {
             Some(doc) => {
+                self.legacy = self.store.is_some();
                 let blocks = doc.get("Blocks").and_then(|t| t.as_int_array()).ok_or("level.nbt : liste « Blocks » absente")?;
                 if blocks.len() % 4 != 0 {
                     return Err("level.nbt : liste « Blocks » tronquée".into());
@@ -546,7 +774,7 @@ impl World {
                         self.set_wet(w[0], w[1], w[2], true);
                     }
                 }
-                self.dirty = false;
+                self.dirty = self.legacy;
                 Ok(self.count)
             }
             None => self.load_legacy(dir),
@@ -594,11 +822,19 @@ impl World {
     }
 
     fn bump(&mut self, chunk: (i32, i32)) {
+        if self.store.is_some() {
+            self.unsaved.insert(chunk);
+        }
         *self.versions.entry(chunk).or_insert(0) += 1;
     }
 }
 
 impl WorldView {
+    /// Dimension annoncée au jeu pour ce monde (0 surface, 1 Nether, 2 End).
+    pub fn dimension(&self) -> i32 {
+        self.terrain.generator.kind.dimension()
+    }
+
     /// Contenu d'un chunk à envoyer, encodé depuis un autre fil (même résultat que `World`).
     pub fn chunk_payload(&self, cx: i32, cz: i32) -> (u32, Vec<u8>) {
         encode_chunk(&self.terrain, &self.edits, &self.wet, self.air, cx, cz)
@@ -612,6 +848,8 @@ fn encode_chunk(terrain: &Terrain, all_edits: &HashMap<(i32, i32), Arc<ChunkEdit
         let edits = all_edits.get(&(cx, cz));
         let wet = all_wet.get(&(cx, cz));
         // Sous-chunks à envoyer : jusqu'au plus haut qui n'est pas que de l'air
+        // (seulement les tranches que cette dimension connaît : le Nether et l'End commencent à 0)
+        let span = terrain.generator.kind.sections();
         let mut sections = column.sections.iter().rposition(|s| !matches!(s, Section::Uniform(b) if *b == air)).map(|i| i + 1).unwrap_or(1);
         if let Some(edits) = edits {
             for ((_, y, _), block) in edits.iter() {
@@ -620,8 +858,9 @@ fn encode_chunk(terrain: &Terrain, all_edits: &HashMap<(i32, i32), Arc<ChunkEdit
                 }
             }
         }
+        let sections = sections.clamp(span.start + 1, span.end);
         let mut w = W::default();
-        for s in 0..sections {
+        for s in span.start..sections {
             let y_index = ((MIN_Y >> 4) + s as i32) as i8;
             let base_y = MIN_Y + s as i32 * 16;
             let in_section = |y: i16| (y as i32) >= base_y && (y as i32) < base_y + 16;
@@ -670,7 +909,7 @@ fn encode_chunk(terrain: &Terrain, all_edits: &HashMap<(i32, i32), Arc<ChunkEdit
             }
         }
         let biome = column.biome.id();
-        for s in 0..24usize {
+        for s in span.clone() {
             match column.biome_ids.as_ref().map(|ids| &ids[s * 64..s * 64 + 64]) {
                 Some(quarts) if quarts.iter().any(|b| *b != quarts[0]) => encode_biomes(&mut w, quarts),
                 Some(quarts) => {
@@ -717,7 +956,7 @@ fn encode_chunk(terrain: &Terrain, all_edits: &HashMap<(i32, i32), Arc<ChunkEdit
             ]);
             w.0.extend_from_slice(&crate::nbt::write_network(&tag));
         }
-        (sections as u32, w.0)
+        ((sections - span.start) as u32, w.0)
     }
 }
 
@@ -1013,5 +1252,31 @@ mod encode_speed {
             }
         }
         eprintln!("100 chunks : encodage {:?} ({} Ko), encodage + compression {:?} ({} Ko)", enc, total / 1024, start.elapsed(), z / 1024);
+    }
+}
+
+#[cfg(test)]
+mod dimension_chunk_tests {
+    use super::*;
+
+    /// Un chunk du Nether part avec huit tranches au plus, numérotées depuis 0, et huit
+    /// palettes de biomes ; un chunk de l'End, seize.
+    #[test]
+    fn nether_and_end_chunks_have_the_shape_of_their_dimension() {
+        for (kind, most, biome) in [(Kind::Nether, 8usize, None), (Kind::End, 16, Some(crate::world::generator::END_BIOME))] {
+            let world = World::with_generator(Generator::new(kind, 5, Palette::new(&|_| None)));
+            world.prepare(0, 0);
+            let (count, payload) = world.chunk_payload(0, 0);
+            assert!(count >= 1 && count as usize <= most, "{:?} : {} tranches", kind, count);
+            // (première tranche : version 9, nombre de couches, puis son numéro : 0)
+            assert_eq!((payload[0], payload[2]), (9, 0), "{:?}", kind);
+            assert_eq!(kind.sections().len(), most);
+            if let Some(biome) = biome {
+                // la fin du contenu : seize biomes uniques (1, numéro en zigzag), puis l'octet de bordure
+                let tail = &payload[payload.len() - 1 - 2 * most..];
+                assert!(tail.chunks(2).take(most).all(|p| p == [1, biome * 2]), "{:?}", tail);
+                assert_eq!(*tail.last().unwrap(), 0);
+            }
+        }
     }
 }

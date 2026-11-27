@@ -12,8 +12,12 @@ Les commandes du jeu se tapent aussi dans la console, sans `/` :
 | `apitoken reset` | crée deux nouveaux jetons pour l'API de gestion ; les anciens cessent de fonctionner (console seulement ; voir [API.md](API.md)) |
 | `give <joueur> <objet> [quantité] [variante]` | la variante est un numéro ; pour une potion, son nom convient aussi : `give Alex splash_potion 1 poison` |
 | `effect <joueur> <effet> [secondes] [niveau] [true]`, `effect <joueur> clear [effet]` | effets d'un joueur (30 s et niveau 0 par défaut ; le niveau commence à 0, comme dans le jeu ; `true` : sans particules) |
-| `enchant <joueur> <enchantement> [niveau]` | enchante l'objet qu'il tient en main (niveau 1 par défaut, 0 pour retirer ; cinq enchantements au plus par objet). Noms du jeu : `sharpness`, `protection`, `unbreaking`, `efficiency`, `power`… |
+| `enchant <joueur> <enchantement> [niveau]` | enchante l'objet qu'il tient en main (niveau 1 par défaut, 0 pour retirer ; cinq enchantements au plus par objet). Les règles du jeu s'appliquent : niveau maximal, objet qui accepte l'enchantement (`sharpness` sur une épée ou une hache, pas sur une pioche), et enchantements qui s'excluent (`fortune` et `silk_touch`, `sharpness` et `smite`, les quatre protections, `mending` et `infinity`). Un objet créé par un plugin accepte tout. Noms du jeu : `sharpness`, `protection`, `unbreaking`, `efficiency`, `power`… |
 | `setblock`, `fill`, `time` | monde |
+| `weather clear\|rain\|thunder [secondes]`, `weather query` | la météo : beau temps, pluie, orage (sans durée : une durée naturelle) |
+| `gamerule`, `gamerule dodaylightcycle\|doweathercycle [true\|false]` | règles du monde où l'on se trouve, enregistrées avec lui : l'heure avance, la météo change d'elle-même |
+| `debug-crash` | console seulement : provoque une erreur interne volontaire, pour essayer le rapport de plantage (`crashdumps/`). Le serveur enregistre tout puis s'arrête |
+| `world list`, `world load <nom> [vanilla\|flat\|void\|nether\|end] [graine]`, `world unload <nom>`, `world tp <nom> [joueur]` | plusieurs mondes ouverts à la fois : liste, ouverture (ou création) d'un monde de `worlds/`, fermeture, envoi d'un joueur |
 | `locate structure <nom>`, `locate biome <nom>` | structure ou biome le plus proche |
 | `kick`, `op`, `deop`, `whitelist` | modération |
 | `status` | charge du serveur : ticks par seconde, trafic, logins en attente |
@@ -115,3 +119,15 @@ variantes 0 à 4 (eau, potions banale, épaisse, étrange) ne font rien.
 Certains aliments ont aussi leurs effets, comme dans le jeu : la pomme dorée (régénération
 et absorption), la chair putréfiée et le poulet cru (faim, parfois), l'œil d'araignée et la
 pomme de terre empoisonnée (poison), le poisson-globe (faim, poison, nausée).
+
+## Rapports de plantage
+
+Si le serveur rencontre une erreur interne, il écrit un fichier `crashdumps/crash-<date>.txt` :
+l'erreur, l'endroit du code, la pile d'appels, la version, les mondes ouverts, les joueurs,
+les plugins et les 80 dernières lignes du journal. C'est le fichier à joindre pour signaler
+un problème (relisez-le avant : il peut montrer des pseudos et des adresses IP).
+
+Une erreur déclenchée par le paquet d'un joueur ne ferme que ce joueur : le rapport est écrit
+et le serveur continue. Une erreur dans la boucle principale arrête le serveur, après un
+enregistrement de secours des joueurs et des mondes.
+

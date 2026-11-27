@@ -2,6 +2,8 @@
 
 pub const ID_LOGIN: u32 = 0x01;
 pub const ID_PLAY_STATUS: u32 = 0x02;
+/// SpawnParticleEffect : une particule du jeu, par son nom
+pub const ID_SPAWN_PARTICLE_EFFECT: u32 = 118;
 pub const ID_DISCONNECT: u32 = 0x05;
 pub const ID_RESOURCE_PACKS_INFO: u32 = 6;
 pub const ID_RESOURCE_PACK_STACK: u32 = 7;
@@ -14,6 +16,8 @@ pub const ID_ADD_PLAYER: u32 = 12;
 pub const ID_REMOVE_ACTOR: u32 = 14;
 pub const ID_MOVE_PLAYER: u32 = 19;
 pub const ID_LEVEL_CHUNK: u32 = 58;
+/// Passage dans une autre dimension (surface, Nether, End)
+pub const ID_CHANGE_DIMENSION: u32 = 61;
 pub const ID_REQUEST_CHUNK_RADIUS: u32 = 69;
 pub const ID_CHUNK_RADIUS_UPDATED: u32 = 70;
 pub const ID_SET_LOCAL_PLAYER_INITIALIZED: u32 = 113;

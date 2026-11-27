@@ -82,6 +82,13 @@ pub struct Capture {
     login: Vec<u8>,
     /// Paquets reçus : (identifiant, contenu)
     pub records: Vec<(u32, Vec<u8>)>,
+    /// Tout ce que le serveur envoie une fois en jeu (sauf le terrain), dans l'ordre : sert à
+    /// relever un échange entier, comme la montée dans un bateau (voir `save`)
+    pub sequence: Vec<(u32, Vec<u8>)>,
+    /// Tout ce qui touche au terrain, dès l'entrée : (millisecondes depuis le premier,
+    /// identifiant du paquet, contenu). Voir `chunk_report`.
+    pub terrain: Vec<(u128, u32, Vec<u8>)>,
+    terrain_start: Option<std::time::Instant>,
     /// Nombre de paquets reçus par numéro (jamais leur contenu)
     pub seen: std::collections::BTreeMap<u32, u32>,
     /// Raison donnée par le serveur en cas de refus
@@ -373,6 +380,9 @@ impl Capture {
             compression: false,
             login,
             records: Vec::new(),
+            sequence: Vec::new(),
+            terrain: Vec::new(),
+            terrain_start: None,
             seen: std::collections::BTreeMap::new(),
             refusal: None,
             complete: false,
@@ -490,6 +500,18 @@ impl Capture {
                     // Inventaire de tout ce qui arrive (numéros seulement), pour reconnaître le
                     // paquet produit par une commande tapée pendant la capture
                     *self.seen.entry(id).or_insert(0) += 1;
+                    // Terrain : chunks (58), zone servie (121), distance accordée (70), sous-chunks
+                    // (174), déplacement imposé (19, 161) et changement de dimension (61)
+                    // (et ce qui entoure un changement de dimension : état du jeu 2, point
+                    // d'apparition 43, réapparition 45)
+                    if matches!(id, 58 | 121 | 70 | 174 | 19 | 161 | 61 | 2 | 43 | 45) && self.terrain.len() < 20_000 {
+                        let start = *self.terrain_start.get_or_insert_with(std::time::Instant::now);
+                        self.terrain.push((start.elapsed().as_millis(), id, body.clone()));
+                    }
+                    // (ni le terrain, ni l'heure, ni les gros paquets de données)
+                    if self.complete && !matches!(id, 58 | 10 | 121) && body.len() <= 4000 && self.sequence.len() < 20_000 {
+                        self.sequence.push((id, body.clone()));
+                    }
                     // Les paquets recherchés sont toujours gardés ; les autres jusqu'à une limite
                     if self.records.len() < 4096 || WANTED.iter().any(|(w, _)| *w == id) {
                         self.records.push((id, body));
@@ -523,6 +545,46 @@ impl Capture {
         out
     }
 
+    /// Le terrain tel que le serveur officiel l'envoie, en clair : une ligne par paquet, avec
+    /// l'instant, et pour un chunk sa position, son nombre de sous-chunks et sa taille. Les
+    /// deux premiers chunks de chaque dimension sont écrits en entier (pour leur format), les
+    /// autres en abrégé.
+    pub fn chunk_report(&self) -> String {
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{:02x}", x)).collect::<String>();
+        let mut text = String::from("# Terrain envoyé par le serveur officiel : instant (ms), paquet, détail\n");
+        let mut full: std::collections::HashMap<Option<i32>, u32> = Default::default();
+        for (ms, id, body) in self.terrain.iter() {
+            match *id {
+                58 => {
+                    let mut pos = 0;
+                    let x = bedrock::read_vari32(body, &mut pos);
+                    let z = bedrock::read_vari32(body, &mut pos);
+                    let dim = bedrock::read_vari32(body, &mut pos);
+                    let count = bedrock::read_varu32(body, &mut pos);
+                    let head = hex(&body[..body.len().min(pos + 12)]);
+                    let seen = full.entry(dim).or_insert(0);
+                    let content = if *seen < 2 {
+                        *seen += 1;
+                        hex(body)
+                    } else {
+                        format!("{}…{}", head, hex(&body[body.len().saturating_sub(6)..]))
+                    };
+                    text.push_str(&format!("{} chunk x={:?} z={:?} dim={:?} sous-chunks={:?} taille={} {}\n", ms, x, z, dim, count, body.len(), content));
+                }
+                121 => {
+                    let mut pos = 0;
+                    let x = bedrock::read_vari32(body, &mut pos);
+                    let y = bedrock::read_vari32(body, &mut pos);
+                    let z = bedrock::read_vari32(body, &mut pos);
+                    let radius = bedrock::read_varu32(body, &mut pos);
+                    text.push_str(&format!("{} zone centre=({:?}, {:?}, {:?}) rayon={:?} taille={} {}\n", ms, x, y, z, radius, body.len(), hex(&body[..body.len().min(64)])));
+                }
+                _ => text.push_str(&format!("{} id={} taille={} {}\n", ms, id, body.len(), hex(&body[..body.len().min(96)]))),
+            }
+        }
+        text
+    }
+
     /// Range les paquets utiles dans `<dossier>/<protocole>/packets/`.
     pub fn save(&self, data_dir: &Path) -> std::io::Result<PathBuf> {
         let dir = data_dir.join(self.protocol.to_string()).join("packets");
@@ -535,6 +597,16 @@ impl Capture {
         if let Some(body) = self.list_removal() {
             std::fs::write(dir.join(format!("{}.bin", REMOVAL_FILE)), body)?;
         }
+        // La suite des paquets reçus en jeu, en clair : un par ligne (numéro d'ordre, identifiant
+        // du paquet, taille, contenu en hexadécimal). Reste dans logs/, jamais publié.
+        let mut text = String::from("# Paquets reçus du serveur officiel une fois en jeu, dans l'ordre\n");
+        for (n, (id, body)) in self.sequence.iter().enumerate() {
+            let hex: String = body.iter().map(|b| format!("{:02x}", b)).collect();
+            text.push_str(&format!("{} id={} len={} {}\n", n, id, body.len(), hex));
+        }
+        let _ = std::fs::create_dir_all("logs");
+        std::fs::write("logs/capture-sequence.txt", text)?;
+        std::fs::write("logs/capture-chunks.txt", self.chunk_report())?;
         Ok(dir)
     }
 }
@@ -635,5 +707,45 @@ mod tests {
         let mut c = Capture::new(2225, vec![]);
         c.on_message(&[0xff, 0xff, 0xff]);
         assert_eq!(c.stage, Stage::Failed);
+    }
+}
+
+#[cfg(test)]
+mod terrain_tests {
+    use super::*;
+
+    #[test]
+    fn the_terrain_report_names_each_chunk() {
+        let mut c = Capture::new(0, Vec::new());
+        // chunk (x=-1, z=2), dimension 0, 4 sous-chunks, puis du contenu
+        c.terrain.push((0, 58, vec![0x01, 0x04, 0x00, 0x04, 0x00, 0x00, 0x00, 0x02, 0xaa, 0xbb]));
+        // zone servie : centre (16, -59, 32), rayon 256 blocs
+        c.terrain.push((35, 121, vec![0x20, 0x75, 0x40, 0x80, 0x02, 0, 0, 0, 0]));
+        let text = c.chunk_report();
+        assert!(text.contains("0 chunk x=Some(-1) z=Some(2) dim=Some(0) sous-chunks=Some(4) taille=10 01040004000000 02aabb".replace(" 02aabb", "02aabb").as_str()), "{}", text);
+        assert!(text.contains("35 zone centre=(Some(16), Some(-59), Some(32)) rayon=Some(256)"), "{}", text);
+    }
+}
+
+#[cfg(test)]
+mod dimension_report_tests {
+    use super::*;
+
+    #[test]
+    fn two_chunks_of_each_dimension_are_kept_whole() {
+        let mut c = Capture::new(0, Vec::new());
+        let chunk = |dim: u8| vec![0x00, 0x00, dim, 0x00, 0x01, 0x08, 0x00, 0x00, 0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77];
+        for _ in 0..3 {
+            c.terrain.push((0, 58, chunk(0)));
+        }
+        c.terrain.push((5, 61, vec![0x02, 0, 0, 0, 0]));
+        for _ in 0..3 {
+            c.terrain.push((9, 58, chunk(2)));
+        }
+        let text = c.chunk_report();
+        let whole = |t: &str| t.lines().filter(|l| l.contains("chunk") && !l.contains('…')).count();
+        assert_eq!(whole(&text), 4, "{}", text);
+        assert!(text.contains("5 id=61 taille=5 0200000000"), "{}", text);
+        assert!(text.contains("dim=Some(1)"), "{}", text);
     }
 }

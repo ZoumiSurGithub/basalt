@@ -94,6 +94,8 @@ fn main() {
     // La flèche du haut retrouve aussi les commandes des sessions précédentes
     basalt::console::load_history(Path::new("logs/console-history.txt"));
     basalt::log::init_file();
+    // Une erreur interne laisse un rapport dans crashdumps/
+    basalt::utils::crash::install();
     // La compilation GitHub inscrit ici le commit et la date : on sait toujours quelle
     // version tourne en lisant la première ligne du journal
     match option_env!("BASALT_BUILD") {
@@ -123,7 +125,15 @@ fn main() {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || basalt::console::read_commands(tx));
 
-    server.run(&STOP, &rx);
+    // Une erreur interne dans la boucle principale : le rapport est écrit (crashdumps/), puis
+    // le serveur tente d'enregistrer les joueurs et les mondes avant de s'arrêter
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| server.run(&STOP, &rx))).is_err() {
+        error!("Le serveur s'arrête sur une erreur interne : le rapport est dans le dossier crashdumps/. Enregistrement de secours…");
+        match basalt::utils::crash::guarded(|| server.emergency_save()) {
+            Ok(()) => info!("Joueurs et mondes enregistrés"),
+            Err(_) => error!("L'enregistrement de secours a échoué lui aussi : le dernier enregistrement automatique (moins d'une minute) fait foi"),
+        }
+    }
     // Les écritures en arrière-plan (disque, journal) sont terminées avant de quitter
     basalt::background::DISK.flush_all(|_| {});
     basalt::log::flush();
@@ -136,7 +146,7 @@ fn capture(args: &[String]) {
     let host = args.first().map(|s| s.as_str()).unwrap_or("127.0.0.1");
     let port: u16 = args.get(1).and_then(|p| p.parse().ok()).unwrap_or(19132);
     basalt::log::init_capture_file();
-    info!("Capture des données du jeu auprès du serveur officiel {}:{} (outil version 14, RakNet, avec témoin, objet au sol et téléportation)", host, port);
+    info!("Capture des données du jeu auprès du serveur officiel {}:{} (outil version 16, RakNet, avec témoin, objet au sol, téléportation, terrain et dimensions)", host, port);
     // Le témoin repart avant le joueur de la capture (20 s contre 35 s en jeu) : celui-ci reçoit
     // alors aussi le paquet qui retire un joueur de la liste.
     // Un second faux joueur, le « témoin », entre d'abord et reste en jeu : le serveur officiel
@@ -152,9 +162,19 @@ fn capture(args: &[String]) {
     info!("    setblock 0 -60 0 air destroy");
     info!("    tp @a 5 -59 5");
     info!("    summon cow 3 -59 3");
+    info!("    tp @a 400 -59 400");
+    info!("    execute as @a in nether run tp @s 0 80 0");
+    info!("    execute as @a in the_end run tp @s 0 80 0");
+    info!("    summon boat 6 -59 6");
+    info!("    ride @a start_riding @e[type=boat,c=1]");
     info!("La deuxième fait tomber un objet au sol, la troisième téléporte le joueur de capture,");
-    info!("la quatrième fait apparaître une vache (restez près d'elle jusqu'à ce qu'elle meugle) :");
-    info!("leurs formats seront relevés.");
+    info!("la quatrième fait apparaître une vache (restez près d'elle jusqu'à ce qu'elle meugle),");
+    info!("les deux dernières un bateau, puis y font monter le joueur de capture : leurs formats");
+    info!("seront relevés. Tout ce qui est reçu en jeu est aussi écrit dans logs/capture-sequence.txt,");
+    info!("et le terrain (chunks, zone servie, avec l'instant de chacun) dans logs/capture-chunks.txt :");
+    info!("le second tp, au loin, montre comment le serveur officiel change de zone ; les deux");
+    info!("« execute », comment il fait passer un joueur dans le Nether puis dans l'End (attendez");
+    info!("une dizaine de secondes entre les deux).");
     info!("==================================================================================");
     // Le serveur officiel refuse un second joueur qu'il prend pour le même que le premier
     // (« raison 44 »). Cause la plus probable : l'identifiant d'installation, vide dans le

@@ -32,8 +32,9 @@ Les joueurs de ces versions peuvent être connectés en même temps ; les versio
 
 - **Rien à installer autour.** Un exécutable et c'est tout : ni Java, ni PHP, ni base de
   données. L'installation tient en une commande, la mise à jour aussi.
-- **Léger.** Avec 1 000 joueurs simulés, le serveur occupe 7 Mo de mémoire et 14 % d'un
-  cœur, à 20 ticks par seconde (mesure sur une machine de 2 cœurs, détaillée dans
+- **Tient la foule.** 800 joueurs simulés qui jouent vraiment (combats, blocs cassés,
+  explosions, feu), sans aucune déconnexion, à plus de 18 ticks par seconde ; 600 à 20 ticks
+  par seconde (Ryzen 9 9900X qui faisait aussi tourner les bots, détails dans
   [docs/PERFORMANCES.md](docs/PERFORMANCES.md)).
 - **À jour avec le jeu.** Basalt parle NetherNet, le transport que Bedrock exige depuis la
   1.26.60, et rien d'autre : pas de vieux transport à maintenir.

@@ -45,6 +45,8 @@ pub struct Player {
     pub rotation: (f32, f32),
     /// Point de réapparition : le lit où le joueur a dormi (ou cliqué)
     pub spawn: Option<(i32, i32, i32)>,
+    /// Monde où se trouve ce lit (vide : le monde principal)
+    pub spawn_world: String,
     /// Effets en cours au départ : (effet, niveau, ticks restants) à la suite
     pub effects: Vec<i32>,
     /// Case de la barre d'objets qu'il avait en main (0 à 8)
@@ -84,6 +86,7 @@ impl Player {
             world: String::new(),
             rotation: (0.0, 0.0),
             spawn: None,
+            spawn_world: String::new(),
             kinds: Vec::new(),
             effects: Vec::new(),
             selected: 0,
@@ -153,6 +156,7 @@ impl Player {
         if let (Some(x), Some(y), Some(z)) = (int(&["SpawnX"]), int(&["SpawnY"]), int(&["SpawnZ"])) {
             if x.abs() < 30_000_000 && z.abs() < 30_000_000 && (-64..=320).contains(&y) {
                 p.spawn = Some((x as i32, y as i32, z as i32));
+                p.spawn_world = doc.str_of("SpawnLevel").map(|s| clean_text(s, 64)).unwrap_or_default();
             }
         }
         if let Some(r) = doc.get("Rotation").and_then(|t| t.as_list()) {
@@ -328,6 +332,9 @@ impl Player {
             entries.push(("SpawnX", Tag::Int(x)));
             entries.push(("SpawnY", Tag::Int(y)));
             entries.push(("SpawnZ", Tag::Int(z)));
+            if !self.spawn_world.is_empty() {
+                entries.push(("SpawnLevel", Tag::string(&self.spawn_world)));
+            }
         }
         let mut inventory = Vec::new();
         for (container, slot, name, count) in &self.items {

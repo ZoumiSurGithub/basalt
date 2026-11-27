@@ -90,10 +90,15 @@ pub fn probe_chunk(probe: u8) -> Option<(u32, Vec<u8>, bool)> {
 
 /// LevelChunk avec l'en-tête accepté par le jeu 1.26.65.
 pub fn level_chunk_probe(x: i32, z: i32, count: u32, payload: &[u8], flag: bool) -> Vec<u8> {
+    level_chunk_probe_in(0, x, z, count, payload, flag)
+}
+
+/// Le même paquet, pour un chunk d'une autre dimension (1 le Nether, 2 l'End).
+pub fn level_chunk_probe_in(dimension: i32, x: i32, z: i32, count: u32, payload: &[u8], flag: bool) -> Vec<u8> {
     let mut w = W::default();
     w.vari32(x);
     w.vari32(z);
-    w.vari32(0);
+    w.vari32(dimension);
     w.varu32(count);
     w.bool(false);
     w.bool(false);

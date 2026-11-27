@@ -344,6 +344,8 @@ pub enum Action {
     PlayerSave(String),
     /// Donne des objets à un joueur : (pseudo, nom de l'objet, quantité)
     PlayerGive(String, String, u16),
+    /// joueur:setItemInHand : objet (vide : main vide), quantité
+    PlayerHand(String, String, u8),
     /// Pose des blocs : (x, y, z, état)
     SetBlocks(Vec<(i32, i32, i32, u32)>),
     /// Personnage non joueur (PNJ) : (plugin, ordre)
@@ -351,6 +353,8 @@ pub enum Action {
     /// Modifie un objet ou un bloc du jeu : (plugin, `item` ou `block`, nom, valeur changée,
     /// nouvelle valeur en texte). Voir `item/overrides.rs` et `block/overrides.rs`.
     Modify(String, String, String, String, String),
+    /// Une action à faire dans ce monde plutôt que dans le monde principal
+    In(String, Box<Action>),
 }
 
 /// Ordres donnés aux PNJ d'un plugin (voir `server.spawnNpc`).
@@ -390,6 +394,8 @@ pub struct PlayerSnap {
     pub gamemode: i32,
     /// Permissions fixées pour ce joueur (elles priment sur la règle par défaut)
     pub perms: Vec<(String, bool)>,
+    /// Le monde où il se trouve
+    pub world: String,
 }
 
 /// Informations du serveur visibles depuis les plugins. Les listes sont partagées (Arc) :
@@ -407,6 +413,10 @@ pub struct Info {
     pub perms: std::sync::Arc<Vec<(String, PermDefault)>>,
     /// Vue du monde, le temps d'un appel (lecture des blocs)
     pub world: Option<crate::world::WorldView>,
+    /// Mondes ouverts, le principal en premier
+    pub worlds: std::sync::Arc<Vec<String>>,
+    /// Vue des autres mondes ouverts, le temps d'un appel
+    pub others: Vec<(String, crate::world::WorldView)>,
     /// Noms des blocs et de leurs états
     pub blocks: Option<std::sync::Arc<crate::data::BlockNames>>,
 }
@@ -436,6 +446,25 @@ struct Ctx {
     wrap: c_int,
     /// Commandes annoncées dans plugin.yml
     declared: Vec<CommandDecl>,
+    /// Monde visé par le prochain appel (`server.getWorld(nom)`) ; vide : le monde principal
+    target: String,
+}
+
+impl Ctx {
+    /// Range une action, dans le monde visé s'il y en a un.
+    fn push_in_world(&mut self, action: Action) {
+        let target = std::mem::take(&mut self.target);
+        self.actions.push(if target.is_empty() { action } else { Action::In(target, Box::new(action)) });
+    }
+
+    /// La vue du monde visé (le principal par défaut).
+    fn view(&mut self) -> Option<crate::world::WorldView> {
+        let target = std::mem::take(&mut self.target);
+        if target.is_empty() || self.info.worlds.first().map(|w| w.eq_ignore_ascii_case(&target)).unwrap_or(false) {
+            return self.info.world.clone();
+        }
+        self.info.others.iter().find(|(n, _)| n.eq_ignore_ascii_case(&target)).map(|(_, v)| v.clone())
+    }
 }
 
 static API: AtomicPtr<Api> = AtomicPtr::new(std::ptr::null_mut());
@@ -554,7 +583,10 @@ unsafe extern "C" fn l_modify(l: L) -> c_int {
         return 0;
     }
     match (arg_str(c, l, 1), arg_str(c, l, 2), arg_str(c, l, 3), arg_str(c, l, 4)) {
-        (Some(kind), Some(name), Some(key), Some(value)) => c.actions.push(Action::Modify(c.name.clone(), kind, name, key, value)),
+        (Some(kind), Some(name), Some(key), Some(value)) => {
+            let action = Action::Modify(c.name.clone(), kind, name, key, value);
+            c.push_in_world(action)
+        }
         _ => return bad_call(c, "server.items.modify(nom, valeurs)"),
     }
     0
@@ -588,6 +620,24 @@ unsafe extern "C" fn l_players(l: L) -> c_int {
         (c.api.rawseti)(l, -2, i as i64 + 1);
     }
     1
+}
+
+/// Les mondes ouverts, le principal en premier.
+unsafe extern "C" fn l_worlds(l: L) -> c_int {
+    let c = ctx(l);
+    (c.api.createtable)(l, c.info.worlds.len() as c_int, 0);
+    for (i, w) in c.info.worlds.iter().enumerate() {
+        (c.api.pushlstring)(l, w.as_ptr() as *const c_char, w.len());
+        (c.api.rawseti)(l, -2, i as i64 + 1);
+    }
+    1
+}
+
+/// `server._useworld(nom)` : le prochain appel (lecture, pose de blocs, créature, PNJ) vise ce monde.
+unsafe extern "C" fn l_use_world(l: L) -> c_int {
+    let c = ctx(l);
+    c.target = arg_str(c, l, 1).unwrap_or_default();
+    0
 }
 
 /// Hauteur des pieds d'après celle des yeux, arrondie au dix-millième (les positions
@@ -650,6 +700,7 @@ unsafe extern "C" fn l_pget(l: L) -> c_int {
             1
         }
         "display" => text(&p.display_name),
+        "world" => text(&p.world),
         "tag" => text(&p.name_tag),
         "health" => num(p.health as f64),
         "max_health" => num(p.max_health as f64),
@@ -703,7 +754,7 @@ unsafe extern "C" fn l_pset(l: L) -> c_int {
             _ => return bad_call(c, "joueur:setOp(true ou false)"),
         },
         k if k.starts_with("perm:") && k.len() > 5 && k.len() <= 69 => flag,
-        "display" | "tag" | "effect" => match arg_str(c, l, 3) {
+        "display" | "tag" | "effect" | "menu" | "world" => match arg_str(c, l, 3) {
             Some(s) => LVal::Str(s),
             None => return bad_call(c, "un texte est attendu"),
         },
@@ -761,7 +812,7 @@ unsafe extern "C" fn l_block(l: L) -> c_int {
         (Some(x), Some(y), Some(z)) => (x, y, z),
         _ => return bad_call(c, "world:getBlock(x, y, z)"),
     };
-    match &c.info.world {
+    match c.view() {
         Some(w) => {
             (c.api.pushinteger)(l, w.get(x, y, z) as i64);
             1
@@ -788,8 +839,8 @@ unsafe extern "C" fn l_blocks(l: L) -> c_int {
     if volume > MAX_READ {
         return bad_call(c, "world:getBlocks : volume trop grand (1 000 000 blocs au plus)");
     }
-    let w = match &c.info.world {
-        Some(w) => w.clone(),
+    let w = match c.view() {
+        Some(w) => w,
         None => return 0,
     };
     (c.api.createtable)(l, volume as c_int, 0);
@@ -826,7 +877,7 @@ unsafe extern "C" fn l_setblocks(l: L) -> c_int {
                 if k == 0 {
                     // fin de la table
                     if !list.is_empty() && c.actions.len() < 4096 {
-                        c.actions.push(Action::SetBlocks(list));
+                        c.push_in_world(Action::SetBlocks(list));
                     }
                     return 0;
                 }
@@ -913,6 +964,11 @@ unsafe extern "C" fn l_pdo(l: L) -> c_int {
             }
             None => return bad_call(c, "joueur:give(objet, quantité)"),
         },
+        "hand" => {
+            let item = arg_str(c, l, 3).unwrap_or_default();
+            let count = arg_num(c, l, 4).unwrap_or(1.0).clamp(0.0, 64.0) as u8;
+            c.actions.push(Action::PlayerHand(name, item, count))
+        }
         _ => {}
     }
     0
@@ -957,7 +1013,8 @@ unsafe fn npc_order(l: L, verb: &str) -> c_int {
         ("remove_all", _) => NpcOrder::RemoveAll,
         _ => return bad_call(c, "server.removeNpc(nom)"),
     };
-    c.actions.push(Action::Npc(c.name.clone(), order));
+    let action = Action::Npc(c.name.clone(), order);
+    c.push_in_world(action);
     0
 }
 
@@ -1305,13 +1362,14 @@ impl PluginManager {
                 actions: Vec::new(),
                 tick: 0,
                 info: info.clone(),
+                target: String::new(),
                 wrap: 0,
                 declared: found.manifest.commands.clone(),
             }));
             let plugin = Plugin { name: name.to_string(), manifest: found.manifest.clone(), api, state, ctx, mem, strikes: std::cell::Cell::new(0) };
 
             (api.createtable)(state, 0, 24);
-            let funcs: [(&str, CFn); 26] = [
+            let funcs: [(&str, CFn); 28] = [
                 ("spawnNpc\0", l_npc_spawn),
                 ("walkNpc\0", l_npc_walk),
                 ("teleportNpc\0", l_npc_teleport),
@@ -1336,6 +1394,8 @@ impl PluginManager {
                 ("setMotd\0", l_set_motd),
                 ("getMotd\0", l_motd),
                 ("_players\0", l_players),
+                ("_worlds\0", l_worlds),
+                ("_useworld\0", l_use_world),
                 ("_kick\0", l_kick),
                 ("stop\0", l_stop),
             ];
@@ -1414,6 +1474,7 @@ impl PluginManager {
         for p in &self.plugins {
             unsafe {
                 (*p.ctx).info.world = None;
+                (*p.ctx).info.others.clear();
             }
         }
     }

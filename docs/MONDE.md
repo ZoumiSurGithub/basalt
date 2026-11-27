@@ -130,9 +130,65 @@ Dans `server.properties` :
 - `level-seed=` : un nombre ou un texte ; vide, la graine est tirée au hasard.
 
 Ces deux réglages ne servent qu'à la création d'un monde : le type de terrain et la graine
-sont ensuite enregistrés dans `level.nbt`, et un monde existant garde les siens. Les mondes
-créés avant la génération de terrain restent plats. Pour un nouveau monde, changez
-`world-dir` (ou supprimez le dossier du monde).
+sont ensuite enregistrés dans `level.dat`, et un monde existant garde les siens. Pour un
+nouveau monde, changez `level-name` (ou supprimez le dossier du monde).
+
+## Où et comment le monde est enregistré
+
+Tous les mondes sont rangés au même endroit, comme sur le serveur du jeu : `worlds/<nom>/`,
+à côté de `server.properties`. Le monde principal est `worlds/<level-name>` (`world` par
+défaut) ; les autres s'ouvrent avec `/world load <nom>` et sont rouverts à chaque démarrage.
+Le dossier `world/` des versions précédentes est déplacé dans `worlds/` au premier démarrage.
+
+Un monde est enregistré **au format du jeu** :
+
+| Fichier | Contenu |
+|---|---|
+| `level.dat`, `levelname.txt` | nom, graine, type de terrain, point d'apparition, heure, météo et sa durée restante, règles du monde (`dodaylightcycle`, `doweathercycle`) |
+| `db/` | base LevelDB : les chunks, sous-chunk par sous-chunk, avec leur palette de blocs, leurs hauteurs et leurs biomes ; les coffres, fours, panneaux et lits (contenu, usure et enchantements des objets, texte, couleur) |
+
+Basalt n'écrit dans `db/` que les chunks où quelqu'un a construit ou cassé quelque chose ;
+le reste du terrain se régénère à partir de la graine, comme le jeu régénère les chunks
+qu'il n'a jamais vus. Les fichiers des versions précédentes sont convertis au premier
+enregistrement : `level.nbt` et `tiles.nbt` sont gardés de côté (`.ancien`), `time.txt` et
+`weather.txt` disparaissent.
+
+L'heure et la météo sont propres à chaque monde. `/gamerule dodaylightcycle false` arrête
+l'heure du monde où l'on se trouve, `/gamerule doweathercycle false` y fige la météo ; les
+deux règles sont enregistrées avec le monde, et celles d'un monde venu du jeu sont respectées.
+
+Ce qui n'est pas encore au format du jeu, et reste dans des fichiers de Basalt à côté : les
+créatures (`entities/`), les objets au sol et les bateaux. Les joueurs, eux, appartiennent au
+serveur et non à un monde (`players/`), pour pouvoir passer d'un monde à l'autre.
+
+### Ouvrir un monde du jeu
+
+Déposez le dossier du monde (celui qui contient `level.dat` et `db/`) dans `worlds/`, ou
+simplement son fichier `.mcworld` : il est déballé au démarrage (ou à `/world load`). Le nom
+du dossier ne doit contenir que des lettres, des chiffres, `-` et `_`. Puis `/world load
+<nom>`, ou `level-name=<nom>` pour en faire le monde principal.
+
+Ses chunks enregistrés sont servis tels quels ; au-delà, le terrain est généré par Basalt
+(avec la graine du monde, mais ce n'est pas le terrain exact du jeu : la jonction se voit).
+À savoir pour l'instant :
+
+- sont repris : les **blocs**, le contenu des
+  coffres, tonneaux, fours et autres conteneurs, le texte des panneaux, la couleur des lits,
+  l'heure, la météo et les règles du monde, ainsi que les **créatures** du monde normal
+  (celles que Basalt connaît), à la première ouverture ; les autres blocs à données
+  (bannières, têtes, générateurs…) sont gardés tels quels dans la base, sans que Basalt
+  s'en serve ;
+- le **Nether** et l'**End** du monde d'origine deviennent deux mondes à part,
+  `<nom>_nether` et `<nom>_the_end`, créés à la première ouverture (ouverts au démarrage
+  suivant, ou par `/world load`) ; la base d'origine n'est pas modifiée ;
+- les mondes enregistrés avant la 1.2.13 du jeu (blocs par numéros) ne sont pas lus ;
+- les blocs renommés depuis (laine, béton, planches par couleur ou par bois…) sont
+  reconnus ; ceux que cette version ne connaît pas deviennent de l'air, et la console les
+  nomme.
+
+Dans l'autre sens, un monde de Basalt se copie dans le dossier des mondes du jeu : on y
+retrouve les chunks construits, et le jeu génère le reste à sa façon. **Ce sens-là n'a pas
+encore été essayé dans le jeu.**
 
 Le premier terrain propre à Basalt a été retiré : un monde créé avec lui est repris avec le
 terrain du jeu. Ses constructions sont gardées, mais le relief autour d'elles n'est plus le

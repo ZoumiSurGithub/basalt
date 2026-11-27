@@ -80,12 +80,17 @@ pub(super) struct MobStore {
     loading: HashSet<(i32, i32)>,
     tx: Sender<((i32, i32), Option<String>)>,
     rx: Receiver<((i32, i32), Option<String>)>,
+    /// Copie au format du jeu dans la base du monde (voir `actors.rs`) : empreinte des entités
+    /// de chaque chunk déjà écrit, régions déjà passées en revue, prochain numéro d'entité
+    pub exported: HashMap<(i32, i32), u64>,
+    pub exported_regions: HashSet<(i32, i32)>,
+    pub next_actor: Option<u32>,
 }
 
 impl MobStore {
     pub fn new(dir: PathBuf) -> MobStore {
         let (tx, rx) = channel();
-        MobStore { dir, regions: HashMap::new(), loading: HashSet::new(), tx, rx }
+        MobStore { dir, regions: HashMap::new(), loading: HashSet::new(), tx, rx, exported: HashMap::new(), exported_regions: HashSet::new(), next_actor: None }
     }
 
     fn path(dir: &Path, r: (i32, i32)) -> PathBuf {

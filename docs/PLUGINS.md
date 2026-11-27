@@ -178,7 +178,8 @@ le même événement.
 | `save` | `joueur` | les données du joueur vont être enregistrées (toutes les minutes et à l'arrêt) |
 | `block_break` | `joueur`, `x`, `y`, `z`, `bloc` | un joueur casse un bloc ; répondre `false` l'en empêche |
 | `block_click` | `joueur`, `x`, `y`, `z`, `bloc` | un joueur clique sur un bloc (pour poser, ouvrir…) ; répondre `false` annule le geste |
-| `death` | `joueur` | le joueur vient de mourir (chute, coup, `/kill`, vie mise à 0 par un plugin) |
+| `damage` | `joueur`, `dégâts`, `cause`, `auteur` | le joueur va être blessé. Renvoyer `false` annule le coup, renvoyer un nombre le remplace. `cause` : `fall`, `entity_attack`, `fire_tick`, `drowning`, `starvation`, `magic`, `void`, `suicide`, `custom`. `auteur` : le joueur qui frappe, le nom de la créature, ou `nil` |
+| `death` | `joueur`, `message` | le joueur vient de mourir (chute, coup, `/kill`, vie mise à 0 par un plugin). Renvoyer un texte remplace le message de mort annoncé à tous, renvoyer `false` le supprime |
 | `respawn` | `joueur` | le joueur a cliqué sur « Réapparaître » ; il est de retour au point de réapparition, en pleine santé |
 | `quit` | `joueur` | le joueur est parti (comme `disconnect`, avec l'objet joueur) |
 | `disconnect` | `adresse`, `nom` | la connexion est fermée ; `nom` vaut `nil` si le client n'avait pas atteint le login |
@@ -252,6 +253,7 @@ annulé n'est plus transmis aux écouteurs suivants, sauf à ceux qui demandent 
 | `PlayerExhaustEvent` | oui (le point de faim n'est pas perdu) | `getPlayer()`, `getAmount()` (fatigue qui va coûter un point) | — |
 | `PlayerExperienceChangeEvent` | oui | `getPlayer()`, `getAmount()` (points gagnés) | `setAmount(n)` |
 | `PlayerBedEnterEvent` | oui (le joueur ne se couche pas) | `getPlayer()`, `getBed()` | — |
+| `PlayerPortalEvent` | non | `getPlayer()`, `getPortal()` (`"nether"` ou `"end"`), `getWorld()` (nom du monde), `getBlock()` — le serveur ne téléporte pas : à vous d'appeler `joueur:setWorld(...)` | — |
 | `PlayerBedLeaveEvent` | non | `getPlayer()`, `getBed()` | — |
 | `LeavesDecayEvent` | oui (la feuille reste) | `getBlock()` | — |
 | `BlockFallEvent` | oui (le bloc ne tombe pas) | `getBlock()` (sable, gravier… qui va descendre) | — |
@@ -268,6 +270,27 @@ propre fil : si tous les écouteurs d'un événement n'ont pas répondu en 150 m
 continue comme si personne n'écoutait (il ne reste jamais bloqué). Le déplacement (`PlayerMoveEvent`) n'existe pas encore, il serait trop fréquent
 pour ce mécanisme.
 
+### Dégâts et messages de mort
+
+```lua
+-- Pas de dégâts de chute dans le hall, et les coups entre joueurs divisés par deux
+server.on("damage", function(joueur, degats, cause, auteur)
+  if cause == "fall" then return false end                 -- annule le coup
+  if type(auteur) == "table" then return degats / 2 end    -- un joueur frappe : moitié moins
+end)
+
+-- Un message de mort maison
+server.on("death", function(joueur, message)
+  return "§c☠ " .. joueur.name .. " §7n'a pas survécu."     -- false : aucun message
+end)
+```
+
+`auteur` est un objet joueur quand un joueur frappe, le nom de la créature (un texte) quand
+c'en est une, `nil` sinon. Pour couper une mécanique sur tout le serveur (toute la chute,
+tout le combat entre joueurs), le fichier `vanilla.properties` suffit : voir docs/INSTALLER.md.
+Les écouteurs `EntityDamageEvent` et `PlayerDeathEvent` font la même chose à la manière de
+PocketMine.
+
 ## L'objet joueur
 
 Les événements `load`, `join`, `quit`, `chat`, `save`, `death` et `respawn` reçoivent un objet `joueur`. On peut aussi
@@ -281,6 +304,7 @@ ne comptent pas) et `server.getOnlinePlayers()` (la liste de tous les joueurs en
 | `joueur:getNameTag()` | `joueur:setNameTag(texte)` | texte au-dessus de la tête |
 | `joueur:getGamemode()` | `joueur:setGamemode(n)` | mode de jeu : `GameMode.SURVIVAL` (0), `CREATIVE` (1), `ADVENTURE` (2), `SPECTATOR` (3) |
 | `joueur:getHealth()` | `joueur:setHealth(n)` | vie (de 0 à la vie maximale ; à 0, le joueur meurt) |
+| | `joueur:damage(n)` | blesse le joueur comme un coup : son armure, ses effets et les écouteurs de dégâts comptent |
 | `joueur:getMaxHealth()` | `joueur:setMaxHealth(n)` | vie maximale (20 par défaut) |
 | `joueur:getFood()` | `joueur:setFood(n)` | faim, de 0 à 20 |
 | `joueur:getXpLevel()` | `joueur:setXpLevel(n)` | niveau d'expérience |
@@ -290,7 +314,8 @@ ne comptent pas) et `server.getOnlinePlayers()` (la liste de tous les joueurs en
 | `joueur:isOnline()` | — | `true` tant que le joueur est en jeu |
 
 Actions : `joueur:sendMessage(texte)`, `joueur:kick(raison)`, `joueur:save()`,
-`joueur:give(objet, quantité)`.
+`joueur:give(objet, quantité)`, `joueur:setItemInHand(objet, quantité)` (remplace l'objet tenu
+en main ; sans objet, la main se vide).
 
 Effets : `joueur:addEffect(effet, secondes, niveau)`, `joueur:removeEffect(effet)` et
 `joueur:clearEffects()`. Le niveau commence à 1 ; sans durée, l'effet dure 30 secondes.
@@ -430,6 +455,116 @@ server.everySeconds(1, function(minuterie)
   if #server.getOnlinePlayers() == 0 then minuterie:stop() end
 end)
 ```
+
+## Inventaires
+
+Un plugin peut créer son propre écran de coffre, le remplir et l'ouvrir chez un joueur. C'est
+la base d'un menu (boutique, sélecteur de serveur, kits) ou d'un coffre partagé sans bloc.
+
+```lua
+local menu = server.inventory("Boutique", 27)        -- 27 cases, ou 54 pour un grand coffre
+menu:setItem(14, "minecraft:diamond", 1)             -- case, objet, quantité
+menu:setItem(27, "minecraft:barrier", 1)
+
+menu:onClick(function(joueur, case, objet, quantite)
+  if case == 14 then
+    joueur:give("minecraft:diamond", 1)
+    joueur:sendMessage("Un diamant pour vous.")
+  elseif case == 27 then
+    joueur:closeInventory()
+  end
+end)
+
+server.command("boutique", "ouvre la boutique", function(args, joueur)
+  if joueur then menu:open(joueur) end
+end)
+```
+
+Les cases se comptent **à partir de 1** : de 1 à 27, ou de 1 à 54.
+
+| Fonction | Effet |
+|---|---|
+| `server.inventory(titre, taille, options)` | crée l'inventaire ; `taille` vaut 27 ou 54 |
+| `inv:setItem(case, objet, quantité)` | met un objet dans une case (quantité 1 par défaut) |
+| `inv:removeItem(case)`, `inv:clear()` | vide une case, ou toutes |
+| `inv:open(joueur)` | l'ouvre chez ce joueur ; l'écran qu'il avait ouvert se ferme d'abord |
+| `joueur:closeInventory()` | ferme l'écran ouvert chez ce joueur |
+| `inv:onClick(function(joueur, case, objet, quantité) … end)` | appelée à chaque clic sur une case (`objet` vaut `nil` sur une case vide) |
+| `inv:onClose(function(joueur, contenu) … end)` | appelée à la fermeture ; `contenu[case]` vaut `{ name = …, count = … }` pour chaque case occupée |
+| `inv:destroy()` | l'inventaire ne servira plus : il se ferme partout et est oublié |
+
+**Verrouillé par défaut.** Rien ne sort de l'inventaire et rien n'y entre : le joueur clique,
+votre fonction décide. Un même inventaire verrouillé peut être ouvert chez plusieurs joueurs
+à la fois, et `setItem` le met à jour chez tous ceux qui le regardent.
+
+**Libre** avec `server.inventory("Coffre de guilde", 54, { free = true })` : les joueurs y
+prennent et y posent des objets comme dans un vrai coffre. Un seul joueur à la fois. Son
+contenu vit dans la mémoire du serveur : enregistrez-le vous-même dans `onClose` si vous
+voulez le retrouver après un redémarrage (voir « Fichiers et configuration »).
+
+À savoir :
+
+- Le jeu n'ouvre un écran de coffre que sur un coffre. Basalt en montre donc un faux au
+  joueur, trois blocs au-dessus de sa tête et pour lui seul, le temps que l'écran est ouvert.
+  Le monde n'est pas modifié ; un joueur qui lève les yeux peut l'apercevoir.
+- L'écran s'ouvre un quart de seconde après `open` : le jeu doit d'abord recevoir le coffre.
+- Ouvrir un autre inventaire depuis `onClick` fonctionne : c'est ainsi qu'on fait des pages.
+- 512 inventaires au plus par serveur : appelez `destroy()` sur ceux que vous créez à la volée.
+
+## Mondes
+
+Plusieurs mondes peuvent être ouverts en même temps, chacun avec ses joueurs, ses créatures,
+son heure et sa météo. Tous sont rangés dans `worlds/<nom>/`, à côté de `server.properties`, au format du jeu ;
+le monde principal est `worlds/<level-name>`. Ils sont rouverts à chaque démarrage.
+
+```lua
+server.worlds.list()                      -- { "world", "lobby" } : le principal en premier
+server.worlds.default()                   -- "world"
+server.worlds.isLoaded("lobby")           -- true ou false
+server.worlds.load("lobby", "flat")       -- ouvre worlds/lobby, créé s'il n'existe pas
+server.worlds.load("mine", "vanilla", "1234")   -- type de terrain et graine, à la création
+server.worlds.unload("lobby")             -- enregistre et ferme ; ses joueurs vont au principal
+
+joueur:getWorld()                         -- "lobby"
+joueur:setWorld("lobby")                  -- l'y envoie, au point d'apparition de ce monde
+```
+
+Les types de terrain sont `"vanilla"` (le terrain du jeu), `"flat"` et `"void"`. Un nom de
+monde se compose de lettres, de chiffres, de `-` et de `_`. Ouvrir, fermer un monde ou y
+envoyer un joueur se fait quand l'appel du plugin se termine : `server.worlds.list()` et
+`joueur:getWorld()` sont à jour au tick suivant.
+
+Un joueur qui se reconnecte revient dans le monde où il s'était arrêté, s'il est ouvert ;
+sinon au point d'apparition du monde principal. Le tchat et `server.broadcast` s'adressent
+aux joueurs de tous les mondes.
+
+Le plugin d'exemple `examples/plugins/MultiWorld` s'en sert pour offrir `/mw` (créer, ouvrir,
+fermer, téléporter) et `/monde <nom>` aux joueurs.
+
+### Agir dans un monde précis
+
+`server.getWorld()` désigne le monde principal ; `server.getWorld("lobby")` un autre monde
+ouvert (`nil` s'il ne l'est pas). L'objet rendu lit et pose des blocs dans ce monde-là, et y
+place créatures et PNJ :
+
+```lua
+local lobby = server.getWorld("lobby")
+lobby:setBlock(0, 64, 0, "minecraft:gold_block")
+lobby:getBlock(0, 64, 0):getName()
+lobby:spawnEntity("minecraft:cow", 2, 65, 2)
+lobby:spawnNpc("Guide", 0.5, 65, 0.5)
+lobby:getName()                              -- "lobby"
+lobby:getPlayers()                           -- les joueurs qui s'y trouvent
+
+local ici = server.getWorld(joueur:getWorld())   -- le monde d'un joueur
+```
+
+`server.entities.spawn`, `server.spawnNpc` et `server.entities.shoot`, sans monde, agissent
+dans le monde principal. Un PNJ replacé dans un autre monde quitte celui où il était ; les
+ordres suivants (`walkNpc`, `removeNpc`…) le retrouvent où qu'il soit.
+
+Un lit ne vaut que dans son monde : un joueur mort ailleurs réapparaît au point d'apparition
+du monde où il est mort, et retrouve son lit quand il meurt dans le monde du lit.
 
 ## Personnages non joueurs (PNJ)
 
@@ -1190,6 +1325,7 @@ Tout passe par la table globale `server`.
 | `server.command(nom, description, fonction)` | déclarer une commande console |
 | `server.log(texte)` | écrire une ligne d'information, préfixée du nom du plugin |
 | `server.broadcast(texte)` | envoyer un message à tous les joueurs en jeu |
+| `server.inventory(titre, taille, options)` | créer un écran de coffre de 27 ou 54 cases (voir « Inventaires ») |
 | `server.getPlayer(pseudo)` | le joueur en jeu (majuscules indifférentes), ou `nil` |
 | `server.getOnlinePlayers()` | la liste des joueurs en jeu (objets joueur) |
 | `server.afterSeconds(s, f)`, `server.everySeconds(s, f)` | minuteries en secondes (voir [Minuteries](#minuteries)) |
@@ -1424,7 +1560,7 @@ Un dossier sans `plugin.yml` ni fichier principal n'est pas un plugin : son gén
 ignoré (le serveur le signale), et les scripts d'installation et de mise à jour ne le
 copient pas.
 
-Dans `server.properties`, **pour un nouveau monde** (un autre `world-dir`) :
+Dans `server.properties`, **pour un nouveau monde** (un autre `level-name`) :
 
 ```
 level-type=plugin:iles

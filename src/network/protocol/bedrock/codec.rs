@@ -35,6 +35,9 @@ pub(crate) fn write_string(out: &mut Vec<u8>, s: &str) {
     out.extend_from_slice(s.as_bytes());
 }
 
+/// Paquets au plus dans un lot reçu : un client qui a ramé en envoie plusieurs ticks d'un coup
+const MAX_PACKETS_PER_BATCH: usize = 1024;
+
 /// Découpe un lot (sans l'octet 0xfe) en paquets `(identifiant, corps)`.
 /// `max` borne la taille après décompression (protection contre les « bombes »).
 pub fn decode_batch(d: &[u8], compression: bool, max: usize) -> Result<Vec<(u32, Vec<u8>)>, &'static str> {
@@ -64,7 +67,7 @@ pub fn decode_batch(d: &[u8], compression: bool, max: usize) -> Result<Vec<(u32,
         let header = read_varu32(&data[..end], &mut p).ok_or("en-tête de paquet invalide")?;
         out.push((header & 0x3ff, data[p..end].to_vec()));
         pos = end;
-        if out.len() > 128 {
+        if out.len() > MAX_PACKETS_PER_BATCH {
             return Err("trop de paquets dans un lot");
         }
     }
@@ -255,6 +258,15 @@ pub(crate) fn read_varu64(d: &[u8], pos: &mut usize) -> Option<u64> {
 #[cfg(test)]
 mod compression_tests {
     use super::*;
+
+    /// Un client qui a ramé envoie plusieurs ticks de mouvements d'un coup : le lot passe.
+    #[test]
+    fn a_lagging_client_batch_is_accepted() {
+        let packets: Vec<(u32, Vec<u8>)> = (0..400).map(|i| (144, vec![i as u8; 60])).collect();
+        let lot = encode_batch(&packets, true);
+        let lot = if lot.first() == Some(&0xfe) { &lot[1..] } else { &lot[..] };
+        assert_eq!(decode_batch(lot, true, 512 * 1024).unwrap().len(), 400);
+    }
 
     /// Un gros paquet part compressé (algorithme 0), un petit en clair (0xff) ; les deux se
     /// relisent à l'identique.

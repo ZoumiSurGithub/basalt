@@ -88,6 +88,42 @@ end })
 -- Chaque valeur est vérifiée ici, pour que l'erreur désigne la ligne du plugin.
 local modify = server._modify
 server._modify = nil
+
+-- Plusieurs mondes (voir docs/PLUGINS.md, « Mondes »). Ouvrir et fermer un monde se fait
+-- quand l'appel du plugin se termine : la liste est à jour au tick suivant.
+local raw_worlds = server._worlds
+server._worlds = nil
+local function world_name(name, usage)
+  if type(name) ~= "string" or not name:match("^[%w_%-]+$") or #name > 32 then
+    error(usage .. " : un nom de monde se compose de lettres, de chiffres, de « - » et de « _ » (32 au plus)", 3)
+  end
+  return name
+end
+server.worlds = {}
+-- Noms des mondes ouverts, le monde principal en premier
+function server.worlds.list() return raw_worlds() end
+function server.worlds.default() return raw_worlds()[1] end
+function server.worlds.isLoaded(name)
+  name = tostring(name):lower()
+  for _, w in ipairs(raw_worlds()) do
+    if w:lower() == name then return true end
+  end
+  return false
+end
+-- Ouvre le monde `worlds/<nom>`, créé s'il n'existe pas : type « vanilla », « flat », « void », « nether » ou « end »
+function server.worlds.load(name, kind, seed)
+  world_name(name, "server.worlds.load(nom, type, graine)")
+  if kind ~= nil and kind ~= "vanilla" and kind ~= "flat" and kind ~= "void" and kind ~= "nether" and kind ~= "end" then
+    error("server.worlds.load(nom, type, graine) : le type est \"vanilla\", \"flat\", \"void\", \"nether\" ou \"end\"", 2)
+  end
+  local extra = kind or ""
+  if kind and seed ~= nil then extra = extra .. " " .. tostring(seed):gsub("%s", "") end
+  modify("world", "load", name, extra)
+end
+-- Enregistre et ferme un monde ; ses joueurs passent dans le monde principal
+function server.worlds.unload(name)
+  modify("world", "unload", world_name(name, "server.worlds.unload(nom)"), "")
+end
 local ITEM_KEYS = { food = "number", saturation = "number", leftover = "string", durability = "number", attackDamage = "number" }
 local BLOCK_KEYS = { drops = "table", falls = "boolean", needsFloor = "boolean", breakable = "boolean" }
 local function modifier(kind, keys, usage)
@@ -319,6 +355,11 @@ function Player:removeEffect(effect)
 end
 function Player:clearEffects() pset(self.name, "effect", "clear\t0\t0") end
 function Player:setHealth(value) pset(self.name, "health", value) end
+-- Blesse le joueur comme le ferait un coup : l'armure, les effets et les écouteurs comptent.
+function Player:damage(amount)
+  if type(amount) ~= "number" or amount <= 0 then error("joueur:damage(dégâts) : un nombre positif attendu", 2) end
+  pset(self.name, "damage", amount)
+end
 function Player:getMaxHealth() return pget(self.name, "max_health") end
 function Player:setMaxHealth(value) pset(self.name, "max_health", value) end
 function Player:getFood() return pget(self.name, "food") end
@@ -338,6 +379,8 @@ function Player:kick(reason) kick(self.name, reason) end
 function Player:save() pdo(self.name, "save") end
 -- Donne des objets : joueur:give("minecraft:diamond", 3)
 function Player:give(item, count) pdo(self.name, "give", tostring(item), count or 1) end
+-- Remplace l'objet tenu : joueur:setItemInHand("minecraft:tnt", 16) ; sans objet, main vide
+function Player:setItemInHand(item, count) pdo(self.name, "hand", item and tostring(item) or "", count or 1) end
 -- Regard et objet tenu
 function Player:getYaw() return pget(self.name, "yaw") or 0 end
 -- Angle vertical du regard : négatif vers le haut, positif vers le bas.
@@ -348,6 +391,9 @@ function Player:getItemInHand() return pget(self.name, "held") or "" end
 function Player:getGamemode() return pget(self.name, "gamemode") or 0 end
 -- Le changement passe par PlayerGameModeChangeEvent, qu'un plugin peut annuler.
 function Player:setGamemode(mode) pset(self.name, "gamemode", mode) end
+-- Le monde où se trouve le joueur, et le passage dans un autre monde ouvert (à son point d'apparition)
+function Player:getWorld() return pget(self.name, "world") end
+function Player:setWorld(world) pset(self.name, "world", tostring(world)) end
 -- Direction du regard, en décalage de blocs : (dx, dy, dz) parmi les six directions
 function Player:getDirection()
   local pitch, yaw = self:getPitch(), self:getYaw() % 360
@@ -607,7 +653,7 @@ end
 -- de ne jamais rien recevoir sans savoir pourquoi.
 local KNOWN = {
   "enable", "disable", "connect", "login", "load", "join", "quit", "chat", "save", "block_break",
-  "block_click", "death", "respawn", "disconnect",
+  "block_click", "death", "damage", "respawn", "disconnect",
 }
 -- Distance de Levenshtein, pour proposer l'événement au nom le plus proche.
 local function distance(a, b)
@@ -651,6 +697,91 @@ function server.on(name, fn)
   return raw_on(name, fn)
 end
 
+-- ---------------------------------------------------------------------------------------
+-- Inventaires : un écran de coffre que le plugin remplit et ouvre chez un joueur.
+--
+--   local menu = server.inventory("Boutique", 27)          -- 27 ou 54 cases
+--   menu:setItem(14, "minecraft:diamond", 1)               -- cases à partir de 1
+--   menu:onClick(function(joueur, case, objet, quantite)
+--     if objet == "minecraft:diamond" then joueur:give("minecraft:diamond", 1) end
+--   end)
+--   menu:open(joueur)
+--
+-- Verrouillé par défaut : rien n'en sort, chaque clic est rapporté. Avec { free = true },
+-- c'est un vrai coffre sans bloc : `onClose` reçoit ce qu'il contient à la fermeture.
+-- ---------------------------------------------------------------------------------------
+local Inventory = {}
+Inventory.__index = Inventory
+Inventory.__name = "Inventory"
+local inventories, listening = {}, false
+
+function server.inventory(title, size, options)
+  size = size or 27
+  if size ~= 27 and size ~= 54 then
+    error("server.inventory(titre, taille) : la taille est 27 ou 54, reçu " .. tostring(size), 2)
+  end
+  if options ~= nil and type(options) ~= "table" then
+    error("server.inventory(titre, taille, options) : les options sont une table, par exemple { free = true }", 2)
+  end
+  local self = {}
+  -- (l'adresse de la table : un identifiant que nul autre inventaire ne porte)
+  local id = tostring(self):gsub("[^%w]", "")
+  self.id, self.size, self.title = id, size, tostring(title or "")
+  self.free = options ~= nil and options.free == true
+  setmetatable(self, Inventory)
+  inventories[id] = self
+  modify("menu", id, "create", size .. "\t" .. (self.free and "free" or "locked") .. "\t" .. self.title:gsub("[\t\r\n]", " "))
+  if not listening then
+    listening = true
+    raw_on("menu_click", function(player, which, slot, item, count)
+      local inv = inventories[which]
+      if inv and inv.click then return inv.click(player, slot, item ~= "" and item or nil, count) end
+    end)
+    raw_on("menu_close", function(player, which, items)
+      local inv = inventories[which]
+      if inv and inv.close then
+        local contents = {}
+        for _, entry in ipairs(items or {}) do contents[entry.slot] = { name = entry.name, count = entry.count } end
+        return inv.close(player, contents)
+      end
+    end)
+  end
+  return self
+end
+
+local function slot_of(self, slot, usage)
+  if type(slot) ~= "number" or slot < 1 or slot > self.size or slot % 1 ~= 0 then
+    error(usage .. " : la case va de 1 à " .. self.size .. ", reçu " .. tostring(slot), 3)
+  end
+  return slot
+end
+
+function Inventory:setItem(slot, item, count)
+  slot_of(self, slot, "inventaire:setItem(case, objet, quantité)")
+  if item ~= nil and type(item) ~= "string" then
+    error("inventaire:setItem(case, objet, quantité) : l'objet est un nom, par exemple \"minecraft:diamond\"", 2)
+  end
+  modify("menu", self.id, "set", slot .. "\t" .. (item or "") .. "\t" .. tostring(item and (count or 1) or 0))
+  return self
+end
+function Inventory:removeItem(slot) return self:setItem(slot, nil) end
+function Inventory:clear() modify("menu", self.id, "clear", "") return self end
+function Inventory:onClick(fn) self.click = fn return self end
+function Inventory:onClose(fn) self.close = fn return self end
+function Inventory:getTitle() return self.title end
+function Inventory:getSize() return self.size end
+function Inventory:open(player)
+  local name = type(player) == "table" and player.name or player
+  if type(name) ~= "string" then error("inventaire:open(joueur) : joueur attendu", 2) end
+  pset(name, "menu", self.id)
+end
+-- L'inventaire ne servira plus : il se ferme chez ceux qui le regardent et est oublié.
+function Inventory:destroy()
+  inventories[self.id] = nil
+  modify("menu", self.id, "destroy", "")
+end
+function Player:closeInventory() pset(self.name, "menu", "") end
+
 
 -- ---------------------------------------------------------------------------------------
 -- Événements à la manière de PocketMine : écouteurs, priorités, annulation.
@@ -693,6 +824,7 @@ local EVENTS = {
   PlayerExhaustEvent = { cancellable = true, fields = { { "player", "player" }, { "amount", "number" } } },
   PlayerExperienceChangeEvent = { cancellable = true, fields = { { "player", "player" }, { "amount", "number", true } } },
   PlayerBedEnterEvent = { cancellable = true, fields = { { "player", "player" }, { "bed", "block" } } },
+  PlayerPortalEvent = { fields = { { "player", "player" }, { "portal", "string" }, { "world", "string" }, { "block", "block" } } },
   PlayerBedLeaveEvent = { fields = { { "player", "player" }, { "bed", "block" } } },
   LeavesDecayEvent = { cancellable = true, fields = { { "block", "block" } } },
   BlockFallEvent = { cancellable = true, fields = { { "block", "block" } } },
@@ -766,7 +898,7 @@ function Block:getZ() return self.z end
 -- La lecture voit le monde au début de l'appel ; les blocs posés sont appliqués par le serveur
 -- à la fin de l'appel, et visibles à l'appel suivant.
 -- ---------------------------------------------------------------------------------------
-local raw_block, raw_blocks, raw_setblocks = server._block, server._blocks, server._setblocks
+local raw_block, raw_blocks, raw_setblocks, use_world = server._block, server._blocks, server._setblocks, server._useworld
 -- État exact du bloc (orientation, couleur…), à garder pour le recopier à l'identique.
 function Block:getState() return self.state end
 
@@ -780,32 +912,63 @@ local function state_of(block)
   return nil
 end
 
+-- Si l'appel échoue (mauvais arguments), le monde visé est oublié avant de relancer l'erreur
+local function use_world_guard(f, ...)
+  local ok, err = pcall(f, ...)
+  use_world("")
+  if not ok then error(err, 3) end
+end
 local World = {}
 World.__index = World
 World.__name = "World"
 -- État seul, sans créer d'objet : le plus rapide pour lire beaucoup de blocs.
-function World:getBlockState(x, y, z) return raw_block(x, y, z) end
+function World:getBlockState(x, y, z) use_world(self.name) return raw_block(x, y, z) end
 -- Le bloc avec son nom et sa position, ou nil hors du monde.
 function World:getBlock(x, y, z)
   x, y, z = math.floor(x), math.floor(y), math.floor(z)
+  use_world(self.name)
   local state = raw_block(x, y, z)
   if not state then return nil end
   return setmetatable({ name = server.blockName(state), state = state, x = x, y = y, z = z }, Block)
 end
 -- États de tout un volume, dans une table plate rangée par y, puis x, puis z
-function World:getBlocks(x1, y1, z1, x2, y2, z2) return raw_blocks(x1, y1, z1, x2, y2, z2) end
+function World:getBlocks(x1, y1, z1, x2, y2, z2) use_world(self.name) return raw_blocks(x1, y1, z1, x2, y2, z2) end
 -- Pose un bloc (appliqué à la fin de l'appel du plugin).
 function World:setBlock(x, y, z, block)
   local state = state_of(block)
   if not state then error("bloc inconnu : " .. tostring(block), 2) end
+  use_world(self.name)
   raw_setblocks({ math.floor(x), math.floor(y), math.floor(z), state })
 end
 -- Pose en une fois : table plate { x, y, z, état, x, y, z, état, … } (1 000 000 blocs au plus)
-function World:setBlocks(list) raw_setblocks(list) end
-local the_world = setmetatable({}, World)
--- Il n'y a qu'un monde pour l'instant : toujours le même objet.
-function server.getWorld() return the_world end
-server._block, server._blocks, server._setblocks = nil, nil, nil
+function World:setBlocks(list) use_world(self.name) raw_setblocks(list) end
+-- Nom du monde, et joueurs qui s'y trouvent
+function World:getName() return self.name ~= "" and self.name or server.worlds.default() end
+function World:getPlayers()
+  local list, name = {}, self:getName():lower()
+  for _, p in ipairs(server.getOnlinePlayers()) do
+    if p:getWorld():lower() == name then list[#list + 1] = p end
+  end
+  return list
+end
+-- Créature ou PNJ placé dans ce monde (voir server.entities.spawn et server.spawnNpc)
+function World:spawnEntity(name, x, y, z) use_world(self.name) use_world_guard(server.entities.spawn, name, x, y, z) end
+function World:spawnNpc(name, x, y, z) use_world(self.name) use_world_guard(server.spawnNpc, name, x, y, z) end
+World.__tostring = function(w) return w:getName() end
+local the_world = setmetatable({ name = "" }, World)
+-- Sans nom : le monde principal. Avec un nom : ce monde-là, ou nil s'il n'est pas ouvert.
+function server.getWorld(name)
+  if name == nil then return the_world end
+  name = tostring(name)
+  for i, w in ipairs(server.worlds.list()) do
+    if w:lower() == name:lower() then
+      if i == 1 then return the_world end
+      return setmetatable({ name = w }, World)
+    end
+  end
+  return nil
+end
+server._block, server._blocks, server._setblocks, server._useworld = nil, nil, nil, nil
 
 -- Créature (animal, villageois, créature créée par un plugin) telle qu'un événement la donne.
 -- C'est un instantané : ses valeurs sont celles du moment de l'événement.

@@ -86,6 +86,7 @@ impl NetherLink {
         let ip = local_ip_for(signal).ok_or("aucune adresse locale utilisable")?;
         let socket = UdpSocket::bind(SocketAddr::new(ip, 0)).map_err(|e| format!("prise UDP : {}", e))?;
         socket.set_nonblocking(true).map_err(|e| e.to_string())?;
+        let _ = crate::network::sockbuf::enlarge(&socket, 2 << 20);
         let local = socket.local_addr().map_err(|e| e.to_string())?;
         let start = Instant::now();
         let mut rtc = Rtc::builder().build(start);

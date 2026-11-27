@@ -45,10 +45,10 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 - [x] Enregistrement des blocs modifiés et des créatures
 - [x] Cycle jour et nuit
 - [x] Générateurs de terrain écrits en Lua
-- [ ] Météo (pluie, orage, neige)
+- [x] Météo : pluie, orage et foudre, cycle naturel, `/weather`
 - [ ] Nether et End, portails
-- [ ] Mondes multiples
-- [ ] Chargement de vrais mondes Minecraft (LevelDB)
+- [x] Mondes multiples (ouverts à la fois, `/world`, API des plugins)
+- [x] Mondes au format du jeu (LevelDB) : enregistrement, ouverture d'un monde du jeu ou d'un `.mcworld` (blocs ; coffres et créatures à venir)
 - [ ] Monuments océaniques, bastions, forteresses
 - [ ] Lacs, aquifères, filons géants de fer et de cuivre
 
@@ -93,10 +93,17 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 - [x] Armures qui protègent (4 % par point d'armure) et s'usent
 - [x] Armure visible sur les autres joueurs ; armure naturelle des zombies
 - [x] Enchantements sur les objets, `/enchant`, premiers effets (protection, tranchant, solidité, puissance…)
-- [ ] Table d'enchantement, enclume, livres enchantés, effets restants (fortune, toucher de soie, butin, recul…)
+- [x] Effets des enchantements d'outil, d'arme, d'arc et d'armure (fortune, toucher de soie, butin, recul, châtiment, flamme, frappe, épines, raccommodage…)
+- [x] Règles des enchantements (objets acceptés, exclusions), semelles givrantes, fortune sur le gravier, les feuilles et les cultures
+- [ ] Table d'enchantement, enclume, livres enchantés ; enchantements de trident, d'arbalète et de pêche
 - [x] Arc
 - [ ] Arbalète, trident, bouclier
-- [ ] Pêche
+- [x] Arbalète (charge rapide, tir multiple)
+- [x] `vanilla.properties` : chaque mécanique du jeu se coupe d'une ligne
+- [x] Animaux dans les enclos des villages
+- [ ] Créatures manquantes : abeille, allay, renard, ocelot, perroquet, panda, ours polaire, tortue, grenouille, chameau, tatou, renifleur, chauve-souris, calmar, poissons, dauphin, axolotl, golem de neige, marchand ambulant, évocateur, ravageur, gardien…
+- [x] Trident et ses enchantements, noyés armés
+- [x] Pêche (poissons, rebuts, trésors ; appât et chance de la mer)
 - [ ] Ateliers : tailleur de pierre, métier à tisser, table de forgeron
 
 ## 7. Créatures
@@ -129,7 +136,10 @@ complète. Une case cochée est écrite et testée ; le détail de chaque versio
 - [ ] Créatures aquatiques
 - [ ] Boss : Ender Dragon, Wither, Warden
 - [ ] Raids de pillards
-- [ ] Bateaux et wagonnets
+- [x] Bateaux à deux places
+- [x] Coffres doubles, sons et couvercles des blocs qui s'ouvrent
+- [x] Inventaires créés par les plugins (`server.inventory`)
+- [ ] Bateaux à coffre, créatures en bateau, wagonnets
 
 ## 8. Combat
 

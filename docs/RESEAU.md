@@ -154,10 +154,14 @@ le temps de corriger.
 
 ## Beaucoup de joueurs : `nethernet-threads`
 
-Par défaut, un seul fil lit, déchiffre et envoie tout le trafic NetherNet. Il suffit jusqu'à
-quelques centaines de joueurs ; vers un millier, il sature. `nethernet-threads=4` dans
-`server.properties` répartit les joueurs sur quatre fils (16 au plus). Comptez un fil pour
-400 joueurs environ, sans dépasser le nombre de cœurs de la machine.
+Un fil lit, déchiffre et envoie le trafic NetherNet de ses joueurs. Mesuré sur un Ryzen 9
+9900X avec des joueurs simulés qui courent, cassent et se battent : un fil sature vers
+250 joueurs (envoi, chiffrement et lecture l'occupent à plein, et les paquets prennent du
+retard alors que la boucle du jeu reste à 20 ticks par seconde).
+
+Par défaut (`nethernet-threads=auto`), Basalt prend un fil pour 150 places de `max-players`,
+sans dépasser la moitié des cœurs de la machine : 1 fil pour 20 places, 4 pour 520. Un
+nombre (de 1 à 16) impose le nombre de fils.
 
 Le port UDP reste le même : rien à changer dans le pare-feu. Chaque joueur reste sur le même
 fil du début à la fin de sa session.

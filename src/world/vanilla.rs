@@ -144,8 +144,13 @@ impl B {
         self as u8
     }
 
+    /// Biome sec : il n'y pleut jamais.
+    pub fn rainless(self) -> bool {
+        matches!(self, B::Desert | B::Savanna | B::SavannaPlateau | B::WindsweptSavanna | B::Badlands | B::WoodedBadlands | B::ErodedBadlands)
+    }
+
     /// Biome où il neige (couche de neige au sol, eau gelée en surface).
-    fn snowy(self) -> bool {
+    pub fn snowy(self) -> bool {
         matches!(self, B::SnowyPlains | B::SnowyTaiga | B::IceSpikes | B::SnowyBeach | B::Grove | B::SnowySlopes | B::JaggedPeaks | B::FrozenPeaks | B::FrozenRiver | B::FrozenOcean | B::DeepFrozenOcean)
     }
 
@@ -691,6 +696,13 @@ impl Vanilla {
     pub fn deep_dark_at(&self, x: i32, z: i32) -> bool {
         let c = self.blended_climate(x, z);
         c.erosion < -0.225 && c.continentalness > 0.0
+    }
+
+    /// Les grottes luxuriantes s'étendent-elles sous cette colonne (à plus de 18 blocs sous
+    /// le relief) ? Même règle que `biome_at`.
+    pub fn lush_caves_at(&self, x: i32, z: i32) -> bool {
+        let c = self.blended_climate(x, z);
+        c.humidity > 0.6 && c.continentalness <= 0.7
     }
 
     /// Biome de surface d'une colonne, comme la génération le calcule.
@@ -1878,6 +1890,77 @@ enum Tree {
     IceSpike,
 }
 
+/// Une liane accrochée au bloc qui se trouve dans cette direction (dx, dz). Sans direction,
+/// une liane n'a aucune face : le jeu ne dessine rien.
+fn vine_towards(named: &dyn Fn(&str) -> u32, dx: i32, dz: i32) -> u32 {
+    // (bits de `vine_direction_bits` : 1 sud, 2 ouest, 4 nord, 8 est)
+    let bits = match (dx, dz) {
+        (_, 1) => 1,
+        (-1, _) => 2,
+        (_, -1) => 4,
+        _ => 8,
+    };
+    named(&format!("vine[vine_direction_bits={}]", bits))
+}
+
+/// Fait pousser un arbre à partir d'une pousse : le même arbre que ceux du terrain généré.
+/// `wood` est l'essence (« oak », « spruce »…), `wide` dit si quatre pousses forment un carré
+/// (grands arbres), (x, y, z) la pousse (le coin nord-ouest du carré). `get` lit le monde ;
+/// le résultat liste les blocs que l'arbre pose. `None` : cette essence ne pousse pas ainsi.
+pub fn grow_tree(p: &Palette, wood: &str, wide: bool, (x, y, z): (i32, i32, i32), seed: u64, get: &dyn Fn(i32, i32, i32) -> u32) -> Option<Vec<(i32, i32, i32, u32)>> {
+    let kind = match (wood, wide) {
+        ("oak", false) => {
+            if seed % 10 == 0 {
+                Tree::FancyOak
+            } else {
+                Tree::Oak
+            }
+        }
+        ("birch", false) => Tree::Birch,
+        ("spruce", false) => Tree::Spruce,
+        ("spruce", true) => Tree::MegaSpruce,
+        ("jungle", false) => Tree::Jungle,
+        ("jungle", true) => Tree::MegaJungle,
+        ("acacia", false) => Tree::Acacia,
+        ("cherry", false) => Tree::Cherry,
+        // (comme dans le jeu : le chêne noir et le chêne pâle ne poussent que par quatre)
+        ("dark_oak", true) => Tree::DarkOak,
+        ("pale_oak", true) => Tree::PaleOak,
+        _ => return None,
+    };
+    let plant = Plant { x, z, ground: y - 1, kind, seed, bees: false };
+    let height = (MAX_Y - MIN_Y + 1) as usize;
+    let at = |lx: usize, lz: usize, yy: i32| (lx * 16 + lz) * height + (yy - MIN_Y) as usize;
+    let mut out = Vec::new();
+    // L'arbre déborde sur les chunks voisins : chacun reçoit sa part
+    for cx in ((x - 12) >> 4)..=((x + 12) >> 4) {
+        for cz in ((z - 12) >> 4)..=((z + 12) >> 4) {
+            let (bx, bz) = (cx * 16, cz * 16);
+            let mut blocks = vec![0u32; 256 * height];
+            for lx in 0..16usize {
+                for lz in 0..16usize {
+                    for yy in (y - 2).max(MIN_Y)..=(y + 40).min(MAX_Y) {
+                        blocks[at(lx, lz, yy)] = get(bx + lx as i32, yy, bz + lz as i32);
+                    }
+                }
+            }
+            let before = blocks.clone();
+            plant.paint(&mut blocks, at, bx, bz, p);
+            for lx in 0..16usize {
+                for lz in 0..16usize {
+                    for yy in y.max(MIN_Y)..=(y + 40).min(MAX_Y) {
+                        let i = at(lx, lz, yy);
+                        if blocks[i] != before[i] {
+                            out.push((bx + lx as i32, yy, bz + lz as i32, blocks[i]));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
 /// Un arbre à dessiner : position du pied, hauteur du sol et essence.
 struct Plant {
     x: i32,
@@ -1965,10 +2048,10 @@ impl Plant {
                 }
                 put(x, base - 1, z, p.dirt, true);
                 if self.kind == Tree::SwampOak {
-                    let vine = named("vine");
                     for _ in 0..8 {
                         let (dx, dz) = (rng.below(9) as i32 - 4, rng.below(9) as i32 - 4);
                         if dx.abs() == 4 || dz.abs() == 4 {
+                            let vine = vine_towards(&named, -dx.signum() * (dx.abs() == 4) as i32, -dz.signum() * (dx.abs() != 4) as i32);
                             for dy in 0..(1 + rng.below(4) as i32) {
                                 put(x + dx, top - 3 - dy, z + dz, vine, false);
                             }
@@ -2036,12 +2119,14 @@ impl Plant {
                     for dx in -r..=r + 1 {
                         for dz in -r..=r + 1 {
                             let d = (dx as f64 - 0.5).powi(2) + (dz as f64 - 0.5).powi(2);
-                            if d <= ((r as f64) + 0.7).powi(2) {
+                            // (0,75 : au sommet, le rayon nul couvre encore les quatre blocs du tronc —
+                            // sinon la cime restait nue, le tronc dépassant du feuillage)
+                            if d <= ((r as f64) + 0.75).powi(2) {
                                 put(x + dx, y, z + dz, p.spruce_leaves, false);
                             }
                         }
                     }
-                    r = if (top - y) % 3 == 2 { (r + 1).min(4) } else { r };
+                    r = if (top - y).rem_euclid(3) == 2 { (r + 1).min(4) } else { r };
                 }
                 for y in base..top {
                     for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
@@ -2117,9 +2202,9 @@ impl Plant {
                 for y in base..top {
                     put(x, y, z, log, true);
                 }
-                let vine = named("vine");
                 for _ in 0..4 {
                     let (dx, dz) = [(1, 0), (-1, 0), (0, 1), (0, -1)][rng.below(4) as usize];
+                    let vine = vine_towards(&named, -dx, -dz);
                     for dy in 0..(2 + rng.below(4) as i32) {
                         put(x + dx, top - 3 - dy, z + dz, vine, false);
                     }
@@ -2538,6 +2623,32 @@ mod pictures {
 #[cfg(test)]
 mod decorations {
     use super::*;
+
+    /// Une pousse donne le même arbre que la génération : un tronc à sa place, des feuilles,
+    /// rien sous terre ; un grand sapin (quatre pousses) a des feuilles jusqu'au sommet.
+    #[test]
+    fn saplings_grow_into_the_trees_of_the_terrain() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
+        let Ok(data) = crate::data::GameData::load(&dir) else { return };
+        let p = Palette::new(&|n| data.state_from_spec(n));
+        let name = |s: u32| data.block_names.get(&s).cloned().unwrap_or_default();
+        let get = |_x: i32, y: i32, _z: i32| if y < 64 { p.grass } else { p.air };
+        for (wood, wide) in [("oak", false), ("birch", false), ("spruce", false), ("acacia", false), ("cherry", false), ("jungle", false), ("jungle", true), ("spruce", true), ("dark_oak", true), ("pale_oak", true)] {
+            for seed in [1u64, 10, 77] {
+                let tree = grow_tree(&p, wood, wide, (5, 64, -3), seed, &get).unwrap_or_else(|| panic!("{} ne pousse pas", wood));
+                let logs = tree.iter().filter(|b| name(b.3).ends_with("_log")).count();
+                let leaves = tree.iter().filter(|b| name(b.3).contains("leaves")).count();
+                assert!(logs >= 4 && leaves >= 20, "{} (carré : {}) : {} troncs, {} feuilles", wood, wide, logs, leaves);
+                assert!(tree.iter().any(|b| (b.0, b.1, b.2) == (5, 64, -3) && name(b.3).ends_with("_log")), "{} : le tronc remplace la pousse", wood);
+                assert!(tree.iter().all(|b| b.1 >= 64), "{} : rien sous la pousse", wood);
+                // Au-dessus du plus haut tronc, il y a des feuilles (la cime n'est pas nue)
+                let top = tree.iter().filter(|b| name(b.3).ends_with("_log")).map(|b| b.1).max().unwrap();
+                assert!(tree.iter().any(|b| b.1 > top && name(b.3).contains("leaves")), "{} (carré : {}) : cime nue", wood, wide);
+            }
+        }
+        // Comme dans le jeu, le chêne noir ne pousse pas d'une seule pousse
+        assert!(grow_tree(&p, "dark_oak", false, (0, 64, 0), 1, &get).is_none());
+    }
 
     /// Chaque bloc de décoration existe dans la palette du jeu, et sur une grande zone on
     /// trouve pétales, feuilles mortes, laminaires, herbes marines, coraux et nids d'abeilles.

@@ -199,7 +199,8 @@ démarrage). Arrêtez le serveur avant de le modifier. Les plus utiles :
 | `server-name` | nom affiché dans la liste des serveurs |
 | `max-players` | nombre de joueurs en même temps |
 | `gamemode` | mode des nouveaux joueurs : `Survival`, `Creative`, `Adventure`, `Spectator` |
-| `level-type`, `level-seed` | terrain et graine d'un **nouveau** monde |
+| `level-name` | nom du monde principal : son dossier est `worlds/<level-name>`, avec les autres mondes (voir [MONDE.md](MONDE.md#où-et-comment-le-monde-est-enregistré)) |
+| `level-type`, `level-seed` | terrain et graine d'un **nouveau** monde : `vanilla`, `flat`, `void` (vide, avec une plateforme au point d'apparition) ou `plugin:<nom>` |
 | `view-distance` | distance de vue, en chunks (plus grand = plus de calcul) |
 | `white-list` | `true` : seuls les joueurs de `white-list.txt` peuvent entrer |
 | `keep-inventory` | `true` : on garde son inventaire à la mort |
@@ -209,8 +210,35 @@ démarrage). Arrêtez le serveur avant de le modifier. Les plus utiles :
 | `api-bind` | adresse écoutée par l'API ; `127.0.0.1` : cette machine seulement |
 | `mob-griefing` | `false` : les explosions (creeper…) blessent sans casser de blocs |
 | `fire-spreads` | `false` : le feu ne brûle plus les blocs et ne gagne plus de terrain (il blesse toujours) |
+| `weather-cycle` | `false` : la pluie et l'orage ne viennent plus d'eux-mêmes (`/weather` les commande toujours) |
 | `tick-distance` | Distance de simulation en chunks (4 à 12) : au-delà, les animaux restent figés |
 | `public-ip` | adresse publique, derrière une box |
+
+### `vanilla.properties` : couper des mécaniques du jeu
+
+Un second fichier, créé à côté de `server.properties` au premier démarrage, liste les
+mécaniques du jeu une par une. Tout y vaut `true` ; passez une ligne à `false` pour la couper
+sur tout le serveur, puis redémarrez. Un serveur de mini-jeux coupera par exemple la faim,
+la météo et la pousse des cultures.
+
+| Clé | Ce qu'elle coupe à `false` |
+|---|---|
+| `hunger`, `natural-regeneration` | la faim ; la vie qui remonte seule |
+| `fall-damage`, `fire-damage`, `drowning`, `pvp` | les dégâts de chute, du feu et de la lave, la noyade, les coups entre joueurs |
+| `daylight-burn`, `lightning`, `snow-and-ice` | les morts-vivants qui brûlent au soleil, la foudre, la neige et la glace sous la pluie |
+| `crop-growth`, `tree-growth`, `grass-spread`, `leaf-decay`, `bone-meal` | la pousse des cultures et des arbres, l'herbe qui s'étend, les feuilles qui tombent, la poudre d'os |
+| `liquid-flow`, `tnt` | l'eau et la lave qui coulent, la TNT |
+| `fishing`, `boats`, `double-chests`, `trading`, `sleeping` | la pêche, les bateaux, les grands coffres, les échanges, le sommeil |
+| `mob-drops`, `block-drops`, `experience`, `durability` | le butin des créatures et des blocs, l'expérience, l'usure des objets |
+| `enchant-rules` | les refus de `/enchant` (objet inadapté, enchantements qui s'excluent) |
+| `village-animals` | les animaux dans les enclos des villages |
+
+Les réglages `spawn-animals`, `spawn-monsters`, `mob-griefing`, `fire-spreads`, `weather-cycle`
+et `keep-inventory` y figurent aussi. Ils sont toujours lus dans `server.properties` ; s'ils
+sont dans les deux fichiers, `vanilla.properties` l'emporte.
+
+Pour une règle au cas par cas (pas de chute dans une zone, un message de mort maison), un
+plugin fait mieux : voir « Dégâts et messages de mort » dans docs/PLUGINS.md.
 
 Chaque réglage est expliqué dans le fichier lui-même.
 

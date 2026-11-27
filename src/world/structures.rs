@@ -41,6 +41,8 @@ pub enum Loot {
     Igloo,
     RuinedPortal,
     WoodlandMansion,
+    /// Coffres des forteresses du Nether
+    NetherFortress,
 }
 
 /// Une structure calculée : ses blocs et ses coffres, rangés par chunk.
@@ -2016,12 +2018,12 @@ fn fence_spec(fence: &str, bits: u8) -> String {
         (bits >> 3) & 1
     )
 }
-const PLAIN: [&str; 41] = [
+const PLAIN: [&str; 42] = [
     "oak_planks", "spruce_planks", "acacia_planks", "oak_log", "spruce_log", "acacia_log", "stripped_oak_log", "cobblestone", "mossy_cobblestone",
     "stone_bricks", "mossy_stone_bricks", "cracked_stone_bricks", "chiseled_stone_bricks", "sandstone", "cut_sandstone", "chiseled_sandstone",
     "smooth_sandstone", "orange_terracotta", "blue_terracotta", "white_terracotta", "glass", "crafting_table", "bookshelf", "smithing_table",
     "cartography_table", "fletching_table", "web", "grass_path", "dirt", "white_wool", "yellow_wool", "white_carpet", "oak_fence", "spruce_fence",
-    "acacia_fence", "water", "lava", "stone", "tnt", "gravel", "coarse_dirt",
+    "acacia_fence", "dark_oak_fence", "water", "lava", "stone", "tnt", "gravel", "coarse_dirt",
 ];
 
 /// Tous les états de blocs que les structures emploient, sous la forme acceptée par la
@@ -4389,6 +4391,23 @@ fn table(kind: Loot) -> (&'static [(&'static str, u8, u8, u32)], (u32, u32)) {
             ],
             (4, 8),
         ),
+        Loot::NetherFortress => (
+            &[
+                ("diamond", 1, 3, 5),
+                ("iron_ingot", 1, 5, 5),
+                ("gold_ingot", 1, 3, 15),
+                ("golden_sword", 1, 1, 5),
+                ("golden_chestplate", 1, 1, 5),
+                ("flint_and_steel", 1, 1, 5),
+                ("nether_wart", 3, 7, 5),
+                ("saddle", 1, 1, 10),
+                ("golden_horse_armor", 1, 1, 8),
+                ("iron_horse_armor", 1, 1, 5),
+                ("diamond_horse_armor", 1, 1, 3),
+                ("obsidian", 2, 4, 2),
+            ],
+            (2, 4),
+        ),
         Loot::WoodlandMansion => (
             &[
                 ("lead", 1, 1, 20),
@@ -4648,7 +4667,7 @@ mod tests {
     fn loot_items_exist() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data");
         let Ok(data) = crate::data::GameData::load(&dir) else { return };
-        for kind in [Loot::Village, Loot::DesertPyramid, Loot::JungleTemple, Loot::Mineshaft, Loot::PillagerOutpost, Loot::AncientCity, Loot::TrialCorridor, Loot::TrialSupply, Loot::ShipwreckSupply, Loot::ShipwreckTreasure, Loot::ShipwreckMap, Loot::OceanRuin, Loot::Igloo, Loot::RuinedPortal, Loot::WoodlandMansion] {
+        for kind in [Loot::Village, Loot::DesertPyramid, Loot::JungleTemple, Loot::Mineshaft, Loot::PillagerOutpost, Loot::AncientCity, Loot::TrialCorridor, Loot::TrialSupply, Loot::ShipwreckSupply, Loot::ShipwreckTreasure, Loot::ShipwreckMap, Loot::OceanRuin, Loot::Igloo, Loot::RuinedPortal, Loot::WoodlandMansion, Loot::NetherFortress] {
             for (name, ..) in table(kind).0 {
                 assert!(data.item(&format!("minecraft:{}", name)).is_some() || data.item(name).is_some(), "objet inconnu : {}", name);
             }

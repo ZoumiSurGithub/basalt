@@ -20,7 +20,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::nethernet::NetherNet;
 use crate::transport::NetEvent;
@@ -28,6 +28,9 @@ use crate::transport::NetEvent;
 enum Command {
     Accept { key: SocketAddr, local_ip: IpAddr, offer: String, cpk: Option<String>, now: u64 },
     Send(SocketAddr, Vec<u8>),
+    /// Paquets déjà mis en forme, à emballer en un lot (et compresser) sur ce fil plutôt que
+    /// sur celui du jeu : compresser le lot de chaque joueur à chaque tick coûtait cher
+    SendFramed(SocketAddr, Vec<u8>, bool),
     Close(SocketAddr, Duration),
     Abort(SocketAddr, &'static str),
     Limits(SocketAddr),
@@ -190,6 +193,11 @@ impl NetherNetHandle {
         self.peers.contains_key(key)
     }
 
+    /// Une session existe ou se prépare sous cette adresse.
+    pub fn in_use(&self, key: &SocketAddr) -> bool {
+        self.peers.contains_key(key) || self.shard_of.contains_key(key)
+    }
+
     /// Clé publique du client liée à la connexion, si elle a été vérifiée.
     pub fn bound_cpk(&self, key: &SocketAddr) -> Option<String> {
         self.peers.get(key).cloned().flatten()
@@ -199,6 +207,13 @@ impl NetherNetHandle {
     pub fn send(&mut self, key: &SocketAddr, message: &[u8]) {
         if let Some(c) = self.channel(key) {
             let _ = c.send(Command::Send(*key, message.to_vec()));
+        }
+    }
+
+    /// Envoie des paquets mis en forme (`frame_packet`) en un lot, compressé ici si demandé.
+    pub fn send_framed(&mut self, key: &SocketAddr, framed: Vec<u8>, compression: bool) {
+        if let Some(c) = self.channel(key) {
+            let _ = c.send(Command::SendFramed(*key, framed, compression));
         }
     }
 
@@ -271,14 +286,21 @@ impl Drop for NetherNetHandle {
 fn run(net: &mut NetherNet, inbox: Receiver<Command>, outbox: Sender<Output>, index: usize, routes: Option<Routes>) {
     let mut known: HashMap<SocketAddr, Option<String>> = HashMap::new();
     let mut events = Vec::new();
+    // Bilan toutes les 5 s (au-delà de 50 sessions) : ordres traités, tours où il en restait
+    // (le fil prend du retard), tour le plus long, et l'état des sessions
+    let mut report_at = Instant::now();
+    let (mut orders, mut full_turns, mut turns, mut worst_turn) = (0u64, 0u64, 0u64, Duration::ZERO);
     loop {
+        let turn_start = Instant::now();
         let mut busy = false;
+        let mut taken = 0u32;
         // (au plus quelques centaines d'ordres d'affilée : sous un flot continu de datagrammes,
         // les envois et les minuteries doivent garder leur tour)
         for _ in 0..512 {
             match inbox.try_recv() {
                 Ok(cmd) => {
                     busy = true;
+                    taken += 1;
                     if !apply(net, cmd, &outbox, &mut events, index, routes.as_ref()) {
                         return;
                     }
@@ -317,6 +339,33 @@ fn run(net: &mut NetherNet, inbox: Receiver<Command>, outbox: Sender<Output>, in
             }
         }
         known = now;
+        turns += 1;
+        orders += taken as u64;
+        if taken >= 512 {
+            full_turns += 1;
+        }
+        worst_turn = worst_turn.max(turn_start.elapsed());
+        if report_at.elapsed() >= Duration::from_secs(5) {
+            let (peers, opening, preparing, oldest, queued, worst) = net.health();
+            if peers >= 50 {
+                info!(
+                    "NetherNet fil {} : {} sessions ({} en ouverture, {} en préparation, la plus ancienne depuis {} ms), {} Ko en attente d'envoi (au plus {} Ko pour une), {} ordres/s, {} tours sur {} saturés, tour le plus long {} ms",
+                    index,
+                    peers,
+                    opening,
+                    preparing,
+                    oldest,
+                    queued / 1024,
+                    worst / 1024,
+                    orders / 5,
+                    full_turns,
+                    turns,
+                    worst_turn.as_millis()
+                );
+            }
+            report_at = Instant::now();
+            (orders, full_turns, turns, worst_turn) = (0, 0, 0, Duration::ZERO);
+        }
         if read == 0 && !busy {
             // Rien à faire : on attend un ordre de la boucle du jeu, une milliseconde au plus
             match inbox.recv_timeout(Duration::from_millis(1)) {
@@ -344,6 +393,14 @@ fn apply(net: &mut NetherNet, cmd: Command, outbox: &Sender<Output>, events: &mu
             }
         }
         Command::Send(key, message) => net.send(&key, &message),
+        Command::SendFramed(key, framed, compression) => {
+            let batch = {
+                let _t = crate::timings::scope("NetherNet (fil à part) — mise en lot et compression");
+                crate::network::protocol::bedrock::encode_batch_with(&[], &framed, compression)
+            };
+            // (NetherNet transporte les lots sans leur octet 0xfe de tête)
+            net.send(&key, &batch[1..]);
+        }
         Command::Close(key, delay) => net.close(&key, delay),
         Command::Abort(key, reason) => net.abort(&key, reason),
         Command::Limits(key) => net.set_game_limits(&key),
